@@ -1,0 +1,266 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 / 注册 · 舰队工具</title>
+<style>
+:root{--bg:#0f1620;--card:#16212e;--line:#27364a;--ink:#e6edf6;--dim:#8fa3ba;--acc:#3d7eff;--ok:#37b26a;--bad:#e2564a;--warn:#e0a93b}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(900px 600px at 20% 0%,#1b2a3d,var(--bg));color:var(--ink);
+ font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;padding:28px}
+.shell{width:min(920px,100%);display:grid;grid-template-columns:1fr 1fr;gap:22px}
+@media(max-width:820px){.shell{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 22px 18px;
+ box-shadow:0 18px 50px rgba(0,0,0,.35)}
+h1{margin:0 0 4px;font-size:19px;letter-spacing:.5px}
+h2{margin:0 0 14px;font-size:15px;color:var(--dim);font-weight:500}
+.sub{color:var(--dim);font-size:12.5px;margin:0 0 16px}
+label{display:block;font-size:12.5px;color:var(--dim);margin:10px 0 4px}
+label b{color:var(--bad);font-weight:500}
+input{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);
+ background:#0d151f;color:var(--ink);font:inherit;outline:none}
+input:focus{border-color:var(--acc)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px 14px;margin-top:16px;
+ border-radius:9px;border:1px solid transparent;background:var(--acc);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn.ghost{background:transparent;border-color:var(--line);color:var(--ink);font-weight:500}
+.btn.ok{background:var(--ok)}
+.tabs{display:flex;gap:4px;background:#0d151f;border:1px solid var(--line);border-radius:10px;padding:4px;margin-bottom:16px}
+.tabs button{flex:1;padding:8px;border:0;border-radius:7px;background:transparent;color:var(--dim);font:inherit;cursor:pointer}
+.tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.hint{font-size:12px;color:var(--dim);margin-top:10px}
+.msg{margin-top:12px;font-size:12.5px;padding:9px 11px;border-radius:8px;display:none}
+.msg.show{display:block}
+.msg.bad{background:rgba(226,86,74,.13);border:1px solid rgba(226,86,74,.45);color:#ffb4ad}
+.msg.ok{background:rgba(55,178,106,.13);border:1px solid rgba(55,178,106,.45);color:#a8e6c0}
+.msg.warn{background:rgba(224,169,59,.12);border:1px solid rgba(224,169,59,.45);color:#f0d39a}
+.step2{display:none}
+.step2.on{display:block}
+code{background:#0d151f;border:1px solid var(--line);padding:1px 6px;border-radius:6px;color:#9fd0ff}
+.foot{grid-column:1/-1;text-align:center;color:var(--dim);font-size:12px}
+.foot a{color:var(--acc);text-decoration:none}
+</style></head>
+<body>
+<div class="shell">
+  <div class="card">
+    <h1>舰队工具</h1>
+    <p class="sub">独立入口 · 登录后进入工作台</p>
+    <div class="tabs">
+      <button id="tabLogin" class="on">登录</button>
+      <button id="tabReg">注册</button>
+    </div>
+
+    <div id="paneLogin">
+      <label>账号</label>
+      <input id="lgUser" autocomplete="username" placeholder="用户名">
+      <label>密码</label>
+      <input id="lgPwd" type="password" autocomplete="current-password" placeholder="密码">
+      <button class="btn" id="lgGo">登录</button>
+      <div class="hint">还没有账号？点上方「注册」，注册后默认只有「舰船数据」权限。</div>
+      <div style="margin-top:10px"><a href="#" id="forgotLink" style="font-size:13px">忘记密码？申请管理员重置 →</a></div>
+      <div id="forgotBox" style="display:none;margin-top:10px">
+        <label>账号</label><input id="fgUser" placeholder="要重置的用户名">
+        <label>联系方式</label><input id="fgContact" placeholder="手机号 / 邮箱，方便管理员核实">
+        <label>说明（可选）</label><input id="fgReason" placeholder="例如：密码忘了 / 换手机了">
+        <button class="btn" id="fgSend">提交申请</button>
+        <div class="hint">所有人（包括管理员账号）都能提交申请。批准规则：<b>不能批准自己的申请</b>；管理员账号只有其他管理员能批；如果系统里只剩一个管理员而他忘了密码，只能由运维在服务器本机执行 <code>python server.py --reset-pwd 账号</code>。批准后你会拿到一次性临时密码，登录时必须先改密码。</div>
+      </div>
+      <div id="fgMsg" class="msg"></div>
+    </div>
+
+    <div id="paneReg" style="display:none">
+      <div id="rgStep1">
+        <div class="row">
+          <div><label>账号 <b>*</b></label><input id="rgUser" placeholder="3–20 位字母/数字/下划线"></div>
+          <div><label>密码 <b>*</b></label><input id="rgPwd" type="password" placeholder="至少 8 位"></div>
+        </div>
+        <label>个人资料 ID <b>*</b></label>
+        <input id="rgUid" placeholder="游戏内 ID / 编号，唯一标识">
+        <div class="row">
+          <div><label>名称（选填）</label><input id="rgName" placeholder="显示名"></div>
+          <div><label>组织（选填）</label><input id="rgOrg" placeholder="舰队 / 联盟"></div>
+        </div>
+        <label>地址（选填）</label>
+        <input id="rgAddr" placeholder="常用服务器 / 地区">
+        <label>手机号或邮箱 <b>*</b></label>
+        <input id="rgContact" placeholder="11 位手机号，或 name@example.com">
+        <div id="rgCodeRow" style="display:none">
+          <label>邀请码 <b>*</b></label>
+          <input id="rgInv" placeholder="向管理员索取（区分大小写）">
+        </div>
+        <button class="btn" id="rgSend">发送验证码</button>
+        <div class="hint">试行阶段不真发短信/邮件：点完这里会直接把验证码显示在下方。</div>
+      </div>
+
+      <div id="rgStep2" class="step2">
+        <label>验证码 <b>*</b></label>
+        <input id="rgCode" placeholder="6 位数字" maxlength="6">
+        <button class="btn ok" id="rgDone">验证并完成注册</button>
+        <button class="btn ghost" id="rgBack">返回修改资料</button>
+        <div class="hint">验证码 10 分钟内有效。</div>
+      </div>
+      <div id="rgMsg" class="msg"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>说明</h2>
+    <p class="sub" style="margin-bottom:10px">这个页面是独立入口，登录成功后进入主工作台。</p>
+    <div class="hint" style="line-height:1.9">
+      · 注册需要 <b style="color:var(--ink)">ID</b> 与 <b style="color:var(--ink)">手机号/邮箱</b>，其余选填；<br>
+      · 验证码通过后才会真正建号，未验证不留账号；<br>
+      · 新账号初始权限：<code>sim</code> 舰船数据（可看蓝图、加点、模拟）；<br>
+      · 需要「数据管理 / 人员管理 / 信息查询」权限，找管理员在人员管理里勾选；<br>
+      · 试行阶段验证码直接回显，正式接短信/邮件网关时只改服务端一处。
+    </div>
+    <div class="msg warn show" style="margin-top:14px">试行模式：验证码不真正发送，页面会直接显示，方便你测试流程。</div>
+    <button class="btn ghost" id="goMain" style="margin-top:14px">先去看看主页面 →</button>
+  </div>
+
+  <div class="foot">舰队工具 · 登录/注册原型</div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const API = (p, o) => fetch(p, Object.assign({ headers: { 'Content-Type': 'application/json' } }, o || {}));
+
+function msg(el, text, kind) {
+  el.textContent = text;
+  el.className = 'msg show ' + (kind || 'bad');
+}
+function clearMsg(el) { el.className = 'msg'; el.textContent = ''; }
+
+function nextUrl() {
+  const p = new URLSearchParams(location.search).get('next') || '/';
+  // 只允许站内相对路径，避免被拿来跳外站
+  return (p.startsWith('/') && !p.startsWith('//')) ? p : '/';
+}
+
+// 启动时读取注册配置：是否需要邀请码、是否开放注册
+fetch('/api/health').then(r => r.json()).then(j => {
+  const s = (j && j.signup) || {};
+  if (s.need_code) {
+    const row = $('#rgCodeRow'); if (row) row.style.display = '';
+  }
+  if (s.allow === false) {
+    const tab = $('#tabReg');
+    if (tab) { tab.disabled = true; tab.style.opacity = '.45'; tab.title = '本站未开放自助注册'; }
+  }
+}).catch(() => {});
+
+// 登录 / 注册切换
+$('#tabLogin').onclick = () => {
+  $('#tabLogin').classList.add('on'); $('#tabReg').classList.remove('on');
+  $('#paneLogin').style.display = ''; $('#paneReg').style.display = 'none';
+};
+$('#tabReg').onclick = () => {
+  $('#tabReg').classList.add('on'); $('#tabLogin').classList.remove('on');
+  $('#paneLogin').style.display = 'none'; $('#paneReg').style.display = '';
+};
+
+// 登录
+$('#lgGo').onclick = async () => {
+  const username = $('#lgUser').value.trim(), pwd = $('#lgPwd').value;
+  if (!username || !pwd) return alert('账号和密码都要填');
+  const r = await API('/api/login', { method: 'POST', body: JSON.stringify({ username, password: pwd }) });
+  const j = await r.json();
+  if (!r.ok || !j.ok) return alert(j.error || '登录失败');
+  localStorage.setItem('ft_token', j.token);
+  localStorage.setItem('ft_user', JSON.stringify(j.user || null));
+  location.replace(nextUrl());
+};
+
+let pendingUser = '';
+let cdTimer = null, cdLeft = 0;
+function startCooldown(sec) {
+  const btn = $('#rgSend');
+  cdLeft = sec; btn.disabled = true; btn.textContent = '已发送 ' + cdLeft + 's';
+  clearInterval(cdTimer);
+  cdTimer = setInterval(() => {
+    cdLeft--;
+    if (cdLeft <= 0) {
+      clearInterval(cdTimer); btn.disabled = false; btn.textContent = '发送验证码';
+    } else {
+      btn.textContent = '已发送 ' + cdLeft + 's';
+    }
+  }, 1000);
+}
+$('#rgSend').onclick = async () => {
+  const box = $('#rgMsg'); clearMsg(box);
+  const body = {
+    username: $('#rgUser').value.trim(), pwd: $('#rgPwd').value,
+    uid: $('#rgUid').value.trim(), name: $('#rgName').value.trim(),
+    org: $('#rgOrg').value.trim(), addr: $('#rgAddr').value.trim(),
+    contact: $('#rgContact').value.trim(),
+    inv: ($('#rgInv') ? $('#rgInv').value.trim() : '')
+  };
+  const r = await API('/api/register/send', { method: 'POST', body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok || !j.ok) {
+    const m429 = String(j.error || '');
+    const hit = m429.match(/(\d+)\s*秒后再试/);
+    if (r.status === 429 && hit) startCooldown(Number(hit[1]) || 60);
+    return msg(box, m429 || '发送失败');
+  }
+  pendingUser = body.username;
+  startCooldown(60);
+  $('#rgStep1').style.display = 'none';
+  $('#rgStep2').classList.add('on');
+  msg(box, '验证码已生成（试行模式直接显示）：' + j.code, 'ok');
+};
+
+$('#rgBack').onclick = () => {
+  $('#rgStep1').style.display = '';
+  $('#rgStep2').classList.remove('on');
+  clearMsg($('#rgMsg'));
+};
+
+$('#rgDone').onclick = async () => {
+  const box = $('#rgMsg'); clearMsg(box);
+  const code = $('#rgCode').value.trim();
+  if (!/^\d{6}$/.test(code)) return msg(box, '验证码是 6 位数字');
+  const r = await API('/api/register/verify', { method: 'POST', body: JSON.stringify({ username: pendingUser, code, inv: ($('#rgInv') ? $('#rgInv').value.trim() : '') }) });
+  const j = await r.json();
+  if (!r.ok || !j.ok) return msg(box, j.error || '验证失败');
+  msg(box, '注册成功，正在返回登录…', 'ok');
+  setTimeout(() => {
+    $('#tabLogin').click();
+    $('#lgUser').value = pendingUser;
+    $('#lgPwd').value = '';
+    $('#lgPwd').focus();
+  }, 900);
+};
+
+$('#goMain').onclick = () => { location.href = '/'; };
+(function () {
+  var link = document.getElementById('forgotLink');
+  var box = document.getElementById('forgotBox');
+  var msgEl = document.getElementById('fgMsg');
+  if (!link) return;
+  link.onclick = function (ev) {
+    ev.preventDefault();
+    box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  };
+  document.getElementById('fgSend').onclick = function () {
+    var u = document.getElementById('fgUser').value.trim();
+    var c = document.getElementById('fgContact').value.trim();
+    var r = document.getElementById('fgReason').value.trim();
+    if (!u || !c) { msgEl.className = 'msg bad'; msgEl.textContent = '账号和联系方式都要填'; return; }
+    fetch('/api/pwd/request', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: u, contact: c, reason: r})})
+      .then(function (x) { return x.json().then(function (j) { return {s: x.status, j: j}; }); })
+      .then(function (o) {
+        if (o.j && o.j.ok) { msgEl.className = 'msg good'; msgEl.textContent = '已提交，等管理员处理；批准后请用临时密码登录并立即改密。'; }
+        else { msgEl.className = 'msg bad'; msgEl.textContent = (o.j && o.j.error) || ('HTTP ' + o.s); }
+      })
+      .catch(function (e) { msgEl.className = 'msg bad'; msgEl.textContent = '提交失败：' + e.message; });
+  };
+})();
+
+</script>
+<script>
+(function () {
+  const t = sessionStorage.getItem('ft_flash');
+  if (t) { sessionStorage.removeItem('ft_flash'); const b = document.getElementById('lgMsg') || document.getElementById('rgMsg'); if (b) { b.textContent = t; b.className = 'msg bad'; } }
+})();
+</script>
+</body></html>
