@@ -1723,6 +1723,7 @@ async function login() {
 }
 async function loadUsers(q) {
   if (!can('people_view')) return;
+  try { if (window.__invite) window.__invite(); } catch (e) {}
   try { const j = await api('/api/users' + (q ? '?q=' + encodeURIComponent(q) : ''));
     S.users = j.users; renderUsers(); }
   catch (e) { toast('读取失败：' + e.message, 'bad'); }
@@ -4436,4 +4437,49 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       } else { toast('档案 ID：' + HIST_ID, ''); }
     };
   }
+})();
+
+
+/* ===== 邀请码（仅超管可见） ===== */
+(function () {
+  function $id(x) { return document.getElementById(x); }
+  function paint(d) {
+    var box = $id('invCard'); if (!box) return;
+    box.classList.remove('hide');
+    $id('invAllow').textContent = d.allow ? '已开启' : '已关闭';
+    $id('invCode').textContent = d.code ? d.code : '（未设置，注册无需邀请码）';
+  }
+  async function loadInvite() {
+    var box = $id('invCard'); if (!box) return;
+    if (!S.user || S.user.role !== 'superadmin') { box.classList.add('hide'); return; }
+    try {
+      var d = await api('/api/signup/state');
+      if (d && d.ok) paint(d);
+    } catch (e) { box.classList.add('hide'); }
+  }
+  window.__invite = loadInvite;
+
+  document.addEventListener('click', async function (ev) {
+    var t = ev.target; if (!t || !t.id) return;
+    if (t.id === 'invCopy') {
+      var code = ($id('invCode') || {}).textContent || '';
+      try {
+        await navigator.clipboard.writeText(code);
+        t.textContent = '已复制'; setTimeout(function () { t.textContent = '复制'; }, 1200);
+      } catch (e) { toast('复制失败，请手动选中', 'bad'); }
+      return;
+    }
+    if (t.id === 'invNew') {
+      if (!confirm('重新生成邀请码？旧码立即失效，已发出的新码要重新通知。')) return;
+      var d = await api('/api/signup/rotate', { method: 'POST', body: {} });
+      if (d && d.ok) { paint({ allow: true, code: d.code }); toast('新邀请码：' + d.code, 'ok'); }
+      return;
+    }
+    if (t.id === 'invToggle') {
+      var on = (($id('invAllow') || {}).textContent !== '已开启');
+      var r = await api('/api/signup/allow', { method: 'POST', body: { allow: on } });
+      if (r && r.ok) loadInvite();
+      return;
+    }
+  });
 })();
