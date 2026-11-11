@@ -4451,6 +4451,11 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
   var CLS = { '友好': 'relf', '中立': 'reln', '敌对': 'relh' };
   var SE = { mode: 'current', season: null, data: null };
 
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
   function relOf(v) { return REL.indexOf(v) >= 0 ? v : '中立'; }
   function tag(v) { var r = relOf(v); return '<span class="rel ' + CLS[r] + '">' + r + '</span>'; }
   function op(body) { return api('/api/season/op', { method: 'POST', body: body }); }
