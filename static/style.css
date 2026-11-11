@@ -387,3 +387,57 @@ table.base-tbl{table-layout:auto;min-width:100%}
 /* ---- 版本标签：有未发布改动时高亮、可点 ---- */
 #verTag.pending { color: #ffd479; border-color: rgba(255,212,121,.45); cursor: pointer; }
 #verTag.pending:hover { background: rgba(255,212,121,.12); }
+
+/* ========== 高亮增强（可整段删除回滚） ==========
+   规则：聚焦/选中 = 橙色发光；当前页签 = 青色描边 + 橙色底线
+   只加视觉，不改任何布局与逻辑 */
+:root{
+  --hl:#ff9f43;                    /* 橙色：当前焦点 / 关键值 */
+  --hl-soft:rgba(255,159,67,.20);
+  --cy:#38bdf8;                    /* 青色：选中项描边 */
+  --cy-soft:rgba(56,189,248,.22);
+}
+
+/* —— 输入框 / 下拉框：聚焦时橙色描边 + 外发光 —— */
+select, input[type=text], input[type=password], input[type=number], textarea{
+  transition:border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+select:hover, input[type=text]:hover, input[type=password]:hover, input[type=number]:hover{
+  border-color:#46586d;
+}
+select:focus, input[type=text]:focus, input[type=password]:focus,
+input[type=number]:focus, textarea:focus{
+  outline:none !important;
+  border-color:var(--hl) !important;
+  box-shadow:0 0 0 1px var(--hl), 0 0 12px var(--hl-soft) !important;
+}
+
+/* —— 页签：当前项青色描边发光 + 底部橙线 —— */
+nav button.on, .tabs button.on, .systabs button.on{
+  border-color:var(--cy) !important;
+  box-shadow:0 0 0 1px var(--cy) inset, 0 0 10px var(--cy-soft);
+  color:#e0f2fe !important;
+}
+nav button.on{position:relative}
+nav button.on::after{
+  content:"";
+  position:absolute; left:8px; right:8px; bottom:-1px; height:2px;
+  background:linear-gradient(90deg, var(--hl), rgba(255,159,67,0));
+  border-radius:2px;
+}
+
+/* —— 卡片：悬停时轻微提亮，指明可操作区域 —— */
+.card{transition:border-color .15s ease, box-shadow .15s ease}
+.card:hover{border-color:#34465c; box-shadow:0 0 0 1px rgba(56,189,248,.06)}
+
+/* —— 关键数值：KPI / 统计数字用橙色 —— */
+.kpi b, .kpi strong{color:var(--hl)}
+.chip.on{border-color:var(--hl);color:var(--hl)}
+.pill.admin{border-color:#b45309}
+
+/* —— 进度条：填充改橙色渐变 —— */
+.bar > i, .bar > div{background:linear-gradient(90deg, var(--hl), #ffd28a) !important}
+
+/* —— 选中行：左侧橙色标记条 —— */
+tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
+
