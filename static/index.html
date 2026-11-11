@@ -23,7 +23,7 @@
 <nav>
   <button data-tab="sim" data-perm="sim_view" class="on">舰船数据</button>
   <button data-tab="battle" data-perm="battle_view">战报分析</button>
-          <button data-tab="season" data-perm="data_view">星域编制</button>
+          <button data-tab="season" data-perm="season_view">星域编制</button>
   <button data-tab="data" data-perm="data_view">数据管理</button>
   <button data-tab="roster" data-perm="roster_view">人员查询</button>
   <button data-tab="rosterM" data-perm="roster_view">人员档案</button>
@@ -151,22 +151,7 @@
     </table>
   </div>
 
-  <div class="card" style="margin-top:16px" id="upCard">
-    <h2>服务器文件</h2>
-    <div class="toolbar">
-      <select id="upDir" style="width:200px">
-        <option value="static">前端资源 · static</option>
-        <option value="uploads">资料目录 · uploads</option>
-      </select>
-      <input type="file" id="upFile" style="width:280px">
-      <button class="btn" id="upBtn">上传</button>
-      <span class="muted" id="upNote">同名文件会先备份为 .bak-时间戳；static 上传后刷新即生效</span>
-    </div>
-    <table>
-      <thead><tr><th style="width:44%">文件</th><th style="width:14%">大小</th><th style="width:26%">修改时间</th><th>操作</th></tr></thead>
-      <tbody id="upBody"></tbody>
-    </table>
-  </div>
+  
 
   <div class="card" style="margin-top:16px">
     <h2>批量数值维护 · 加点</h2>
@@ -418,7 +403,7 @@
     <div class="muted" id="auditNote" style="margin-top:8px"></div>
   </div>
 </section>
-        <section id="tab-season" data-perm="data_view" class="hide">
+        <section id="tab-season" data-perm="season_view" class="hide">
           <div class="card">
             <div class="cardh"><b>星域编制</b>
               <span class="dim" style="margin-left:10px">星系（每赛季一个）→ 联合体 → 小队</span>

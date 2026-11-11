@@ -38,16 +38,6 @@ from engine import GROUP_RANK, _group_ok, _normalize_ship, simulate
 
 STATIC = os.path.join(RES_DIR, "static")
 
-# ---- 文件上传：白名单目录（仅超管可用） ----
-UP_DIRS = {
-    "static": STATIC,                                # 前端资源，上传后刷新即生效
-    "uploads": os.path.join(DATA_DIR, "uploads"),     # 资料/图片/表格
-}
-UP_MAX = int(os.environ.get("FT_UP_MAX_MB") or 20) * 1024 * 1024
-UP_EXT = (".js", ".html", ".htm", ".css", ".txt", ".md", ".json", ".csv",
-          ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
-          ".xlsx", ".xls", ".docx", ".doc", ".pdf", ".zip", ".db", ".py")
-UP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 HOST = os.environ.get("FT_HOST") or "127.0.0.1"
 PORT = (int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit()
         else int(os.environ.get("PORT") or os.environ.get("FT_PORT") or 8787))
@@ -198,6 +188,7 @@ def init_db():
             ("battles", "owner", "TEXT"),
             ("members", "alliance", "TEXT"), ("members", "squad", "TEXT"),
             ("sessions", "csrf", "TEXT"),
+            ("alliances", "relation", "TEXT DEFAULT '中立'"),
         ]:
             try:
                 c.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_ddl}")
@@ -222,13 +213,29 @@ def init_db():
             c.execute("INSERT INTO perm_templates(name,cn,perms,scope,builtin,created_at)"
                       " VALUES(?,?,?,?,1,?) ON CONFLICT(name) DO UPDATE SET"
                       " cn=excluded.cn, perms=excluded.perms, scope=excluded.scope, builtin=1",
-                      (_n, _cn, ",".join(_pm), _sc, now()))
+                      (_n, _cn, ",".join((lambda p: list(p) + (["season_view"] if "data_view" in p and "season_view" not in p else []) + (["season_edit"] if "data_edit" in p and "season_edit" not in p else []))(_pm)), _sc, now()))
         # 老权限键（sim/data/people/audit/roster）升级为新键，避免升级后权限丢失
         for _r in c.execute("SELECT id, perms FROM users").fetchall():
             _old = _r["perms"] or ""
             _new = ",".join(parse_perms(_old)) if _old else ""
             if _new and _new != _old:
                 c.execute("UPDATE users SET perms=? WHERE id=?", (_new, _r["id"]))
+
+        # 权限拆分（season_view/season_edit）：老账号若只有 data_* 自动补齐，只做一次
+        if not c.execute("SELECT 1 FROM settings WHERE k='perm_season_migrated'").fetchone():
+            for _r in c.execute("SELECT id, perms FROM users").fetchall():
+                _p = parse_perms(_r["perms"] or "")
+                if not _p:
+                    continue
+                _ch = False
+                if "data_view" in _p and "season_view" not in _p:
+                    _p.append("season_view"); _ch = True
+                if "data_edit" in _p and "season_edit" not in _p:
+                    _p.append("season_edit"); _ch = True
+                if _ch:
+                    c.execute("UPDATE users SET perms=? WHERE id=?",
+                              (",".join([k for k in ALL_PERMS if k in _p]), _r["id"]))
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('perm_season_migrated','1')")
 
         if "kind" not in [r[1] for r in c.execute("PRAGMA table_info(audit)")]:
             c.execute("ALTER TABLE audit ADD COLUMN kind TEXT")
@@ -830,7 +837,9 @@ SEND_DAILY_IP = 10      # 同一 IP 每日发送上限
 ALL_PERMS = (
     "sim_view", "sim_edit",
     "battle_view", "battle_edit",
-    "data_view", "data_edit", "effects_edit",
+    "data_view", "data_edit",
+    "season_view", "season_edit",
+    "effects_edit",
     "roster_view", "roster_edit",
     "people_view", "people_edit",
     "audit_view", "audit_self", "export",
@@ -839,6 +848,7 @@ PERM_LABEL = {
     "sim_view": "舰船数据·看", "sim_edit": "舰船数据·改",
     "battle_view": "战报·看", "battle_edit": "战报·改（增删）",
     "data_view": "数据管理·看", "data_edit": "数据管理·改",
+    "season_view": "星域编制·看", "season_edit": "星域编制·改",
     "effects_edit": "效果库·改（影响全站计算）",
     "roster_view": "人员档案·看", "roster_edit": "人员档案·改",
     "people_view": "人员管理·看", "people_edit": "人员管理·改（账号/审批）",
@@ -851,6 +861,7 @@ PERM_GROUPS = [
     {"mod": "舰船数据", "view": "sim_view", "edit": "sim_edit"},
     {"mod": "战报分析", "view": "battle_view", "edit": "battle_edit"},
     {"mod": "数据管理", "view": "data_view", "edit": "data_edit", "extra": [("effects_edit", "效果库")]},
+    {"mod": "星域编制", "view": "season_view", "edit": "season_edit"},
     {"mod": "人员档案", "view": "roster_view", "edit": "roster_edit"},
     {"mod": "人员管理", "view": "people_view", "edit": "people_edit"},
     {"mod": "操作日志", "view": "audit_view", "edit": None, "extra": [("audit_self", "只看自己")]},
@@ -860,7 +871,7 @@ PERM_GROUPS = [
 # 老权限键 → 新键（升级时不丢权限）
 LEGACY_PERMS = {
     "sim": ("sim_view", "sim_edit", "battle_view", "battle_edit"),
-    "data": ("data_view", "data_edit", "export"),
+    "data": ("data_view", "data_edit", "season_view", "season_edit", "export"),
     "roster": ("roster_view", "roster_edit"),
     "people": ("people_view", "people_edit"),
     "audit": ("audit_view",),
@@ -1079,38 +1090,8 @@ def pwd_contact_ok(stored, contact):
 
 
 
-# ---------------- 文件上传：路径/名称/列表 ----------------
-def up_root(name):
-    p = UP_DIRS.get(name)
-    if not p:
-        return None
-    os.makedirs(p, exist_ok=True)
-    return p
+REL_SET = ("友好", "中立", "敌对")
 
-
-def up_check_name(name):
-    n = (name or "").strip()
-    if not UP_NAME_RE.match(n):
-        return None
-    if not n.lower().endswith(UP_EXT):
-        return None
-    return n
-
-
-def up_list(name):
-    root = up_root(name)
-    if not root:
-        return []
-    out = []
-    for fn in sorted(os.listdir(root)):
-        fp = os.path.join(root, fn)
-        if not os.path.isfile(fp):
-            continue
-        st = os.stat(fp)
-        out.append({"name": fn, "bytes": st.st_size,
-                    "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                    "bak": ".bak-" in fn})
-    return out
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "FleetTool/0.3"
@@ -1274,8 +1255,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/stream_ticket":   # 无请求体，须在解析 body 前分流
             return self.stream_ticket()
-        if path == "/api/files/upload":    # 原始二进制，须在解析 JSON 之前分流
-            return self.files_upload(parse_qs(urlparse(self.path).query))
         try:
             data = self.body()
         except Exception:
@@ -1288,8 +1267,6 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/version/publish":
                 return self.version_publish(data)
 
-            if path == "/api/files/delete":
-                return self.files_delete(data)
             if path == "/api/logout_others":
                 u = self.require()
                 if not u:
@@ -2112,121 +2089,9 @@ class Handler(BaseHTTPRequestHandler):
         SSE.publish(num)
         return self.send_json({"ok": True, "pub": pub_info()})
 
-    # ---------------- 文件上传（仅超管） ----------------
-    def files_upload(self, q):
-        u = self._need_super("只有超级管理员能上传服务器文件")
-        if not u:
-            return
-        dname = (q.get("dir") or ["uploads"])[0]
-        root = up_root(dname)
-        if not root:
-            return self.err(400, "目标目录只能是 static 或 uploads")
-        name = up_check_name((q.get("name") or [""])[0])
-        if not name:
-            return self.err(400, "文件名不合法（字母数字._-，且扩展名需在白名单内）")
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except Exception:
-            n = 0
-        if n <= 0:
-            return self.err(400, "空文件")
-        if n > UP_MAX:
-            left = n
-            while left > 0:                      # 读掉请求体，避免客户端连接被重置
-                chunk = self.rfile.read(min(65536, left))
-                if not chunk:
-                    break
-                left -= len(chunk)
-            self.close_connection = True
-            return self.err(413, "文件超过 %d MB" % (UP_MAX // 1024 // 1024))
-        buf = self.rfile.read(n)
-        if len(buf) != n:
-            return self.err(400, "上传中断，收到 %d/%d 字节" % (len(buf), n))
-        fp = os.path.join(root, name)
-        bak = ""
-        if os.path.exists(fp):
-            bak = name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S")
-            try:
-                os.replace(fp, os.path.join(root, bak))
-            except Exception:
-                bak = ""
-        tmp = fp + ".part"
-        with open(tmp, "wb") as f:
-            f.write(buf)
-        os.replace(tmp, fp)
-        try:
-            os.chmod(fp, 0o644)
-        except Exception:
-            pass
-        log("上传文件", u["username"], "%s/%s" % (dname, name),
-            "%.1f KB%s" % (n / 1024.0, ("（旧版备份为 %s）" % bak) if bak else ""))
-        return self.send_json({"ok": True, "dir": dname, "name": name, "bytes": n,
-                               "backup": bak,
-                               "note": "static 目录上传后刷新页面即生效" if dname == "static" else ""})
-
-    def files_delete(self, data):
-        u = self._need_super("只有超级管理员能删除服务器文件")
-        if not u:
-            return
-        dname = (data.get("dir") or "uploads").strip()
-        root = up_root(dname)
-        if not root:
-            return self.err(400, "目标目录只能是 static 或 uploads")
-        name = (data.get("name") or "").strip()
-        if not UP_NAME_RE.match(name or ""):
-            return self.err(400, "文件名不合法")
-        fp = os.path.join(root, name)
-        if not os.path.isfile(fp):
-            return self.err(404, "文件不存在")
-        os.remove(fp)
-        log("删除文件", u["username"], "%s/%s" % (dname, name))
-        return self.send_json({"ok": True})
-
-    def files_list(self):
-        u = self.require()
-        if not u:
-            return
-        return self.send_json({"ok": True, "dirs": {k: up_list(k) for k in UP_DIRS},
-                               "limit_mb": UP_MAX // 1024 // 1024})
-
-    def files_get(self, q):
-        u = self.require()
-        if not u:
-            return
-        dname = (q.get("dir") or ["uploads"])[0]
-        root = up_root(dname)
-        name = (q.get("name") or [""])[0]
-        if not root or not UP_NAME_RE.match(name or ""):
-            return self.err(400, "参数不合法")
-        if ".bak-" not in name and not name.lower().endswith(UP_EXT):
-            return self.err(400, "参数不合法")
-        fp = os.path.join(root, name)
-        if not os.path.isfile(fp):
-            return self.err(404, "文件不存在")
-        raw = open(fp, "rb").read()
-        ctype = {".html": "text/html; charset=utf-8",
-                 ".js": "application/javascript; charset=utf-8",
-                 ".css": "text/css; charset=utf-8",
-                 ".json": "application/json; charset=utf-8",
-                 ".txt": "text/plain; charset=utf-8",
-                 ".md": "text/plain; charset=utf-8",
-                 ".csv": "text/csv; charset=utf-8",
-                 ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                 ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp",
-                 ".pdf": "application/pdf", ".zip": "application/zip"}.get(
-                     os.path.splitext(name)[1].lower(), "application/octet-stream")
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(raw)
-
-
     # ================= 赛季编制：星系 → 联合体 → 小队 =================
     def season_tree(self, q):
-        u = self.need_perm(("data_view",))
+        u = self.need_perm(("season_view",))
         if not u:
             return
         mode = (q.get("mode") or ["current"])[0]
@@ -2264,12 +2129,13 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(out)
 
     def season_op(self, data):
-        u = self.need_perm(("data_edit",))
+        u = self.need_perm(("season_edit",))
         if not u:
             return
         op = (data.get("op") or "").strip()
         lv = (data.get("level") or "").strip()
         name = (data.get("name") or "").strip()
+        relation = (data.get("relation") or "").strip()
         note = (data.get("note") or "").strip()
         leader = (data.get("leader") or "").strip()
         rid = data.get("id")
@@ -2325,11 +2191,25 @@ class Handler(BaseHTTPRequestHandler):
                 if lv == "squad":
                     c.execute("INSERT INTO squads(alliance, name, leader, note, ord) VALUES(?,?,?,?,?)",
                               (pid, name, leader, note, ordv))
+                elif lv == "alliance":
+                    c.execute("INSERT INTO alliances(galaxy, name, note, ord, relation) VALUES(?,?,?,?,?)",
+                              (pid, name, note, ordv, relation if relation in REL_SET else "中立"))
                 else:
                     c.execute("INSERT INTO %s(%s, name, note, ord) VALUES(?,?,?,?)" % (tbl, fk),
                               (pid, name, note, ordv))
                 log("新增" + {"galaxy": "星系", "alliance": "联合体", "squad": "小队"}[lv],
                     u["username"], name, "")
+                return self.send_json({"ok": True})
+            if op == "relation":
+                rid2 = _int(rid)
+                if not rid2:
+                    return self.err(400, "缺少 id")
+                if lv != "alliance":
+                    return self.err(400, "只有联合体有关系标记")
+                if relation not in REL_SET:
+                    return self.err(400, "关系只能是 友好 / 中立 / 敌对")
+                c.execute("UPDATE alliances SET relation=? WHERE id=?", (relation, rid2))
+                log("修改关系", u["username"], "alliance#%d" % rid2, relation)
                 return self.send_json({"ok": True})
             if op in ("rename", "note"):
                 rid2 = _int(rid)
@@ -2364,10 +2244,6 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(urlparse(self.path).query)
         if path == "/api/season/tree":
             return self.season_tree(q)
-        if path == "/api/files/list":
-            return self.files_list()
-        if path == "/api/files/get":
-            return self.files_get(q)
         if path == "/api/stream":
             return self.sse()
         if path == "/api/blueprints":
@@ -2801,7 +2677,7 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute("INSERT INTO users(username,pwd,role,name,squadron,phone,status,note,"
                           "perms,scope,org,perm_expire_at,alliance,created_at,updated_at)"
                           " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (name, hash_pwd(data.get("password") or "123456"),
+                          (name, hash_pwd(data.get("pwd") or data.get("password") or "123456"),
                            _role(data.get("role")), data.get("name") or name,
                            data.get("squadron") or "", data.get("phone") or "",
                            data.get("status") or "在职", data.get("note") or "",
@@ -2835,7 +2711,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(403, "超级管理员账号只有超级管理员能修改")
         if tgt_role == "admin" and not is_mgr:
             return self.err(403, "只有管理员能修改管理员账号")
-        if data.get("password") and tgt_role in ("admin", SUPER_ROLE) and not is_mgr:
+        if (data.get("pwd") or data.get("password")) and tgt_role in ("admin", SUPER_ROLE) and not is_mgr:
             return self.err(403, "只有管理员能修改管理员密码")
         if "role" in data and _role(data.get("role")) == SUPER_ROLE and not is_top:
             return self.err(403, "只有超级管理员能设置超级管理员")
@@ -2864,9 +2740,10 @@ class Handler(BaseHTTPRequestHandler):
             if k in data:
                 fields.append(k + "=?")
                 args.append(_role(data[k]) if k == "role" else data[k])
-        if data.get("password"):
+        _newpw = data.get("pwd") or data.get("password")
+        if _newpw:
             fields.append("pwd=?")
-            args.append(hash_pwd(data["password"]))
+            args.append(hash_pwd(_newpw))
             fields.append("pwd_changed_at=?")
             args.append(now())
             if data.get("must_change"):
@@ -2893,7 +2770,7 @@ class Handler(BaseHTTPRequestHandler):
             cur_row = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         if not cur_row:
             return self.err(404, "人员不存在")
-        diff = diff_keys(cur_row, probe) if not data.get("password") else ["password"]
+        diff = diff_keys(cur_row, probe) if not _newpw else ["password"]
         if not diff:
             return self.send_json({"ok": True, "changed": False})
         fields.append("updated_at=?")
