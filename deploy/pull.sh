@@ -45,3 +45,10 @@ if [ $changed -eq 1 ]; then
 else
   echo "[$(date +%F' '%T)] 无变化"
 fi
+
+# 备份滚动清理：每个基名只保留最新 3 个 .bak-*，其余归档到 /root/bak-static
+if [ -x "$DEST/deploy/prune_bak.sh" ]; then
+  "$DEST/deploy/prune_bak.sh" "$DEST" /root/bak-static 3 30
+else
+  bash "$DEST/deploy/prune_bak.sh" "$DEST" /root/bak-static 3 30 2>/dev/null || true
+fi
