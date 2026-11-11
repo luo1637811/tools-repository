@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f4f8f'/%3E%3Cpath d='M16 5l7 14-7-3.6L9 19z' fill='%23fff'/%3E%3C/svg%3E">
+</head>
+<body>
+<header>
+  <div class="hdr-left">
+    <span class="tag" id="verTag">数据版本 —</span>
+    <span class="tag" id="liveTag">实时连接中…</span>
+  </div>
+  <h1><span id="brandTitle">追毫中枢</span>
+    <button class="btn ghost" id="brandEdit" style="display:none;margin-left:10px;font-size:12px">改名</button></h1>
+  <div class="right"><a class="lnk" href="/login.html" id="regLink">登录 / 注册</a> <span id="who"></span></div>
+</header>
+<div id="offline" class="hide">
+  与服务器的连接断了，正在重连……这期间表格里的数字可能不是最新的，先别照它做决定。
+</div>
+
+<nav>
+  <button data-tab="sim" data-perm="sim_view" class="on">舰船数据</button>
+  <button data-tab="battle" data-perm="battle_view">战报分析</button>
+  <button data-tab="data" data-perm="data_view">数据管理</button>
+  <button data-tab="roster" data-perm="roster_view">人员查询</button>
+  <button data-tab="rosterM" data-perm="roster_view">人员档案</button>
+  <button data-tab="people">人员管理</button>
+  <button data-tab="audit" data-perm="audit_view">操作日志</button>
+</nav>
+<div id="diag" class="muted hide" style="font-size:11px;padding:2px 12px 6px;opacity:.8"></div>
+
+<div id="jsErr" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:99;background:#fdecea;color:#a4262c;border-top:2px solid #a4262c;padding:8px 14px;font:13px/1.5 system-ui;white-space:pre-wrap;"></div>
+<main>
+<!-- ============ 舰船数据 ============ -->
+<div id="permExpired" class="hide" style="margin:8px 0;padding:10px 14px;border-radius:8px;background:#7a2b2b;color:#ffdede;font-size:14px;line-height:1.6"></div>
+<section id="tab-sim" data-perm="sim_view">
+  <div class="grid">
+    <div class="card">
+      <h2>蓝图 · 系统 · 加点</h2>
+      <label class="row"><span>类型</span><select id="kindFilter"></select></label>
+      <label class="row"><span>找船</span>
+        <span class="searchwrap">
+          <input type="text" id="shipFilter" placeholder="按船名找，如 太阳 / 护卫" autocomplete="off" spellcheck="false">
+          <button type="button" class="clr hide" id="shipClear" title="清空（Esc）" tabindex="-1">×</button>
+        </span>
+        <em class="hits" id="shipHit"></em>
+      </label>
+      <label class="row"><span>蓝图</span><select id="shipSel"></select></label>
+      <div id="shipInfo"></div>
+      <div id="modSlots"></div>
+        <div class="techbar"><span>加点上限</span>
+          <div class="bar"><i id="techBar" style="width:0"></i></div>
+          <span class="muted">已点 <b id="techUsed">0</b> / 上限 <span id="techCap">0</span>（仅作加点预算，不算作战指标）</span></div>
+      <div class="chips" id="sysChips"></div>
+      <div class="systabs" id="sysTabs"></div>
+      <div class="tree" id="tree"></div>
+      <div class="muted" id="selfCheck" style="margin-top:10px"></div>
+      <div class="toolbar" style="margin-top:12px">
+        <button class="btn ghost" id="resetAlloc">清空本系统加点</button>
+        <button class="btn ghost" id="saveBuild">保存当前方案</button>
+        <select id="buildSel" style="min-width:190px"><option value="">（已存方案）</option></select>
+        <button class="btn ghost" id="loadBuild">载入</button>
+        <button class="btn ghost" id="delBuild">删除</button>
+        <button class="btn ghost" id="undoBtn" title="Ctrl+Z">撤销</button>
+      </div>
+    </div>
+
+    <div class="col">
+    <div class="card">
+      <h2>基础加成</h2>
+      <div class="toolbar">
+        <label class="muted" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="baAll"> 只看武器系统
+        </label>
+        <span class="muted" id="baNote"></span>
+      </div>
+      <div id="baWarn" class="warnbar hide"></div>
+      <div class="basestrip" id="baTiles"></div>
+      <div class="tablewrap">
+        <table class="tbl base-tbl">
+          <thead id="baHead"></thead>
+          <tbody id="baseAttrBody"></tbody>
+        </table>
+      </div>
+      <div class="muted" style="margin-top:6px">
+        舰船自身没有基础属性：结构值 / 抵抗伤害 / 护盾 / 速度都来自它搭载的系统，武器只有武器系统才有对舰 / 对空 / 攻城。
+        结构值最终值 = 系统基础结构值 ×（1 + 加点收益%）。想改数值请去「数据管理 → 系统」。
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>差异对比</h2>
+      <div class="abtools">
+        <button class="btn sm ghost" id="abCopy">A → B 复制</button>
+        <button class="btn sm ghost" id="abSwap">交换 A / B</button>
+        <label class="muted" style="display:flex;align-items:center;gap:5px;margin-left:6px">
+          <input type="checkbox" id="abDiff"> 只看有差异的指标
+        </label>
+      </div>
+      <div class="tabs" id="slotTabs"></div>
+      <table style="margin-top:12px">
+        <thead><tr><th>基础加成</th><th>方案 A</th><th>方案 B</th><th>B−A</th></tr></thead>
+        <tbody id="cmpBody"></tbody>
+      </table>
+      <div class="muted" id="cmpNote" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h2>舰载机组合（A / B 各自一套）</h2>
+    <div class="muted">
+      先在左上角选好母舰、勾上搭载系统，这里给它配舰载机。一行一个蓝图，
+      「装到哪」决定进哪个舱：同一格母舰可以 5 架战机进「大型战机机库」、3 艘护航艇进「护航艇坞舱」。
+    </div>
+    <div id="planeSlots"></div>
+    <table style="margin-top:12px">
+      <thead><tr><th>方案</th><th>母舰</th><th>搭载系统</th><th>舰载机构成</th>
+        <th>舱位</th><th>违规</th></tr></thead>
+      <tbody id="planeCmp"></tbody>
+      </table>
+    </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 数据管理（含批量数值维护） ============ -->
+<section id="tab-data" data-perm="data_view" class="hide">
+  <div class="card">
+    <h2>数据管理</h2>
+    <div class="toolbar">
+      <select id="entSel" style="width:200px">
+        <option value="ships">舰船</option>
+        <option value="systems">系统</option>
+        <option value="nodes">加点</option>
+        <option value="modules">模块</option>
+        <option value="planes">舰载机</option>
+          <option value="effects">效果库</option>
+            <option value="attrs">基础属性</option>
+      </select>
+      <button class="btn" id="wizBtn">问卷式录入舰船</button>
+      <button class="btn" id="newEnt">直接新增一行</button>
+      <input type="text" id="entQ" placeholder="筛选当前表（id / 名称 / 系统…）" style="width:200px">
+      <button class="btn ghost" id="expJson">导出 JSON</button>
+      <span class="muted" id="dataNote"></span>
+    </div>
+    <table>
+      <thead><tr id="entHead"></tr></thead>
+      <tbody id="entBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:16px" id="upCard">
+    <h2>服务器文件</h2>
+    <div class="toolbar">
+      <select id="upDir" style="width:200px">
+        <option value="static">前端资源 · static</option>
+        <option value="uploads">资料目录 · uploads</option>
+      </select>
+      <input type="file" id="upFile" style="width:280px">
+      <button class="btn" id="upBtn">上传</button>
+      <span class="muted" id="upNote">同名文件会先备份为 .bak-时间戳；static 上传后刷新即生效</span>
+    </div>
+    <table>
+      <thead><tr><th style="width:44%">文件</th><th style="width:14%">大小</th><th style="width:26%">修改时间</th><th>操作</th></tr></thead>
+      <tbody id="upBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>批量数值维护 · 加点</h2>
+    <div class="toolbar">
+      <select id="auShip" style="width:220px"></select>
+      <input type="text" id="auQ" placeholder="搜 系统/节点" style="width:180px">
+      <label class="muted" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="auPending" checked> 只看待核
+        <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:8px"><input type="checkbox" id="auShowChecked"> 显示已核</label>
+      </label>
+      <button class="btn" id="auSave">保存改动</button>
+      <button class="btn ghost" id="auCsv">导出 CSV</button>
+      <span class="muted" id="auNote"></span>
+    </div>
+    <table>
+      <thead><tr id="auHead"></tr></thead>
+      <tbody id="auBody"></tbody>
+    </table>
+    <div class="muted" style="margin-top:10px">
+      每级值、逐级消耗、总级数都能直接改；「逐级消耗」用逗号分隔（如 <code>2,2,3,3,4</code>），留空就按「每级消耗 × 级数」算。
+      点「保存改动」写库，全站实时刷新。
+    </div>
+  </div>
+</section>
+
+<section id="tab-battle" data-perm="battle_view" class="hide">
+  <div class="card">
+    <div class="toolbar">
+      <h2 style="margin:0">战报清单</h2>
+      <span class="grow"></span>
+      <button class="btn" id="batNew">新增战报</button>
+      <button class="btn ghost" id="batReload">刷新</button>
+    </div>
+    <div class="muted" style="margin:6px 0 10px">一行一场战斗；对舰合计 = 结构伤害 + 系统伤害，交换比 = 我方 ÷ 敌方。</div>
+    <table class="tbl"><thead><tr>
+      <th>战报ID</th><th>日期</th><th>对手</th><th style="width:92px">敌方舰队</th><th>类型</th><th>时长</th>
+      <th>我方对舰</th><th>敌方对舰</th><th>交换比</th><th style="width:190px"></th>
+    </tr></thead><tbody id="batBody"></tbody></table>
+    <div class="muted" id="batNote" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card hide" id="batDetailCard" style="margin-top:16px">
+    <div class="toolbar">
+      <h2 style="margin:0" id="batTitle">战报详情</h2>
+      <span class="grow"></span>
+      <button class="btn sm" id="browAdd">＋ 我方一行</button>
+      <button class="btn sm ghost" id="browAddFoe">＋ 敌方一行</button>
+      <button class="btn sm ghost" id="browPaste">批量粘贴</button>
+      <button class="btn sm ghost danger" id="batDel">删除这场</button>
+    </div>
+    <div class="metagrid">
+      <label>日期<input id="bmDate" type="date"></label>
+      <label>对手<input id="bmOpponent" placeholder="如：深空巡游者"></label>
+      <label>类型<input id="bmMode" list="modeNames" placeholder="舰队战"></label>
+      <label>时长(s)<input id="bmDuration" type="number" step="any" min="0"></label>
+      <label class="wide">备注<input id="bmNote" placeholder="可不填"></label>
+      <button class="btn sm" id="bmSave">保存战报信息</button>
+    </div>
+    <table class="tbl tbl-edit"><thead><tr>
+      <th style="width:78px">阵营</th><th style="width:120px">舰队</th><th style="width:190px">舰船</th>
+      <th style="width:86px">舰种</th><th style="width:66px">数量</th>
+      <th style="width:96px">结构伤害</th><th style="width:96px">系统伤害</th>
+      <th style="width:82px">对空</th><th style="width:82px">维修</th><th style="width:92px">承受</th>
+      <th style="width:78px">存活/数</th><th style="width:140px">备注</th><th style="width:44px"></th>
+    </tr></thead><tbody id="browBody"></tbody></table>
+    <div class="muted" id="browNote" style="margin-top:8px"></div>
+
+    <div class="toolbar" style="margin-top:18px">
+      <h3 style="margin:0">对比分析</h3>
+      <span class="grow"></span>
+      <label class="muted" style="margin-right:6px">我方舰队</label>
+      <select id="bfMine" style="width:150px"></select>
+      <label class="muted" style="margin:0 6px">敌方舰队</label>
+      <select id="bfFoe" style="width:150px"></select>
+    </div>
+    <div class="muted" style="margin:6px 0 10px">
+      我方可能同时被敌方多支舰队攻击：选「全部」看总账，选某一支只看这一支。
+      超主力舰 / 主力舰 / 舰载机造价差得远，所以交换比按舰种分开算，不合并成一个数。
+    </div>
+    <table class="tbl"><thead><tr>
+      <th style="width:150px">舰种</th><th>我方对舰</th><th>敌方对舰</th><th style="width:110px">交换比</th>
+      <th>我方承受</th><th>敌方承受</th><th>我方数量</th><th>敌方数量</th><th style="width:96px">我方存活率</th>
+    </tr></thead><tbody id="bkindBody"></tbody></table>
+    <div class="muted" id="bkindNote" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>按舰船统计（我方）</h2>
+    <table class="tbl"><thead><tr>
+      <th>舰船</th><th>舰种</th><th>出场战报</th><th>总对舰</th><th>场均</th><th>存活率</th>
+    </tr></thead><tbody id="bstatsBody"></tbody></table>
+  </div>
+</section>
+
+<!-- ============ 人员查询 ============ -->
+<section id="tab-roster" data-perm="roster_view" class="hide">
+  <div class="card">
+    <h2>人员信息查询</h2>
+    <div class="toolbar">
+      <select id="mfField" style="width:132px">
+        <option value="all">全部字段</option>
+        <option value="id">ID</option>
+        <option value="name">名称</option>
+        <option value="org">组织</option>
+        <option value="faction">隶属</option>
+        <option value="links">关联账号</option>
+      </select>
+      <input type="text" id="mfQ" placeholder="输入关键字后回车（可只填一个字）" style="width:320px" autocomplete="off">
+      <button class="btn" id="mfGo">查询</button>
+      <button class="btn ghost" id="mfClear">清空</button>
+      <span class="muted" id="mfNote">输入关键字后查询</span>
+    </div>
+    <div id="mfEmpty" class="empty">
+      <b>还没有查询</b>
+      <p>可搜字段：ID、名称、组织、隶属、关联账号。选「全部字段」会同时匹配这五项。</p>
+    </div>
+    <div id="mfWrap" class="hide">
+      <table class="tbl" id="mfTable"><thead><tr>
+        <th style="width:52px">#</th><th>ID</th><th>名称</th><th>组织</th><th>隶属</th>
+        <th>联合体</th><th>小队</th>
+        <th>关联账号</th><th style="width:64px">评级</th><th>更新</th><th style="width:132px"></th>
+      </tr></thead><tbody id="mfBody"></tbody></table>
+      <div class="muted" id="mfFoot" style="margin-top:8px"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 人员档案（详情管理） ============ -->
+<section id="tab-rosterM" data-perm="roster_view" class="hide">
+  <div class="card">
+    <div class="toolbar">
+      <h2 style="margin:0">人员档案 · 详情管理</h2>
+      <span class="grow"></span>
+      <button class="btn" id="memNew">新增一条</button>
+      <button class="btn ghost" id="memReload">刷新</button>
+    </div>
+    <div class="muted" style="margin:6px 0 10px">改动直接写库，查询页立刻能看到；ID 用游戏 ID（5 位以上数字）。</div>
+    <div class="card" id="recentCard" style="margin-bottom:12px">
+      <div class="toolbar">
+        <h3 style="margin:0">最近变动</h3>
+        <span class="grow"></span>
+        <select id="rcDays" style="width:112px">
+          <option value="1">最近 1 天</option>
+          <option value="7" selected>最近 7 天</option>
+          <option value="30">最近 30 天</option>
+          <option value="90">最近 90 天</option>
+        </select>
+        <button class="btn ghost" id="rcReload">刷新</button>
+      </div>
+      <div class="muted" style="margin:6px 0 8px">按时间倒序列出「谁在什么时候把谁的哪个字段从什么改成了什么」，点任意一行看这个人的完整轨迹。</div>
+      <table class="tbl"><thead><tr>
+        <th style="width:150px">时间</th><th style="width:110px">操作人</th><th>对象</th>
+        <th style="width:96px">字段</th><th>旧值</th><th>新值</th>
+      </tr></thead><tbody id="rcBody"></tbody></table>
+      <div class="muted" id="rcNote" style="margin-top:6px"></div>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="mmQ" placeholder="筛选 ID / 名称 / 组织 / 隶属 / 关联账号" style="width:320px">
+      <button class="btn ghost" id="mmGo">查询</button>
+      <span class="muted" id="mmNote"></span>
+    </div>
+    <table class="tbl"><thead><tr>
+      <th>ID</th><th>名称</th><th>组织</th><th>隶属</th><th>联合体</th><th>小队</th>
+      <th>电话</th><th>微信</th><th>QQ</th><th>关联账号</th><th>评级</th><th>更新</th><th></th>
+    </tr></thead><tbody id="mmBody"></tbody></table>
+    <div class="muted" id="mmFoot" style="margin-top:8px"></div>
+  </div>
+</section>
+
+<!-- ============ 人员 ============ -->
+<section id="tab-people" class="hide">
+  <div class="card">
+    <div class="toolbar">
+      <h3 style="margin:0">密码重置申请</h3>
+      <span class="grow"></span>
+      <button class="btn ghost" id="pwdReqBtn">刷新</button>
+    </div>
+    <div class="muted" style="margin:6px 0 10px">用户忘记密码时在登录页提交申请，这里批准后生成临时密码，对方下次登录必须先改密码。列表只显示「待处理」，审批完的自动消失（历史去「操作日志」）。</div>
+    <table class="tbl"><thead><tr>
+      <th>#</th><th>账号</th><th>联系方式 / 原因</th><th>状态</th><th>提交时间</th><th>处理人</th><th>操作</th>
+    </tr></thead><tbody id="pwdReqBody"></tbody></table>
+    <div class="muted" id="pwdReqNote" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" id="loginCard">
+    <h2>登录</h2>
+    <div class="toolbar">
+      <input type="text" id="lu" placeholder="用户名" style="width:150px">
+      <input type="password" id="lp" placeholder="密码" style="width:150px">
+      <button class="btn" id="loginBtn">登录</button>
+      <span class="muted">账号由管理员在「人员管理」里分配；忘记口令请在登录页点「申请管理员重置」。</span>
+    </div>
+  </div>
+  <div id="peopleBody" class="hide">
+    <div class="card">
+      <h2>人员信息</h2>
+      <div class="toolbar">
+        <input type="text" id="uq" placeholder="搜索 登录名/姓名/大区/电话" style="width:240px">
+        <button class="btn ghost" id="searchBtn">查询</button>
+        <button class="btn" id="addUserBtn">新增人员</button>
+        <button class="btn ghost right" id="auditBtn">操作日志</button>
+      </div>
+      <table>
+        <thead><tr><th>登录名</th><th>姓名</th><th>角色</th><th>大区</th><th>电话</th><th>状态</th><th>更新时间</th><th></th></tr></thead>
+        <tbody id="userBody"></tbody>
+      </table>
+      <div class="muted" id="userNote" style="margin-top:8px"></div>
+    </div>
+
+    
+    </div>
+  </div>
+</section>
+
+<!-- ============ 操作日志 ============ -->
+<section id="tab-audit" data-perm="audit_view" class="hide">
+  <div class="card">
+    <div class="toolbar">
+      <h2 style="margin:0">操作日志</h2>
+      <span class="grow"></span>
+      <select id="auditKind" style="width:112px">
+        <option value="">全部类型</option>
+        <option value="访问">访问</option>
+        <option value="数据">数据</option>
+        <option value="管理">管理</option>
+        <option value="系统">系统</option>
+      </select>
+      <input type="text" id="auditQ" placeholder="搜索：操作人 / 动作 / 对象 / 备注" style="width:240px">
+      <button class="btn ghost" id="auditReload">刷新</button>
+    </div>
+    <div class="muted" id="auditStat" style="margin:6px 0 4px"></div>
+    <div class="toolbar hide" id="auditGovBar" style="gap:6px;margin-bottom:8px">
+      <span class="muted">保留</span>
+      <input type="number" id="auditDays" min="1" max="3650" style="width:78px">
+      <span class="muted">天 · 上限</span>
+      <input type="number" id="auditMax" min="100" step="1000" style="width:110px">
+      <span class="muted">条</span>
+      <button class="btn ghost sm" id="auditSavePolicy">保存策略</button>
+      <span class="grow"></span>
+      <button class="btn ghost sm" id="auditExport">导出当前列表</button>
+      <button class="btn sm" id="auditPrune">归档并清理</button>
+    </div>
+    <table><thead><tr>
+      <th style="width:150px">时间</th><th style="width:110px">操作人</th>
+      <th style="width:120px">动作</th><th style="width:64px">类型</th>
+      <th style="width:190px">对象</th><th>备注</th>
+    </tr></thead>
+      <tbody id="auditBody"></tbody></table>
+    <div class="muted" id="auditNote" style="margin-top:8px"></div>
+  </div>
+</section>
+</main>
+
+<dialog id="entDlg"><form class="dlg" method="dialog" id="entForm">
+  <h3 id="entTitle">编辑</h3>
+  <div id="entFields" class="fields"></div>
+  <details style="margin-top:8px"><summary class="muted">高级：直接看/改 JSON（只读参考，保存以表单为准）</summary>
+    <textarea id="entJson" spellcheck="false" readonly></textarea></details>
+  <div class="toolbar" style="margin-top:10px">
+    <button class="btn ghost" value="cancel" formnovalidate>取消</button>
+    <button class="btn right" value="ok">保存</button>
+  </div>
+</form></dialog>
+
+<dialog id="userDlg"><form class="dlg" method="dialog" id="userForm">
+  <h3 id="dlgTitle">新增人员</h3>
+  <label class="row"><span>登录名</span><input type="text" name="username" required></label>
+  <label class="row"><span>密码</span><input type="text" name="password" placeholder="留空=123456"></label>
+  <label class="row"><span>姓名</span><input type="text" name="name"></label>
+  <label class="row"><span>角色</span><select name="role">
+    <option value="viewer">只读</option><option value="editor">编辑</option><option value="admin">管理员</option><option value="superadmin">超级管理员</option></select></label>
+  <label class="row"><span>大区</span><input type="text" name="squadron"></label>
+  <label class="row"><span>电话</span><input type="text" name="phone"></label>
+  <label class="row"><span>状态</span><select name="status"><option>在职</option><option>停用</option><option>退役</option></select></label>
+  <label class="row"><span>备注</span><input type="text" name="note"></label>
+  <div class="row" style="align-items:flex-start"><span>可访问</span>
+    <div id="permBox" class="permgrid"></div>
+  </div>
+  <div class="row" style="align-items:flex-start"><span>数据范围</span>
+    <div id="scopeBox" class="scopebox">
+      <label class="scopecb"><input type="radio" name="scope" value="all" checked><i>全部数据</i></label>
+      <label class="scopecb"><input type="radio" name="scope" value="org"><i>只看本组织</i></label>
+      <label class="scopecb"><input type="radio" name="scope" value="alliance"><i>只看本联合体</i></label>
+      <label class="scopecb"><input type="radio" name="scope" value="self"><i>只看自己</i></label>
+      <em id="scopeHint" class="dim"></em>
+    </div>
+  </div>
+  <label class="row"><span>所属组织</span><input type="text" name="org" placeholder="范围选「本组织」时，用它来筛人"></label>
+  <label class="row"><span>所属联合体</span><input type="text" name="alliance" placeholder="范围选「本联合体」时，用它来筛人"></label>
+  <label class="row"><span>权限到期</span><input type="date" name="perm_expire_at"></label>
+  <small id="permHintBox" class="dim" style="display:block;margin:2px 0 0 96px"></small>
+  <div class="toolbar" style="margin-top:12px">
+    <button class="btn ghost" value="cancel" formnovalidate>取消</button>
+    <button class="btn right" value="ok">保存</button>
+  </div>
+</form></dialog>
+<dialog id="pwdDlg"><form class="dlg" method="dialog" id="pwdForm">
+  <h3 id="pwdTitle">修改密码</h3>
+  <div class="muted" id="pwdHint" style="margin-bottom:8px"></div>
+  <label class="row"><span>当前密码</span><input type="password" name="old" autocomplete="current-password" required></label>
+  <label class="row"><span>新密码</span><input type="password" name="new" autocomplete="new-password" minlength="6" required></label>
+  <label class="row"><span>再输一次</span><input type="password" name="again" autocomplete="new-password" minlength="6" required></label>
+  <div class="toolbar" style="margin-top:12px">
+    <button class="btn ghost hide" id="pwdCancel" value="cancel" formnovalidate>取消</button>
+    <button class="btn ghost hide" id="pwdQuit" type="button">退出登录</button>
+    <button class="btn right" value="ok">确定</button>
+  </div>
+</form></dialog>
+<datalist id="shipNames"></datalist>
+<datalist id="fleetNames"></datalist>
+<datalist id="modeNames">
+  <option value="舰队战"></option>
+  <option value="遭遇战"></option>
+  <option value="据点战"></option>
+  <option value="攻城战"></option>
+</datalist>
+
+<dialog id="memDlg"><form class="dlg" method="dialog" id="memForm">
+  <h3 id="memTitle">人员档案</h3>
+  <label class="row"><span>ID</span><input type="text" name="id" placeholder="游戏 ID，5 位以上数字" required></label>
+  <label class="row"><span>名称</span><input type="text" name="name"></label>
+  <label class="row"><span>组织</span><input type="text" name="org"></label>
+  <label class="row"><span>隶属</span><input type="text" name="faction"></label>
+  <label class="row"><span>联合体</span><input type="text" name="alliance"></label>
+  <label class="row"><span>小队</span><input type="text" name="squad"></label>
+  <label class="row"><span>电话</span><input type="text" name="phone"></label>
+  <label class="row"><span>微信</span><input type="text" name="wechat"></label>
+  <label class="row"><span>QQ</span><input type="text" name="qq"></label>
+  <label class="row"><span>关联账号</span><input type="text" name="links" placeholder="多个用顿号或逗号分隔"></label>
+  <label class="row"><span>评级</span><input type="text" name="rating" placeholder="甲 / 乙 / 丙 / 丁"></label>
+  <label class="row"><span>备注</span><input type="text" name="note"></label>
+  <div class="toolbar" style="margin-top:10px">
+    <button class="btn ghost" value="cancel" formnovalidate>取消</button>
+    <button class="btn right" value="ok" id="memOk">保存</button>
+  </div>
+</form></dialog>
+
+<dialog id="verDlg"><div class="dlg" style="width:min(460px,92vw)">
+  <h3 style="margin:0 0 4px">发布版本</h3>
+  <div class="muted" style="margin-bottom:10px">
+    发布后，所有用户左上角显示的都是这个版本号；内部计数器继续增长，只有你能看到未发布的改动数。
+  </div>
+  <label class="row"><span>版本号</span><input type="text" id="verLabel" maxlength="24" placeholder="如 v1.5.0"></label>
+  <label class="row"><span>说明（可选）</span><input type="text" id="verNote" maxlength="120" placeholder="这次改了什么"></label>
+  <div class="muted" id="verDlgInfo" style="margin-top:8px;font-size:12px"></div>
+  <div class="toolbar" style="margin-top:12px">
+    <button class="btn ghost" id="verCancel">取消</button>
+    <span class="grow"></span>
+    <button class="btn" id="verOk">发布</button>
+  </div>
+</div></dialog>
+
+<dialog id="histDlg"><div class="dlg" style="width:min(760px,94vw)">
+  <div class="toolbar" style="margin:0 0 6px">
+    <h3 id="histTitle" style="margin:0">变更轨迹</h3>
+    <span class="grow"></span>
+    <button class="btn ghost sm" id="histCopyId" title="复制档案 ID">复制 ID</button>
+    <button class="btn ghost sm" id="histClose">关闭</button>
+  </div>
+  <div class="muted" id="histSub"></div>
+  <div class="toolbar" id="histChips" style="margin:10px 0 4px">
+    <button class="btn sm ghost on" data-f="">全部</button>
+    <button class="btn sm ghost" data-f="name">名称</button>
+    <button class="btn sm ghost" data-f="org">组织</button>
+    <button class="btn sm ghost" data-f="faction">隶属</button>
+    <button class="btn sm ghost" data-f="alliance">联合体</button>
+    <button class="btn sm ghost" data-f="squad">小队</button>
+    <button class="btn sm ghost" data-f="links">关联账号</button>
+    <button class="btn sm ghost" data-f="rating">评级</button>
+  </div>
+  <div id="histBody" class="histbody"></div>
+  <div class="histfoot">
+    <span class="muted" id="histNote"></span>
+    <span class="grow"></span>
+    <button class="btn sm ghost hide" id="histMore">加载更多</button>
+  </div>
+</div></dialog>
+
+<dialog id="wizDlg"><div class="dlg">
+  <h3 id="wizTitle">问卷式录入</h3>
+  <div class="muted" id="wizStep"></div>
+  <div id="wizBody" style="margin-top:10px"></div>
+  <div class="toolbar" style="margin-top:12px">
+    <button class="btn ghost" id="wizExit" title="关掉这个问卷，已填的内容不保存">退出</button>
+    <span class="grow"></span>
+    <button class="btn ghost" id="wizPrev">上一步</button>
+    <button class="btn ghost" id="wizSkip">跳过这一步</button>
+    <button class="btn" id="wizNext">下一步</button>
+    <button class="btn ghost hide" id="wizClose">关闭</button>
+  </div>
+</div></dialog>
+
+<dialog id="tsvDlg"><div class="dlg">
+  <h3>批量粘贴战报明细</h3>
+  <div class="muted" id="tsvNote" style="margin:6px 0 8px"></div>
+  <textarea id="tsvText" rows="10" spellcheck="false"
+    style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.55"></textarea>
+  <div class="toolbar" style="margin-top:12px;justify-content:flex-end">
+    <button type="button" class="btn ghost" id="tsvCancel">取消</button>
+    <button type="button" class="btn" id="tsvGo">导入</button>
+  </div>
+</div></dialog>
+<div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+

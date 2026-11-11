@@ -3956,6 +3956,7 @@ function showTab(tab) {
   if (tab === 'rosterM') loadRosterAdmin();
   if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); }
   if (tab === 'audit') loadAudit();
+  if (tab === 'season' && window.renderSeason) renderSeason();
   if (tab === 'battle') {
     loadBattles()
       .then(() => diag('battle: loaded ' + S.battles.length + ' battles / ' + S.brows.length + ' rows'))
@@ -4546,3 +4547,157 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     initUploader();
   }
 })();
+
+﻿/* ================= 星域编制：星系 → 联合体 → 小队 ================= */
+(function () {
+  var SE = { mode: 'current', season: null, data: null };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function canEdit() { return typeof can === 'function' && can('data_edit'); }
+  function apiPost(body) { return api('/api/season/op', { method: 'POST', body: body }); }
+
+  function paint(r) {
+    var root = document.getElementById('seRoot');
+    if (!root) return;
+    var seasons = r.seasons || [];
+    var cur = r.current || null;
+    var h = '';
+
+    h += '<div class="sebar">';
+    h += '<button class="btn ghost sm' + (SE.mode === 'current' ? ' on' : '') + '" data-se="mode">当前赛季</button>';
+    var others = seasons.filter(function (s) { return !s.is_current; });
+    if (others.length) {
+      h += '<select id="seSel" class="selsm"><option value="">归纳区（历史赛季）…</option>';
+      others.forEach(function (s) {
+        var sel = (SE.mode === 'archive' && String(SE.season) === String(s.id)) ? ' selected' : '';
+        h += '<option value="' + s.id + '"' + sel + '>' + esc(s.label) +
+             (s.started_at ? '（' + esc(String(s.started_at).slice(0, 10)) + ' 起）' : '') + '</option>';
+      });
+      h += '</select>';
+    }
+    if (canEdit()) h += '<button class="btn sm" data-se="new">＋ 新建赛季</button>';
+    h += '<span class="segrow"></span>';
+    h += '<span class="dim">' + (SE.mode === 'archive' ? '归纳区 · 只读展示' :
+         (cur ? esc(cur.label) + '（当前）' : '还没有赛季')) + '</span>';
+    h += '</div>';
+
+    if (!seasons.length) {
+      h += '<div class="empty" style="padding:18px">还没有任何赛季。' +
+           (canEdit() ? '点上面「＋ 新建赛季」开始。' : '请让管理员创建。') + '</div>';
+      root.innerHTML = h; return;
+    }
+    if (SE.mode === 'archive' && !r.target) {
+      h += '<div class="empty" style="padding:18px">请在上面选一个历史赛季查看。</div>';
+      root.innerHTML = h; return;
+    }
+
+    var gs = r.galaxies || [];
+    if (!gs.length) h += '<div class="empty" style="padding:18px">这个赛季还没有星系。</div>';
+
+    gs.forEach(function (g) {
+      h += '<div class="seG"><div class="seH"><b>🌌 ' + esc(g.name) + '</b>';
+      if (canEdit()) {
+        h += '<button class="btn ghost sm" data-se="add" data-lv="alliance" data-pid="' + g.id + '">＋联合体</button>';
+        h += '<button class="btn ghost sm" data-se="ren" data-lv="galaxy" data-id="' + g.id + '" data-name="' + esc(g.name) + '">改名</button>';
+      }
+      h += '<span class="segrow"></span><span class="dim">' + (g.alliances || []).length + ' 个联合体</span></div>';
+
+      (g.alliances || []).forEach(function (a) {
+        h += '<div class="seA"><div class="seH"><b>' + esc(a.name) + '</b>';
+        if (canEdit()) {
+          h += '<button class="btn ghost sm" data-se="add" data-lv="squad" data-pid="' + a.id + '">＋小队</button>';
+          h += '<button class="btn ghost sm" data-se="ren" data-lv="alliance" data-id="' + a.id + '" data-name="' + esc(a.name) + '">改名</button>';
+          h += '<button class="btn ghost sm" data-se="del" data-lv="alliance" data-id="' + a.id + '" data-name="' + esc(a.name) + '">删除</button>';
+        }
+        h += '<span class="segrow"></span><span class="dim">' + (a.squads || []).length + ' 支小队</span></div>';
+        (a.squads || []).forEach(function (s) {
+          h += '<div class="seS"><span>· ' + esc(s.name) + '</span>';
+          if (s.leader) h += '<span class="dim">队长 ' + esc(s.leader) + '</span>';
+          if (canEdit()) {
+            h += '<button class="btn ghost sm" data-se="ren" data-lv="squad" data-id="' + s.id + '" data-name="' + esc(s.name) + '">改名</button>';
+            h += '<button class="btn ghost sm" data-se="del" data-lv="squad" data-id="' + s.id + '" data-name="' + esc(s.name) + '">删除</button>';
+          }
+          h += '</div>';
+        });
+        h += '</div>';
+      });
+      h += '</div>';
+    });
+    root.innerHTML = h;
+  }
+
+  function reload() {
+    var url = '/api/season/tree?mode=' + SE.mode;
+    if (SE.mode === 'archive' && SE.season) url += '&season=' + SE.season;
+    api(url).then(function (r) { SE.data = r; paint(r); })
+      .catch(function (e) {
+        var root = document.getElementById('seRoot');
+        if (root) root.innerHTML = '<div class="empty" style="padding:18px">加载失败：' +
+          esc((e && e.message) || e) + '</div>';
+      });
+  }
+
+  function bindOnce() {
+    var root = document.getElementById('seRoot');
+    if (!root || root.__seBound) return;
+    root.__seBound = true;
+
+    root.addEventListener('click', function (ev) {
+      var t = ev.target.closest('[data-se]');
+      if (!t) return;
+      var act = t.getAttribute('data-se');
+      if (act === 'mode') { SE.mode = 'current'; SE.season = null; reload(); return; }
+      if (act === 'new') {
+        var lb = prompt('新赛季名称（留空自动命名）', '');
+        if (lb === null) return;
+        apiPost({ op: 'new_season', name: lb }).then(function () {
+          SE.mode = 'current'; SE.season = null; reload(); toast('已新建赛季', 'ok');
+        }).catch(function (e) { toast((e && e.message) || '新建失败', 'bad'); });
+        return;
+      }
+      if (act === 'add') {
+        var lv = t.getAttribute('data-lv'), pid = t.getAttribute('data-pid');
+        var nm = prompt(lv === 'alliance' ? '联合体名称' : '小队名称', '');
+        if (!nm) return;
+        var body = { op: 'add', level: lv, parent: pid, name: nm };
+        if (lv === 'squad') { var ld = prompt('队长（可留空）', ''); if (ld) body.leader = ld; }
+        apiPost(body).then(reload).catch(function (e) { toast((e && e.message) || '新增失败', 'bad'); });
+        return;
+      }
+      if (act === 'ren') {
+        var n2 = prompt('新名称', t.getAttribute('data-name') || '');
+        if (!n2) return;
+        apiPost({ op: 'rename', level: t.getAttribute('data-lv'), id: t.getAttribute('data-id'), name: n2 })
+          .then(reload).catch(function (e) { toast((e && e.message) || '改名失败', 'bad'); });
+        return;
+      }
+      if (act === 'del') {
+        var nm3 = t.getAttribute('data-name') || '';
+        var lv3 = t.getAttribute('data-lv');
+        if (!confirm('确定删除「' + nm3 + '」？' + (lv3 === 'alliance' ? '其下小队会一并删除。' : ''))) return;
+        apiPost({ op: 'delete', level: lv3, id: t.getAttribute('data-id') }).then(reload)
+          .catch(function (e) { toast((e && e.message) || '删除失败', 'bad'); });
+      }
+    });
+
+    root.addEventListener('change', function (ev) {
+      if (ev.target && ev.target.id === 'seSel') {
+        var v = ev.target.value;
+        if (!v) { SE.mode = 'current'; SE.season = null; }
+        else { SE.mode = 'archive'; SE.season = v; }
+        reload();
+      }
+    });
+  }
+
+  window.renderSeason = function () {
+    if (!document.getElementById('seRoot')) return;
+    bindOnce();
+    reload();
+  };
+})();
+

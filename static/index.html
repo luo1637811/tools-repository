@@ -23,6 +23,7 @@
 <nav>
   <button data-tab="sim" data-perm="sim_view" class="on">舰船数据</button>
   <button data-tab="battle" data-perm="battle_view">战报分析</button>
+          <button data-tab="season" data-perm="data_view">星域编制</button>
   <button data-tab="data" data-perm="data_view">数据管理</button>
   <button data-tab="roster" data-perm="roster_view">人员查询</button>
   <button data-tab="rosterM" data-perm="roster_view">人员档案</button>
@@ -417,7 +418,15 @@
     <div class="muted" id="auditNote" style="margin-top:8px"></div>
   </div>
 </section>
-</main>
+        <section id="tab-season" data-perm="data_view" class="hide">
+          <div class="card">
+            <div class="cardh"><b>星域编制</b>
+              <span class="dim" style="margin-left:10px">星系（每赛季一个）→ 联合体 → 小队</span>
+            </div>
+            <div id="seRoot" style="margin-top:10px"><div class="dim">加载中…</div></div>
+          </div>
+        </section>
+      </main>
 
 <dialog id="entDlg"><form class="dlg" method="dialog" id="entForm">
   <h3 id="entTitle">编辑</h3>

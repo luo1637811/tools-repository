@@ -441,3 +441,13 @@ nav button.on::after{
 /* —— 选中行：左侧橙色标记条 —— */
 tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 
+
+/* ===== 星域编制 ===== */
+.sebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.segrow{flex:1 1 auto}
+.selsm{max-width:260px;height:30px;padding:0 8px;border-radius:8px;background:var(--panel2,#141a24);color:var(--ink,#e6edf7);border:1px solid var(--line,#2a3244)}
+.seG{border:1px solid var(--line,#2a3244);border-radius:12px;padding:12px;margin-bottom:12px;background:rgba(255,255,255,.02)}
+.seA{border-left:2px solid #38bdf8;margin:10px 0 0 10px;padding:8px 0 8px 12px}
+.seS{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 4px 16px;font-size:13px}
+.seH{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.seH b{font-size:14px}

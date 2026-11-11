@@ -444,10 +444,16 @@ def mask_text(v):
     return t
 
 
-def log(action, actor, target, detail=""):
-    with conn() as c:
-        c.execute("INSERT INTO audit(ts,actor,action,target,detail,kind) VALUES(?,?,?,?,?,?)",
-                  (now(), actor, action, mask_text(target), mask_text(detail), audit_kind(action)))
+def log(action, actor, target, detail="", c=None):
+    """写操作日志。c 传入已打开连接时复用，避免嵌套 with conn() 造成写锁自锁。"""
+    def _write(cc):
+        cc.execute("INSERT INTO audit(ts,actor,action,target,detail,kind) VALUES(?,?,?,?,?,?)",
+                   (now(), actor, action, mask_text(target), mask_text(detail), audit_kind(action)))
+    if c is not None:
+        _write(c)
+        return
+    with conn() as c2:
+        _write(c2)
 
 
 def audit_policy():
@@ -1275,6 +1281,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self.err(400, "bad json")
         try:
+            if path == "/api/season/op":
+                return self.season_op(data)
             if path == "/api/login":
                 return self.login(data)
             if path == "/api/version/publish":
@@ -2215,8 +2223,147 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+
+    # ================= 赛季编制：星系 → 联合体 → 小队 =================
+    def season_tree(self, q):
+        u = self.need_perm(("data_view",))
+        if not u:
+            return
+        mode = (q.get("mode") or ["current"])[0]
+        sid_raw = (q.get("season") or [""])[0]
+        with conn() as c:
+            seasons = [dict(r) for r in c.execute(
+                "SELECT * FROM seasons ORDER BY is_current DESC, id DESC")]
+            cur = next((s for s in seasons if s.get("is_current")), None)
+            if mode == "all":
+                target = None
+            elif mode == "archive":
+                if sid_raw.isdigit():
+                    target = int(sid_raw)
+                elif len(seasons) > 1:
+                    target = seasons[1]["id"]
+                else:
+                    target = None
+            else:
+                target = (cur or {}).get("id")
+            out = {"ok": True, "mode": mode, "current": cur,
+                   "seasons": seasons, "target": target, "galaxies": []}
+            if target is None:
+                return self.send_json(out)
+            gs = []
+            for r in c.execute("SELECT * FROM galaxies WHERE season=? ORDER BY ord, id", (target,)):
+                g = dict(r)
+                g["alliances"] = []
+                for ar in c.execute("SELECT * FROM alliances WHERE galaxy=? ORDER BY ord, id", (g["id"],)):
+                    a = dict(ar)
+                    a["squads"] = [dict(x) for x in c.execute(
+                        "SELECT * FROM squads WHERE alliance=? ORDER BY ord, id", (a["id"],))]
+                    g["alliances"].append(a)
+                gs.append(g)
+            out["galaxies"] = gs
+        return self.send_json(out)
+
+    def season_op(self, data):
+        u = self.need_perm(("data_edit",))
+        if not u:
+            return
+        op = (data.get("op") or "").strip()
+        lv = (data.get("level") or "").strip()
+        name = (data.get("name") or "").strip()
+        note = (data.get("note") or "").strip()
+        leader = (data.get("leader") or "").strip()
+        rid = data.get("id")
+        parent = data.get("parent")
+
+        def _int(v):
+            try:
+                return int(v)
+            except Exception:
+                return None
+
+        with conn() as c:
+            _srv_log = globals()["log"]
+
+            def log(*a, **k):
+                # 复用当前事务连接，避免二次连接等待写锁
+                return _srv_log(*a, c=c, **k)
+
+            if op == "new_season":
+                n = c.execute("SELECT COUNT(*) FROM seasons").fetchone()[0]
+                label = name or ("第 %d 赛季" % (n + 1))
+                c.execute("UPDATE seasons SET is_current=0, ended_at=COALESCE(ended_at, ?) WHERE is_current=1", (now(),))
+                c.execute("INSERT INTO seasons(label, started_at, is_current) VALUES(?,?,1)", (label, now()))
+                sid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+                c.execute("INSERT INTO galaxies(season, name, ord) VALUES(?,?,0)", (sid, note or "主星系"))
+                log("新建赛季", u["username"], label, "id=%d" % sid)
+                return self.send_json({"ok": True, "season": sid, "label": label})
+            if op == "activate":
+                sid = _int(rid)
+                if not sid:
+                    return self.err(400, "缺少赛季 id")
+                c.execute("UPDATE seasons SET is_current=0 WHERE is_current=1")
+                c.execute("UPDATE seasons SET is_current=1, ended_at=NULL WHERE id=?", (sid,))
+                log("切换当前赛季", u["username"], "id=%d" % sid, "")
+                return self.send_json({"ok": True})
+
+            TBL = {"galaxy": ("galaxies", "season"),
+                   "alliance": ("alliances", "galaxy"),
+                   "squad": ("squads", "alliance")}
+            if lv not in TBL:
+                return self.err(400, "未知层级")
+            tbl, fk = TBL[lv]
+            if op == "add":
+                if not name:
+                    return self.err(400, "名称不能为空")
+                pid = _int(parent)
+                if not pid:
+                    return self.err(400, "缺少上级")
+                if lv == "galaxy":
+                    if c.execute("SELECT COUNT(*) FROM galaxies WHERE season=?", (pid,)).fetchone()[0] >= 1:
+                        return self.err(409, "一个赛季只能有一个星系")
+                ordv = c.execute("SELECT COALESCE(MAX(ord),0)+1 FROM %s WHERE %s=?" % (tbl, fk), (pid,)).fetchone()[0]
+                if lv == "squad":
+                    c.execute("INSERT INTO squads(alliance, name, leader, note, ord) VALUES(?,?,?,?,?)",
+                              (pid, name, leader, note, ordv))
+                else:
+                    c.execute("INSERT INTO %s(%s, name, note, ord) VALUES(?,?,?,?)" % (tbl, fk),
+                              (pid, name, note, ordv))
+                log("新增" + {"galaxy": "星系", "alliance": "联合体", "squad": "小队"}[lv],
+                    u["username"], name, "")
+                return self.send_json({"ok": True})
+            if op in ("rename", "note"):
+                rid2 = _int(rid)
+                if not rid2:
+                    return self.err(400, "缺少 id")
+                if op == "rename":
+                    if not name:
+                        return self.err(400, "名称不能为空")
+                    c.execute("UPDATE %s SET name=? WHERE id=?" % tbl, (name, rid2))
+                else:
+                    c.execute("UPDATE %s SET note=? WHERE id=?" % tbl, (note, rid2))
+                log("修改" + ("名称" if op == "rename" else "备注"), u["username"],
+                    "%s#%d" % (tbl, rid2), name or note)
+                return self.send_json({"ok": True})
+            if op == "delete":
+                rid2 = _int(rid)
+                if not rid2:
+                    return self.err(400, "缺少 id")
+                if lv == "galaxy":
+                    for a in c.execute("SELECT id FROM alliances WHERE galaxy=?", (rid2,)).fetchall():
+                        c.execute("DELETE FROM squads WHERE alliance=?", (a[0],))
+                    c.execute("DELETE FROM alliances WHERE galaxy=?", (rid2,))
+                elif lv == "alliance":
+                    c.execute("DELETE FROM squads WHERE alliance=?", (rid2,))
+                c.execute("DELETE FROM %s WHERE id=?" % tbl, (rid2,))
+                log("删除" + {"galaxy": "星系", "alliance": "联合体", "squad": "小队"}[lv],
+                    u["username"], "id=%d" % rid2, "")
+                return self.send_json({"ok": True})
+        return self.err(400, "未知操作：%s" % op)
+
     def api_get(self, path):
         q = parse_qs(urlparse(self.path).query)
+        if path == "/api/season/tree":
+            return self.season_tree(q)
         if path == "/api/files/list":
             return self.files_list()
         if path == "/api/files/get":
