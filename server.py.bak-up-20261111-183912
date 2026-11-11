@@ -1,0 +1,2742 @@
+# -*- coding: utf-8 -*-
+"""舰船蓝图 / 加点树 / 搭载系统 / 人员信息 —— 原型 v0.3
+
+v0.3 变化：
+  * 舰船拆成「多个系统」（载机/火炮/装甲/动力/能源/指挥/无人机/导弹…），
+    每个系统有自己的加点树与技术值上限；
+  * 只有「超大型」舰船能装模块，大型/小型不管格；
+  * 舰载机 = 舰载机蓝图 + 母舰蓝图 两两组合；
+  * 新增数据管理接口（舰船/系统/加点/模块/舰载机 的增删改）+ 整库导入导出。
+
+零依赖：Python 标准库 http.server + sqlite3。
+启动： python server.py [端口]   默认 8787
+"""
+
+import gzip
+import hashlib
+import io
+import json
+import logging
+import os
+import queue
+import re
+import secrets
+import ssl
+import sqlite3
+import sys
+import threading
+import time
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
+from urllib.parse import urlparse, parse_qs, unquote
+
+from db import BASE, DATA_DIR, DB_PATH, FROZEN, RES_DIR, conn
+from schema import SCHEMA, EFFECTS_SEED, EFFECTS_CANON, ATTRS_SEED, SHIPS, SYSTEMS, NODES, MODULES, PLANES, USERS
+from util import j, num
+from engine import GROUP_RANK, _group_ok, _normalize_ship, simulate
+
+STATIC = os.path.join(RES_DIR, "static")
+HOST = os.environ.get("FT_HOST") or "127.0.0.1"
+PORT = (int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit()
+        else int(os.environ.get("PORT") or os.environ.get("FT_PORT") or 8787))
+VERSION = "1.4.0"
+SCHEMA_VERSION = 2              # 数据库结构版本，写在 PRAGMA user_version 里
+SESSION_HOURS = 12
+
+# ---- 操作日志治理：热库保留 N 天 / 上限 M 条，超出的先归档再删 ----
+LOG_DIR = os.path.join(DATA_DIR, "logs")
+AUDIT_DAYS_DEFAULT = 180
+AUDIT_MAX_DEFAULT = 200000
+MH_DAYS_DEFAULT = 365          # 人员变更轨迹保留天数（__init__ 基线永久保留）
+TICKET_TTL = 60                # SSE 一次性 ticket 有效期（秒）
+_TICKETS = {}
+_TLOCK = threading.Lock()
+
+
+def issue_ticket(username):
+    tk = secrets.token_urlsafe(18)
+    with _TLOCK:
+        now_ts = time.time()
+        for k in [k for k, v in _TICKETS.items() if v[1] < now_ts]:
+            _TICKETS.pop(k, None)
+        _TICKETS[tk] = (username, now_ts + TICKET_TTL)
+    return tk
+
+
+def use_ticket(tk):
+    """一次性：取出即删；过期或不存在返回 None"""
+    if not tk:
+        return None
+    with _TLOCK:
+        v = _TICKETS.pop(tk, None)
+    if not v or v[1] < time.time():
+        return None
+    return v[0]
+STARTED_AT = time.time()
+
+# ---- 空闲自动退出：页面上连接都断了，过一会儿进程自己停 ----
+IDLE_EXIT = os.environ.get("FT_IDLE_EXIT", "1") != "0"
+IDLE_SEC = max(15, int(os.environ.get("FT_IDLE_SEC") or 86400))
+_last_seen = [time.time()]
+_live = [0]
+_alock = threading.Lock()
+
+
+def touch():
+    _last_seen[0] = time.time()
+
+
+def live_add(n):
+    with _alock:
+        _live[0] = max(0, _live[0] + n)
+    touch()
+
+
+def idle_watchdog():
+    while True:
+        time.sleep(2)
+        with _alock:
+            live = _live[0]
+        if live == 0 and (time.time() - _last_seen[0]) > IDLE_SEC:
+            print("")
+            print("[自动退出] 已经 %d 秒没有页面连接，服务停止。" % IDLE_SEC)
+            print("           下次双击 start.cmd 即可重新打开。")
+            sys.stdout.flush()
+            os._exit(0)
+
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def hash_pwd(pwd, salt=None):
+    salt = salt or secrets.token_hex(8)
+    return salt + "$" + hashlib.pbkdf2_hmac("sha256", pwd.encode(), salt.encode(), 120000).hex()
+
+
+def check_pwd(pwd, stored):
+    try:
+        salt = stored.split("$", 1)[0]
+    except (AttributeError, ValueError):
+        return False
+    return hash_pwd(pwd, salt) == stored
+
+
+def init_db():
+    fresh = not os.path.exists(DB_PATH)
+    with conn() as c:
+        c.executescript(SCHEMA)
+        c.execute("""CREATE TABLE IF NOT EXISTS signups(
+            username TEXT PRIMARY KEY, pwd TEXT, uid TEXT, name TEXT, org TEXT,
+            addr TEXT, contact TEXT, code TEXT, exp INTEGER, ts TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS battles(
+            id TEXT PRIMARY KEY, date TEXT, opponent TEXT, mode TEXT, duration TEXT,
+            note TEXT, created_at TEXT)"""
+        )
+        c.execute("""CREATE TABLE IF NOT EXISTS battle_rows(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, battle TEXT, side TEXT, ship TEXT, config TEXT,
+            qty INTEGER DEFAULT 0, dmg_struct REAL DEFAULT 0, dmg_sys REAL DEFAULT 0,
+            dmg_air REAL DEFAULT 0, repair REAL DEFAULT 0, taken REAL DEFAULT 0,
+            alive TEXT, note TEXT, fleet TEXT, alive_n INTEGER)"""
+        )
+        cols = [r[1] for r in c.execute("PRAGMA table_info(battle_rows)")]
+        if "fleet" not in cols:
+            c.execute("ALTER TABLE battle_rows ADD COLUMN fleet TEXT")
+        if "alive_n" not in cols:
+            c.execute("ALTER TABLE battle_rows ADD COLUMN alive_n INTEGER")
+            # 老数据迁移：alive='是' → 存活数 = 数量；'否' → 0
+            c.execute("UPDATE battle_rows SET alive_n = CASE WHEN alive='是' THEN IFNULL(qty,0) ELSE 0 END")
+        ucols = [r[1] for r in c.execute("PRAGMA table_info(users)")]
+        for _c, _t in (("scope", "TEXT DEFAULT 'all'"), ("org", "TEXT"),
+                       ("perm_expire_at", "TEXT"), ("alliance", "TEXT"),
+                       ("must_change", "INTEGER DEFAULT 0"), ("pwd_changed_at", "TEXT")):
+            if _c not in ucols:
+                c.execute("ALTER TABLE users ADD COLUMN %s %s" % (_c, _t))
+        c.execute("""CREATE TABLE IF NOT EXISTS members(
+            id TEXT PRIMARY KEY, name TEXT, org TEXT, faction TEXT, alliance TEXT, squad TEXT,
+            phone TEXT, wechat TEXT, qq TEXT, links TEXT, rating TEXT, updated_at TEXT, note TEXT)"""
+        )
+        # 人员变更轨迹：一行 = 一个字段的一次变化；batch 相同的行属于同一次保存
+        c.execute("""CREATE TABLE IF NOT EXISTS member_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, member_id TEXT, batch TEXT, field TEXT,
+            old_val TEXT, new_val TEXT, actor TEXT, ts TEXT, masked INTEGER DEFAULT 0)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_mh_member ON member_history(member_id, ts DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_mh_field ON member_history(field, ts DESC)")
+        c.execute("""CREATE TABLE IF NOT EXISTS pwd_requests(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT,
+            reason TEXT, status TEXT, created_at TEXT, handled_at TEXT, handled_by TEXT, note TEXT)"""
+        )
+        c.execute("""CREATE TABLE IF NOT EXISTS send_log(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, contact TEXT, un TEXT, ts INTEGER)""")
+
+        for _tbl, _col, _ddl in [
+            ("systems", "no_nodes", "INTEGER DEFAULT 0"),
+            ("nodes", "costs", "TEXT"),
+            ("nodes", "checked_at", "TEXT"), ("nodes", "checked_by", "TEXT"),
+            ("modules", "bays", "TEXT"), ("systems", "bays", "TEXT"), ("modules", "sys", "TEXT"),
+            ("ships", "kind", "TEXT"),
+    ("ships", "pgroup", "TEXT"),
+            ("users", "perms", "TEXT"), ("users", "uid", "TEXT"),
+            ("users", "org", "TEXT"), ("users", "addr", "TEXT"),
+            ("users", "verified", "INTEGER DEFAULT 0"),
+            ("users", "must_change", "INTEGER DEFAULT 0"),
+            ("users", "pwd_changed_at", "TEXT"),
+            ("users", "scope", "TEXT DEFAULT 'all'"),
+            ("users", "perm_expire_at", "TEXT"),
+            ("battles", "owner", "TEXT"),
+            ("members", "alliance", "TEXT"), ("members", "squad", "TEXT"),
+            ("sessions", "csrf", "TEXT"),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_ddl}")
+            except sqlite3.OperationalError:
+                pass
+        c.execute("""CREATE TABLE IF NOT EXISTS perm_templates(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, cn TEXT, perms TEXT,
+            scope TEXT, builtin INTEGER DEFAULT 0, created_at TEXT)""")
+        # 人员轨迹基线：首次升级时给存量档案各写一条 __init__，之后只记增量
+        _seeded = c.execute("SELECT v FROM settings WHERE k='mh_init'").fetchone()
+        if not _seeded:
+            _ts0 = now()
+            _rows = [(r["id"], "init", "__init__", "", r["name"] or "", "system", _ts0)
+                     for r in c.execute("SELECT id, name FROM members").fetchall()]
+            c.executemany(
+                "INSERT INTO member_history(member_id,batch,field,old_val,new_val,actor,ts,masked)"
+                " VALUES(?,?,?,?,?,?,?,0)", _rows)
+            c.execute("INSERT INTO settings(k,v) VALUES('mh_init',?)"
+                      " ON CONFLICT(k) DO UPDATE SET v=excluded.v", (_ts0,))
+        # 内置模板「缺什么补什么」：新增内置模板后老库也能拿到，且不会覆盖用户改过的名称
+        for _n, _cn, _pm, _sc in TEMPLATE_SEED:
+            c.execute("INSERT INTO perm_templates(name,cn,perms,scope,builtin,created_at)"
+                      " VALUES(?,?,?,?,1,?) ON CONFLICT(name) DO UPDATE SET"
+                      " cn=excluded.cn, perms=excluded.perms, scope=excluded.scope, builtin=1",
+                      (_n, _cn, ",".join(_pm), _sc, now()))
+        # 老权限键（sim/data/people/audit/roster）升级为新键，避免升级后权限丢失
+        for _r in c.execute("SELECT id, perms FROM users").fetchall():
+            _old = _r["perms"] or ""
+            _new = ",".join(parse_perms(_old)) if _old else ""
+            if _new and _new != _old:
+                c.execute("UPDATE users SET perms=? WHERE id=?", (_new, _r["id"]))
+
+        if "kind" not in [r[1] for r in c.execute("PRAGMA table_info(audit)")]:
+            c.execute("ALTER TABLE audit ADD COLUMN kind TEXT")
+            for _r in c.execute("SELECT id, action FROM audit").fetchall():
+                c.execute("UPDATE audit SET kind=? WHERE id=?",
+                          (audit_kind(_r["action"]), _r["id"]))
+        c.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_audit_kind ON audit(kind)")
+        for _k, _v in (("audit_days", str(AUDIT_DAYS_DEFAULT)),
+                       ("audit_max", str(AUDIT_MAX_DEFAULT)),
+                       ("mh_days", str(MH_DAYS_DEFAULT))):
+            c.execute("INSERT OR IGNORE INTO settings(k,v) VALUES(?,?)", (_k, _v))
+        c.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+
+        # 节点效果统一口径：补齐缺的、纠正中英文名（其它老效果留在库里，不再出现在下拉里）
+        c.executemany("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                      [(i, n, u, "") for i, n, u in EFFECTS_CANON])
+        c.executemany("UPDATE effects SET name=?, unit=? WHERE id=?",
+                      [(n, u, i) for i, n, u in EFFECTS_CANON])
+        if c.execute("SELECT COUNT(*) FROM effects").fetchone()[0] == 0:
+            c.executemany("INSERT OR REPLACE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                          [(i, n, u, note) for i, n, u, note in EFFECTS_SEED])
+        if c.execute("SELECT COUNT(*) FROM attrs").fetchone()[0] == 0:
+            c.executemany("INSERT OR REPLACE INTO attrs(id,name,unit,note,ord) VALUES(?,?,?,?,?)",
+                          [(a[0], a[1], a[2], a[3], i) for i, a in enumerate(ATTRS_SEED)])
+        if fresh or c.execute("SELECT COUNT(*) FROM ships").fetchone()[0] == 0:
+            c.executemany("INSERT OR REPLACE INTO ships(id,name,cls,tech_total,base,note) VALUES(?,?,?,?,?,?)",
+                          [(i, n, k, t, json.dumps(b), note)
+                           for i, n, k, _s, t, b, note in SHIPS])
+            c.executemany("INSERT OR REPLACE INTO systems(id,ship,slot,name,tech_cap,stats,note,ord) VALUES(?,?,?,?,?,?,?,?)",
+                          [(i, sh, sl, n, cap, json.dumps(st), note, o)
+                           for i, sh, sl, n, cap, st, note, o in SYSTEMS])
+            c.executemany("INSERT OR REPLACE INTO nodes(id,sys,parent,label,max_lv,cost,effect,note) VALUES(?,?,?,?,?,?,?,?)",
+                          [(i, sy, p, l, m, cst, json.dumps(e), note)
+                           for i, sy, p, l, m, cst, e, note in NODES])
+            c.executemany("INSERT OR REPLACE INTO modules(id,ship,slot,name,mkind,cap,allow_group,bonus,stats,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                          [(i, sh, sl, n, mk, cap, ag, json.dumps(b), json.dumps(st), note)
+                           for i, sh, sl, n, mk, cap, ag, b, st, note in MODULES])
+            for mid, mk, cap, ag in c.execute(
+                    "SELECT id, mkind, cap, allow_group FROM modules").fetchall():
+                if mid == "mod_cv_air":
+                    bays = [{"kind": "战机", "cap": 5, "allow_group": ""},
+                            {"kind": "护航艇", "cap": 3, "allow_group": ""}]
+                elif mk:
+                    bays = [{"kind": mk.replace("搭载系统", ""), "cap": cap or 0,
+                             "allow_group": ag or ""}]
+                else:
+                    bays = []
+                c.execute("UPDATE modules SET bays=? WHERE id=?",
+                          (json.dumps(bays, ensure_ascii=False), mid))
+            c.executemany("INSERT OR REPLACE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                          [(i, n, u, note) for i, n, u, note in EFFECTS_SEED])
+            c.executemany("INSERT OR REPLACE INTO planes VALUES(?,?,?,?,?,?,?)",
+                          [(i, n, k, g, per, json.dumps(b), note)
+                           for i, n, k, g, per, b, note in PLANES])
+            c.execute("INSERT OR REPLACE INTO meta VALUES('version', 1)")
+        if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            ts = now()
+            c.executemany(
+                "INSERT INTO users(username,pwd,role,name,squadron,phone,status,note,"
+                "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [(u, hash_pwd(p), r, n, sq, ph, st, nt, ts, ts)
+                 for u, p, r, n, sq, ph, st, nt in USERS])
+
+
+class SSEHub:
+
+    def __init__(self):
+        self.clients = []
+        self.lock = threading.Lock()
+
+    def add(self):
+        q = queue.Queue(maxsize=16)
+        with self.lock:
+            self.clients.append(q)
+        return q
+
+    def drop(self, q):
+        with self.lock:
+            if q in self.clients:
+                self.clients.remove(q)
+
+    def count(self):
+        with self.lock:
+            return len(self.clients)
+
+    def publish(self, v):
+        with self.lock:
+            for q in list(self.clients):
+                try:
+                    q.put_nowait(v)
+                except queue.Full:
+                    pass
+
+
+SSE = SSEHub()
+
+# ---- 100 人规模相关开关（都可用环境变量覆盖） ----
+SSE_MAX_CLIENTS = int(os.environ.get("FT_SSE_MAX") or 300)   # 同时在线的实时连接上限
+ALLOW_SIGNUP = (os.environ.get("FT_ALLOW_SIGNUP", "1") != "0")  # 是否开放自助注册
+SIGNUP_CODE = (os.environ.get("FT_SIGNUP_CODE") or "").strip()  # 非空则注册必须填邀请码
+
+def _setting(k, default=""):
+    try:
+        with conn() as c:
+            r = c.execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
+            return (r["v"] if r and r["v"] is not None else default)
+    except Exception:
+        return default
+
+
+def _set_setting(k, v):
+    v = "" if v is None else str(v)
+    with conn() as c:
+        cur = c.execute("UPDATE settings SET v=? WHERE k=?", (v, k))
+        if cur.rowcount == 0:
+            c.execute("INSERT INTO settings(k,v) VALUES(?,?)", (k, v))
+
+
+def signup_code():
+    """邀请码：库里的 settings.signup_code 优先，其次环境变量 FT_SIGNUP_CODE。"""
+    v = (_setting("signup_code", "") or "").strip()
+    return v or SIGNUP_CODE
+
+
+def signup_allow():
+    """自助注册开关：settings.signup_allow(0/1) 优先，其次环境变量 FT_ALLOW_SIGNUP。"""
+    v = (_setting("signup_allow", "") or "").strip()
+    if v in ("0", "1"):
+        return v == "1"
+    return ALLOW_SIGNUP
+
+
+def gen_invite_code():
+    import secrets as _s
+    a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return ("LGLR-" + "".join(_s.choice(a) for _ in range(4))
+            + "-" + "".join(_s.choice(a) for _ in range(4)))
+
+
+_STATIC_CACHE = {}          # (path, mtime_ns, size) -> (raw, gz)
+
+
+def static_bytes(fp):
+    """读静态文件并按内容缓存 gzip 版本，避免 100 人重复压缩。"""
+    st = os.stat(fp)
+    key = (fp, st.st_mtime_ns, st.st_size)
+    hit = _STATIC_CACHE.get(key)
+    if hit:
+        return hit
+    with open(fp, "rb") as f:
+        raw = f.read()
+    val = (raw, gzip.compress(raw, 6))
+    if len(_STATIC_CACHE) > 32:
+        _STATIC_CACHE.clear()
+    _STATIC_CACHE[key] = val
+    return val
+
+
+def get_version():
+    with conn() as c:
+        r = c.execute("SELECT v FROM meta WHERE k='version'").fetchone()
+    return r["v"] if r else 0
+
+
+def bump_version():
+    with conn() as c:
+        c.execute("UPDATE meta SET v=v+1 WHERE k='version'")
+    SSE.publish(get_version())
+
+
+def _meta(c, k, default=None):
+    r = c.execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+    return r["v"] if r else default
+
+
+def pub_info():
+    """对外版本：超级管理员手动发布；pub_num 记录发布时的内部计数器。"""
+    with conn() as c:
+        return {
+            "version": int(_meta(c, "version", 0) or 0),
+            "label": (_meta(c, "pub_ver", "") or ""),
+            "num": int(_meta(c, "pub_num", 0) or 0),
+            "at": (_meta(c, "pub_at", "") or ""),
+            "by": (_meta(c, "pub_by", "") or ""),
+            "note": (_meta(c, "pub_note", "") or ""),
+        }
+
+
+def audit_kind(action):
+    """把动作归到四类，方便按类型筛选与统计。"""
+    a = action or ""
+    if a in ("登录", "退出", "登录失败"):
+        return "访问"
+    if a.startswith(("新增", "修改", "删除", "保存", "导入", "清零", "改")):
+        return "数据"
+    if ("密码" in a) or ("人员" in a) or ("模板" in a) or ("标题" in a):
+        return "管理"
+    return "系统"
+
+
+RE_PHONE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+RE_EMAIL = re.compile(r"([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*(@[A-Za-z0-9.-]+)")
+
+
+def mask_text(v):
+    """日志里的手机号/邮箱脱敏，避免审计表本身成为隐私泄漏点"""
+    t = str(v or "")
+    if not t:
+        return ""
+    t = RE_PHONE.sub(lambda m: m.group(0)[:3] + "****" + m.group(0)[-4:], t)
+    t = RE_EMAIL.sub(lambda m: m.group(1) + "***" + m.group(2), t)
+    return t
+
+
+def log(action, actor, target, detail=""):
+    with conn() as c:
+        c.execute("INSERT INTO audit(ts,actor,action,target,detail,kind) VALUES(?,?,?,?,?,?)",
+                  (now(), actor, action, mask_text(target), mask_text(detail), audit_kind(action)))
+
+
+def audit_policy():
+    with conn() as c:
+        rows = {r["k"]: r["v"] for r in c.execute(
+            "SELECT k,v FROM settings WHERE k IN ('audit_days','audit_max')")}
+    try:
+        days = max(1, int(rows.get("audit_days") or AUDIT_DAYS_DEFAULT))
+    except ValueError:
+        days = AUDIT_DAYS_DEFAULT
+    try:
+        cap = max(100, int(rows.get("audit_max") or AUDIT_MAX_DEFAULT))
+    except ValueError:
+        cap = AUDIT_MAX_DEFAULT
+    return days, cap
+
+
+def audit_archives(limit=12):
+    if not os.path.isdir(LOG_DIR):
+        return []
+    out = []
+    for n in sorted(os.listdir(LOG_DIR), reverse=True):
+        if n.startswith("audit-") and n.endswith(".jsonl"):
+            p = os.path.join(LOG_DIR, n)
+            out.append({"name": n, "kb": round(os.path.getsize(p) / 1024.0, 1)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def audit_stats():
+    with conn() as c:
+        total = c.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+        first = c.execute("SELECT ts FROM audit ORDER BY id LIMIT 1").fetchone()
+        last = c.execute("SELECT ts FROM audit ORDER BY id DESC LIMIT 1").fetchone()
+        per_day = [dict(r) for r in c.execute(
+            "SELECT substr(ts,1,10) d, COUNT(*) n FROM audit GROUP BY d ORDER BY d DESC LIMIT 14")]
+        kinds = [dict(r) for r in c.execute(
+            "SELECT IFNULL(kind,'') k, COUNT(*) n FROM audit GROUP BY k ORDER BY n DESC")]
+    days, cap = audit_policy()
+    try:
+        db_kb = round(os.path.getsize(DB_PATH) / 1024.0, 1)
+    except OSError:
+        db_kb = 0
+    return {"total": total, "oldest": (first["ts"] if first else ""),
+            "newest": (last["ts"] if last else ""), "per_day": per_day, "kinds": kinds,
+            "days": days, "max": cap, "archives": audit_archives(), "db_kb": db_kb,
+            "version": VERSION, "schema": SCHEMA_VERSION, "log_dir": LOG_DIR}
+
+
+def audit_archive(rows):
+    """按月份追加写入 logs/audit-YYYYMM.jsonl，返回写过的文件列表。"""
+    if not rows:
+        return []
+    os.makedirs(LOG_DIR, exist_ok=True)
+    buckets = {}
+    for r in rows:
+        m = (r.get("ts") or "")[:7].replace("-", "") or "unknown"
+        buckets.setdefault(m, []).append(r)
+    written = []
+    for m, items in buckets.items():
+        p = os.path.join(LOG_DIR, "audit-%s.jsonl" % m)
+        with io.open(p, "a", encoding="utf-8", newline="\n") as fh:
+            for r in items:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+        written.append(p)
+    return written
+
+
+def prune_audit(days=None, max_rows=None, archive=True, actor="system"):
+    """按「天数 + 条数上限」清理，先归档再删；删完写一条系统日志。"""
+    d_days, d_cap = audit_policy()
+    days = int(days or d_days)
+    cap = int(max_rows or d_cap)
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    with conn() as c:
+        old = [dict(r) for r in c.execute(
+            "SELECT * FROM audit WHERE ts < ? ORDER BY id", (cutoff,))]
+        total = c.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+        rest = total - len(old)
+        extra = []
+        if rest > cap:
+            extra = [dict(r) for r in c.execute(
+                "SELECT * FROM audit WHERE ts >= ? ORDER BY id LIMIT ?", (cutoff, rest - cap))]
+    rows = old + extra
+    if not rows:
+        return {"ok": True, "deleted": 0, "kept": total, "days": days, "max": cap,
+                "archives": [], "reason": "都在保留范围内"}
+    files = audit_archive(rows) if archive else []
+    with conn() as c:
+        c.executemany("DELETE FROM audit WHERE id=?", [(r["id"],) for r in rows])
+    log("归档清理日志", actor, "audit",
+        "删除 %d 条（早于 %s 的 %d 条 + 超出上限 %d 条）；保留 %d 天 / 上限 %d；归档 %s"
+        % (len(rows), cutoff[:10], len(old), len(extra), days, cap,
+           "、".join(os.path.basename(x) for x in files) or "未归档"))
+    return {"ok": True, "deleted": len(rows), "kept": total - len(rows), "days": days,
+            "max": cap, "archives": [os.path.basename(x) for x in files], "reason": ""}
+
+
+def mh_policy():
+    with conn() as c:
+        r = c.execute("SELECT v FROM settings WHERE k='mh_days'").fetchone()
+    try:
+        return max(0, int((r["v"] if r else "") or MH_DAYS_DEFAULT))
+    except ValueError:
+        return MH_DAYS_DEFAULT
+
+
+def prune_member_history(days=None, archive=True):
+    """按保留期清人员轨迹；__init__ 基线永久保留。删除前按月归档。"""
+    d = mh_policy() if days is None else max(0, int(days))
+    if d <= 0:
+        return {"kept": True, "deleted": 0, "days": 0, "archives": []}
+    cut = (datetime.now() - timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
+    with conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM member_history WHERE ts<? AND IFNULL(field,'')<>'__init__'", (cut,))]
+    if not rows:
+        return {"deleted": 0, "days": d, "archives": []}
+    files = []
+    if archive:
+        by_month = {}
+        for r in rows:
+            by_month.setdefault(str(r.get("ts") or "")[:7] or "unknown", []).append(r)
+        if not os.path.isdir(LOG_DIR):
+            os.makedirs(LOG_DIR, exist_ok=True)
+        for ym, items in by_month.items():
+            fp = os.path.join(LOG_DIR, "member_history-%s.jsonl" % ym)
+            with io.open(fp, "a", encoding="utf-8", newline="\n") as f:
+                for it in items:
+                    f.write(json.dumps(it, ensure_ascii=False) + "\n")
+            files.append(os.path.basename(fp))
+    with conn() as c:
+        c.execute("DELETE FROM member_history WHERE ts<? AND IFNULL(field,'')<>'__init__'", (cut,))
+    log("归档清理人员轨迹", "system", "member_history",
+        "删除 %d 条（早于 %s）" % (len(rows), cut[:10]))
+    return {"deleted": len(rows), "days": d, "archives": files}
+
+
+def audit_janitor():
+    while True:
+        time.sleep(6 * 3600)
+        try:
+            prune_audit(actor="system")
+        except Exception as e:
+            print("[日志治理] 自动清理失败：%s" % e)
+        try:
+            r = prune_member_history()
+            if r.get("deleted"):
+                print("[日志治理] 人员轨迹清理 %d 条" % r["deleted"])
+        except Exception as e:
+            print("[日志治理] 人员轨迹清理失败：%s" % e)
+
+
+MH_PII = ("phone", "wechat", "qq")
+
+
+def mh_mask(v):
+    """隐私字段的展示值：138****34 / wx_****01"""
+    t = str(v or "")
+    if not t:
+        return ""
+    return (t[:3] + "****" + t[-2:]) if len(t) >= 5 else "***"
+
+
+def mh_add(c, mid, batch, field, old, new, actor, ts=None):
+    """写一条字段级变更；隐私字段只标记 masked，不存打码值（读的时候再打码）"""
+    c.execute("INSERT INTO member_history(member_id,batch,field,old_val,new_val,actor,ts,masked)"
+              " VALUES(?,?,?,?,?,?,?,?)",
+              (str(mid), batch, field, str(old if old is not None else ""),
+               str(new if new is not None else ""), actor, ts or now(),
+               1 if field in MH_PII else 0))
+
+
+def mh_batch(mid, ts):
+    return "%s-%s" % (ts.replace("-", "").replace(":", "").replace(" ", ""), mid)
+
+
+def diff_keys(old, new):
+    """比较「原行」与「要写的字段」，返回真正发生变化的键。
+
+    - 只比较 new 里出现的键（前端只提交改过的列）；
+    - 数字按数值比（0 / 0.0 / "0" 视为相同），其余按字符串比；
+    - old 为 None（新增）时返回全部键。
+    """
+    if old is None:
+        return list(new.keys())
+    out = []
+    for k, b in new.items():
+        a = old[k] if k in old.keys() else None
+        if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+            try:
+                if float(a or 0) == float(b or 0):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        if str(a if a is not None else "") != str(b if b is not None else ""):
+            out.append(k)
+    return out
+
+
+def load_bundle():
+    """一次性把蓝图/系统/加点/模块/舰载机读出来。"""
+    with conn() as c:
+        ships = [dict(r, base=j(r["base"])) for r in c.execute("SELECT * FROM ships")]
+        for _s in ships:
+            _s["size"] = ship_size(_s.get("kind"), _s.get("cls"))
+        systems = []
+        for r in c.execute("SELECT * FROM systems ORDER BY ship, ord"):
+            d = dict(r)
+            d["stats"] = j(d.get("stats"))
+            d["bays"] = j(d.get("bays")) or []
+            _norm = j(d.get("stats_norm"))
+            d["norm"] = _norm if isinstance(_norm, dict) else {}
+            systems.append(d)
+        
+        nodes = []
+        for r in c.execute("SELECT * FROM nodes ORDER BY sys, cost DESC"):
+            d = dict(r)
+            d["effect"] = j(d.get("effect"))
+            d["costs"] = j(d.get("costs")) or []
+            nodes.append(d)
+        modules = []
+        for r in c.execute("SELECT * FROM modules ORDER BY ship, slot"):
+            d = dict(r)
+            d["bonus"] = j(d.get("bonus"))
+            d["stats"] = j(d.get("stats"))
+            d["bays"] = j(d.get("bays"))
+            modules.append(d)
+        planes = [dict(r, base=j(r["base"]))
+                  for r in c.execute("SELECT * FROM planes ORDER BY kind, id")]
+        groups = [dict(r) for r in c.execute("SELECT * FROM groups ORDER BY per_unit DESC, id")]
+    for s in ships:
+        s["systems"] = [x for x in systems if x["ship"] == s["id"]]
+        s["modules"] = [x for x in modules if x["ship"] == s["id"]]
+        for m in s["modules"]:
+            b = m.get("bays")
+            if isinstance(b, dict):
+                b = [b]
+            if not isinstance(b, list):
+                b = []
+            if not b and (m.get("mkind") or ""):
+                b = [{"kind": (m["mkind"] or "").replace("搭载系统", ""),
+                      "cap": m.get("cap") or 0,
+                      "allow_group": m.get("allow_group") or ""}]
+            m["bays"] = [x for x in b if isinstance(x, dict) and (x.get("kind") or x.get("cap"))]
+        for sy in s["systems"]:
+            sy["nodes"] = [x for x in nodes if x["sys"] == sy["id"]]
+        _kind = s.get("kind") or ("超主力舰" if (s.get("cls") or "") in ("航空母舰", "战列巡洋舰") else "")
+        # 超主力舰全部可装模块；主力舰里巡洋舰/驱逐舰也能带舱位（同一套模块/舱位机制）
+        s["mod_ok"] = _kind == "超主力舰"   # 只有超主力舰能装模块/舱位（与前端 canMod 一致）
+    # 舰载机蓝图存在 ships 里（kind=舰载机），补一份和 planes 同形状的条目，
+    # 这样 /api/simulate 既认 planes 表的 id，也认舰船表里的舰载机 id。
+    have = {p["id"]: p for p in planes}
+    for s in ships:
+        if (s.get("kind") or "") != "舰载机":
+            continue
+        b = s.get("base") or {}
+        dur = float(b.get("dur") or 0) or 1.0
+        cd = float(b.get("cd") or 0)
+        volley = float(b.get("ammo") or 0) * float(b.get("atk") or 0)
+        dpm = (float(b.get("dmg") or 0) * volley) / max(0.5, dur + cd) * 60
+        ehp = (float(b.get("hull") or 0) + float(b.get("shield") or 0)) * \
+              (1 + float(b.get("armor") or 0) * 0.002)
+        if dpm <= 0:
+            # 蓝图没填单发/弹药时，退一步用武器系统的「对舰」预估（本身是每分钟伤害）
+            for sy in s.get("systems") or []:
+                st = sy.get("stats") or {}
+                raw = st.get("对舰") or st.get("对舰预估") or st.get("对舰伤害") or 0
+                if isinstance(raw, str):
+                    raw = raw.split("/")[0].strip()
+                v = num(raw, 0)
+                if v > 0:
+                    dpm = v
+                    break
+        is_boat = (s.get("cls") or "") == "护航艇"
+        # 蓝图里的舰载机一律：1 架 = 1 舱，忽略游戏内编组（3/6 架一组）
+        rec = {"id": s["id"], "name": s["name"],
+               "kind": "护航艇" if is_boat else "战机",
+               "pgroup": (s.get("pgroup") or "").strip(), "per_group": 1,
+               "base": {"dpm": round(dpm, 1), "ehp": round(ehp, 1)},
+               "note": "来自蓝图"}
+        if s["id"] in have:
+            have[s["id"]].update(rec)          # 覆盖 planes 表里的旧占位值
+        else:
+            planes.append(rec)
+    return ships, planes, groups
+
+
+
+def current_user(handler):
+    auth = handler.headers.get("Authorization") or ""
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    if not token:
+        return None
+    now_ts = int(time.time())
+    with conn() as c:
+        r = c.execute("SELECT u.*, s.expire AS _exp, s.csrf AS _csrf"
+                      " FROM sessions s JOIN users u ON u.id=s.user"
+                      " WHERE s.token=? AND s.expire>?", (token, now_ts)).fetchone()
+        if not r:
+            return None
+        if (r["_exp"] or 0) - now_ts < SESSION_HOURS * 3600 // 2:
+            c.execute("UPDATE sessions SET expire=? WHERE token=?",
+                      (now_ts + SESSION_HOURS * 3600, token))
+    d = dict(r)
+    d.pop("_exp", None)
+    d["_csrf"] = d.pop("_csrf", "") or ""
+    return d
+
+
+PWD_BLACKLIST = {
+    "12345678", "123456789", "1234567890", "password", "password1", "passw0rd",
+    "admin123", "admin888", "adminadmin", "qwertyui", "qwerty123", "abc12345",
+    "11111111", "00000000", "88888888", "66666666", "a1234567", "iloveyou",
+}
+
+
+def pwd_problem(pwd, username=""):
+    """返回不合规原因；空串表示通过。"""
+    pwd = pwd or ""
+    if len(pwd) < 8:
+        return "密码至少 8 位"
+    if pwd.lower() in PWD_BLACKLIST:
+        return "这个密码太常见了，换一个"
+    if username and pwd.strip().lower() == str(username).strip().lower():
+        return "密码不能和账号一样"
+    if re.fullmatch(r"(.)\1+", pwd):
+        return "密码不能是同一个字符重复"
+    kinds = sum(bool(re.search(p, pwd)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^A-Za-z0-9]"))
+    if kinds < 2:
+        return "密码要至少包含大小写字母、数字、符号中的两类"
+    return ""
+
+
+LOGIN_MAX_FAIL = 5          # 同一 IP + 账号 连续失败几次后锁定
+LOGIN_LOCK_SEC = 300        # 锁定时长（秒）
+_FAILS = {}
+_FAIL_LOCK = threading.Lock()
+
+
+def login_wait(ip, name):
+    key = ((ip or "?"), (name or "").strip().lower())
+    now_s = time.time()
+    with _FAIL_LOCK:
+        cnt, until = _FAILS.get(key, (0, 0))
+        if until and until <= now_s:
+            _FAILS.pop(key, None)
+            return 0
+        return int(until - now_s) if until > now_s else 0
+
+
+def login_failed(ip, name):
+    key = ((ip or "?"), (name or "").strip().lower())
+    now_s = time.time()
+    with _FAIL_LOCK:
+        cnt, until = _FAILS.get(key, (0, 0))
+        if until and until <= now_s:
+            cnt, until = 0, 0
+        cnt += 1
+        if cnt >= LOGIN_MAX_FAIL:
+            until, cnt = now_s + LOGIN_LOCK_SEC, 0
+        _FAILS[key] = (cnt, until)
+        return int(until - now_s) if until > now_s else 0
+
+
+def login_ok(ip, name):
+    with _FAIL_LOCK:
+        _FAILS.pop(((ip or "?"), (name or "").strip().lower()), None)
+
+
+SEND_COOLDOWN = 60      # 同一 IP + 同一联系方式 的发送间隔（秒）
+SEND_DAILY_IP = 10      # 同一 IP 每日发送上限
+ALL_PERMS = (
+    "sim_view", "sim_edit",
+    "battle_view", "battle_edit",
+    "data_view", "data_edit", "effects_edit",
+    "roster_view", "roster_edit",
+    "people_view", "people_edit",
+    "audit_view", "audit_self", "export",
+)
+PERM_LABEL = {
+    "sim_view": "舰船数据·看", "sim_edit": "舰船数据·改",
+    "battle_view": "战报·看", "battle_edit": "战报·改（增删）",
+    "data_view": "数据管理·看", "data_edit": "数据管理·改",
+    "effects_edit": "效果库·改（影响全站计算）",
+    "roster_view": "人员档案·看", "roster_edit": "人员档案·改",
+    "people_view": "人员管理·看", "people_edit": "人员管理·改（账号/审批）",
+    "audit_view": "操作日志·看全部", "audit_self": "操作日志·只看自己",
+    "export": "导出（CSV/JSON）",
+}
+
+# 前端渲染权限矩阵用的分组（顺序即展示顺序）
+PERM_GROUPS = [
+    {"mod": "舰船数据", "view": "sim_view", "edit": "sim_edit"},
+    {"mod": "战报分析", "view": "battle_view", "edit": "battle_edit"},
+    {"mod": "数据管理", "view": "data_view", "edit": "data_edit", "extra": [("effects_edit", "效果库")]},
+    {"mod": "人员档案", "view": "roster_view", "edit": "roster_edit"},
+    {"mod": "人员管理", "view": "people_view", "edit": "people_edit"},
+    {"mod": "操作日志", "view": "audit_view", "edit": None, "extra": [("audit_self", "只看自己")]},
+    {"mod": "导出", "view": "export", "edit": None},
+]
+
+# 老权限键 → 新键（升级时不丢权限）
+LEGACY_PERMS = {
+    "sim": ("sim_view", "sim_edit", "battle_view", "battle_edit"),
+    "data": ("data_view", "data_edit", "export"),
+    "roster": ("roster_view", "roster_edit"),
+    "people": ("people_view", "people_edit"),
+    "audit": ("audit_view",),
+}
+
+TEMPLATE_SEED = [
+    ("admin_full", "管理员（全权限）", ALL_PERMS, "all"),
+    ("editor", "编辑（数据 + 战报）",
+     ("sim_view", "sim_edit", "battle_view", "battle_edit", "data_view", "data_edit", "export"), "all"),
+    ("viewer", "只读（看船看战报）", ("sim_view", "battle_view"), "all"),
+    ("roster_editor", "名单维护（本组织）",
+     ("roster_view", "roster_edit", "export"), "org"),
+    ("auditor", "审计（看全部日志）", ("audit_view", "export"), "all"),
+    ("auditor_self", "审计（只看自己的操作）", ("audit_self",), "self"),
+]
+
+SUPER_ROLE = "superadmin"                      # 超级管理员：唯一能改管理员账号的人
+ROLES = ("superadmin", "admin", "editor", "viewer")   # 允许的角色
+SCOPES = ("all", "org", "alliance", "self")
+SCOPE_CN = {"all": "全部", "org": "本组织", "alliance": "本联合体", "self": "自己"}
+
+
+def perms_of(u):
+    """算一个用户当前真正拥有的权限（含到期判断）。
+    超级管理员恒为全量；管理员默认全量，但库里写过 perms 就以库里为准（超级管理员可以给管理员减权）。"""
+    if not u:
+        return set()
+    u = dict(u)
+    if u.get("role") == SUPER_ROLE:
+        return set(ALL_PERMS)
+    if u.get("role") == "admin":
+        saved = set(parse_perms(u.get("perms")))
+        return saved or set(ALL_PERMS)
+    exp = str(u.get("perm_expire_at") or "").strip()
+    if exp and exp[:10] < time.strftime("%Y-%m-%d"):
+        return set()          # 临时授权已过期：权限清零，人还能登录但什么都看不到
+    return set(parse_perms(u.get("perms")))
+
+
+def _role(v):
+    """角色白名单：不认识的（含旧的只读管理员）一律按 viewer 处理。"""
+    r = str(v or "").strip().lower()
+    return r if r in ROLES else "viewer"
+
+
+def scope_of(u):
+    sc = str((u or {}).get("scope") or "all").strip()
+    return sc if sc in SCOPES else "all"
+
+
+def ship_scope(ships, u):
+    """按数据范围过滤舰船：管理员/超管不过滤；org、alliance 只看本归属或未归属。"""
+    role = (u or {}).get("role") or ""
+    if role in ("admin", SUPER_ROLE):
+        return ships
+    sc = scope_of(u)
+    if sc not in ("org", "alliance"):
+        return ships
+    key = "owner_org" if sc == "org" else "owner_alliance"
+    mine = str((u or {}).get("org" if sc == "org" else "alliance") or "").strip()
+    if not mine:
+        return ships
+    out = []
+    for s in ships:
+        own = str(s.get(key) or "").strip()
+        if not own or own == mine:
+            out.append(s)
+    return out
+
+
+def guess_uid(c, username, phone):
+    """登录名或手机号能对上人员档案时返回档案 ID。
+    用独立连接、查完立刻关，避免读游标占着事务把后面的写操作卡成 database is locked。"""
+    un = str(username or "").strip()
+    ph = str(phone or "").strip()
+    cc = conn()
+    try:
+        if un:
+            r = cc.execute("SELECT id FROM members WHERE id=?", (un,)).fetchone()
+            if r:
+                return r["id"]
+        for v in (ph, un):
+            if v:
+                r = cc.execute("SELECT id FROM members WHERE IFNULL(phone,'')=?", (v,)).fetchone()
+                if r:
+                    return r["id"]
+    finally:
+        try:
+            cc.close()
+        except Exception:
+            pass
+    return ""
+
+
+def pii_ok(u):
+    """能看到电话/微信/QQ 明文的只有管理员与超级管理员，其余一律打码（界面不提示）。"""
+    return (u or {}).get("role") in ("admin", SUPER_ROLE)
+
+
+def mask_pii(rows, allow):
+    """allow 为假时，电话/微信/QQ 打码。"""
+    if allow:
+        return rows
+    for r in rows:
+        for k in ("phone", "wechat", "qq"):
+            v = str(r.get(k) or "").strip()
+            if len(v) >= 5:
+                r[k] = v[:3] + "****" + v[-2:]
+            elif v:
+                r[k] = "***"
+    return rows
+
+
+def parse_perms(raw):
+    if isinstance(raw, (list, tuple, set)):
+        got = [str(x).strip() for x in raw if str(x).strip()]
+    else:
+        got = [x.strip() for x in str(raw or "").split(",") if x.strip()]
+    out = []
+    for x in got:
+        for k in LEGACY_PERMS.get(x, (x,)):
+            if k in ALL_PERMS and k not in out:
+                out.append(k)
+    return [x for x in ALL_PERMS if x in out]
+
+
+def safe_user(d):
+    if not d:
+        return None
+    d = dict(d)
+    d.pop("pwd", None)
+    d["scope"] = scope_of(d)
+    exp = str(d.get("perm_expire_at") or "").strip()
+    d["perm_expired"] = bool(exp and exp[:10] < time.strftime("%Y-%m-%d"))
+    if d.get("role") == SUPER_ROLE:
+        d["perms"] = list(ALL_PERMS)
+    elif d.get("role") == "admin":
+        saved = [k for k in ALL_PERMS if k in set(parse_perms(d.get("perms")))]
+        d["perms"] = saved or list(ALL_PERMS)
+    else:
+        d["perms"] = [k for k in ALL_PERMS if k in perms_of(d)]
+    return d
+
+
+def ship_size(kind, cls):
+    """尺寸由舰种+舰型推出，库里不再存这一列。"""
+    kind = (kind or "").strip()
+    cls = (cls or "").strip()
+    if kind == "超主力舰":
+        return "超大型舰船"
+    if kind == "舰载机":
+        return cls or "战机"
+    return cls
+
+
+TABLES = {
+    "attrs": ("id", ["id", "name", "unit", "note", "ord"]),
+    "ships": ("id", ["id", "cmd_type", "name", "cls", "kind", "tech_total", "base", "note", "pgroup",
+                      "owner_org", "owner_alliance"]),
+    "systems": ("id", ["id", "ship", "slot", "name", "tech_cap", "stats", "bays", "note", "ord", "no_nodes", "stats_norm", "is_weapon"]),
+    "effects": ("id", ["id", "name", "unit", "note"]),
+    "nodes": ("id", ["id", "sys", "parent", "label", "max_lv", "cost", "costs", "effect", "note",
+              "checked_at", "checked_by"]),
+    "modules": ("id", ["id", "ship", "slot", "name", "mkind", "bays", "sys",
+                       "bonus", "stats", "note"]),
+    "planes": ("id", ["id", "name", "kind", "pgroup", "per_group", "base", "note"]),
+    "groups": ("id", ["id", "name", "per_unit", "hangar", "note"]),
+}
+JSON_COLS = {"ships": ["base"], "systems": ["stats", "bays"], "nodes": ["effect", "costs"],
+             "modules": ["bonus", "stats", "bays"], "planes": ["base"], "groups": []}
+
+
+
+# ---------------- 密码重置申请：限流 + 联系方式校验 ----------------
+PWD_REQ_MAX = 5          # 同一 IP 每小时最多提交几条
+PWD_REQ_WIN = 3600
+_PWD_HITS = {}
+_PWD_LOCK = threading.Lock()
+
+
+def pwd_req_allowed(ip):
+    """同一来源 1 小时内最多 5 条申请，防止有人拿脚本刷申请。"""
+    t = time.time()
+    with _PWD_LOCK:
+        arr = [x for x in _PWD_HITS.get(ip, []) if t - x < PWD_REQ_WIN]
+        if len(arr) >= PWD_REQ_MAX:
+            _PWD_HITS[ip] = arr
+            return False
+        arr.append(t)
+        _PWD_HITS[ip] = arr
+        return True
+
+
+def pwd_contact_ok(stored, contact):
+    """库里登记了联系方式就必须对得上；没登记则不校验，只记录。
+
+    * 登记的是邮箱（含 @）：忽略大小写，允许填全名；
+    * 登记的是手机号：填全号或后 4 位都行；
+    * 都没登记：放行（只记录，交给审批的人核实）。
+    """
+    st = str(stored or "").strip()
+    cd = str(contact or "").strip()
+    if not st:
+        return True
+    if not cd:
+        return False
+    if "@" in st:
+        return cd.lower() == st.lower() or cd.lower().split("@")[0] == st.lower().split("@")[0]
+    sd = re.sub(r"\D", "", st)
+    cdn = re.sub(r"\D", "", cd)
+    if not sd:
+        return True
+    if not cdn:
+        return False
+    return cdn == sd or (len(cdn) >= 4 and sd.endswith(cdn[-4:]))
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "FleetTool/0.3"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def send_json(self, data, code=200):
+        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        gz = False
+        if len(raw) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            try:
+                raw = gzip.compress(raw, 6)
+                gz = True
+            except Exception:
+                gz = False
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def err(self, code, msg):
+        self.send_json({"ok": False, "error": msg}, code)
+
+    def require(self, roles=None):
+        u = current_user(self)
+        if not u:
+            self.err(401, "未登录")
+            return None
+        if roles and u["role"] not in roles:
+            self.err(403, "权限不足")
+            return None
+        return u
+
+    def need_auth(self):
+        """写操作的前置校验：必须已登录，且没有「必须先改密码」。"""
+        u = current_user(self)
+        if not u:
+            self.err(401, "未登录")
+            return None
+        if int(u.get("must_change") or 0):
+            self.send_json({"ok": False, "code": "must_change",
+                            "error": "请先修改密码，再使用其他功能"}, 403)
+            return None
+        return u
+
+    def need_perm(self, keys):
+        """keys = ('sim','data',...)；admin 直接放行，其余看 perms 交集。"""
+        u = current_user(self)
+        if not u:
+            self.err(401, "未登录")
+            return None
+        if int(u.get("must_change") or 0):
+            self.send_json({"ok": False, "code": "must_change",
+                            "error": "请先修改密码，再使用其他功能"}, 403)
+            return None
+        if u.get("role") == SUPER_ROLE:
+            return u   # 管理员 / 超级管理员看全部模块
+        have = perms_of(u)
+        if have & set(keys):
+            return u
+        need = "、".join(PERM_LABEL.get(k, k) for k in keys)
+        self.err(403, "没有「%s」的权限，找管理员开" % need)
+        return None
+
+    def need_conf(self, expect):
+        """高危操作二次确认：X-Confirm 头 / ?confirm= / body.confirm 任一等于目标名称/ID。
+        HTTP 头只能是 ASCII，中文目标名（账号、档案）必须走 query 或 body，否则编码直接报错。"""
+        want = str(expect).strip()
+        got = (self.headers.get("X-Confirm") or "").strip()
+        if not got:
+            try:
+                qs = parse_qs(urlparse(self.path).query or "")
+                got = ((qs.get("confirm") or [""])[0] or "").strip()
+            except Exception:
+                got = ""
+        if got != want:
+            self.send_json({"ok": False, "code": "confirm",
+                            "error": "高危操作需要二次确认：请输入「%s」" % expect,
+                            "confirm": want}, 409)
+            return False
+        return True
+
+    def client_ip(self):
+        return (self.client_address[0] if self.client_address else "") or "?"
+
+    def body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if not n:
+            return {}                 # 允许空体：登出 / 领 ticket 这类没有 payload
+        return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+
+    def do_GET(self):
+        touch()
+        path = unquote(urlparse(self.path).path)
+        if path.startswith("/api/"):
+            try:
+                return self.api_get(path)
+            except Exception as e:
+                return self.err(500, f"{type(e).__name__}: {e}")
+        if path in ("/", ""):
+            path = "/index.html"
+        fp = os.path.normpath(os.path.join(STATIC, path.lstrip("/")))
+        if not fp.startswith(STATIC) or not os.path.isfile(fp):
+            return self.err(404, "not found")
+        ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
+                 ".css": "text/css; charset=utf-8"}.get(os.path.splitext(fp)[1],
+                                                       "application/octet-stream")
+        raw, gzraw = static_bytes(fp)
+        gz = False
+        if ctype.startswith(("text/", "application/javascript")):
+            if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+                raw, gz = gzraw, True
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    CSRF_EXEMPT = ("/api/login", "/api/register/send", "/api/register/verify", "/api/pwd/request")
+
+    def guard_csrf(self, path):
+        """双提交校验：写请求必须带与会话匹配的 X-CSRF。返回 True 表示已拦下。"""
+        if path in self.CSRF_EXEMPT or path.startswith("/api/health"):
+            return False
+        u = current_user(self)
+        if not u:
+            return False                       # 未登录：交给各处理器回 401
+        have = (u.get("_csrf") or "").strip()
+        want = (self.headers.get("X-CSRF") or "").strip()
+        if not have:
+            # 升级前签发的旧会话没有 csrf：直接作废，让前端重新登录
+            auth = self.headers.get("Authorization") or ""
+            tk = auth[7:] if auth.startswith("Bearer ") else ""
+            if tk:
+                with conn() as c:
+                    c.execute("DELETE FROM sessions WHERE token=?", (tk,))
+            self.send_json({"ok": False, "code": "csrf_legacy",
+                            "error": "登录状态已升级，请重新登录"}, 401)
+            return True
+        if secrets.compare_digest(have, want):
+            return False
+        self.send_json({"ok": False, "code": "csrf",
+                        "error": "安全校验失败（CSRF），请刷新页面后重试"}, 403)
+        return True
+
+    def do_POST(self):
+        touch()
+        path = unquote(urlparse(self.path).path)
+        if self.guard_csrf(path):
+            return
+        if path == "/api/stream_ticket":   # 无请求体，须在解析 body 前分流
+            return self.stream_ticket()
+        try:
+            data = self.body()
+        except Exception:
+            return self.err(400, "bad json")
+        try:
+            if path == "/api/login":
+                return self.login(data)
+            if path == "/api/version/publish":
+                return self.version_publish(data)
+
+            if path == "/api/logout_others":
+                u = self.require()
+                if not u:
+                    return
+                _auth = self.headers.get("Authorization") or ""
+                _tk = _auth[7:] if _auth.startswith("Bearer ") else ""
+                with conn() as c:
+                    n = c.execute("DELETE FROM sessions WHERE user=? AND token<>?",
+                                  (u["id"], _tk)).rowcount
+                log("注销其它设备", u["username"], "session", "共 %d 个" % n)
+                return self.send_json({"ok": True, "closed": n})
+            if path == "/api/logout":
+                u = current_user(self)
+                if u:
+                    with conn() as c:
+                        c.execute("DELETE FROM sessions WHERE user=?", (u["id"],))
+                return self.send_json({"ok": True})
+            if path == "/api/audit/prune":
+                u = self.require()
+                if not u:
+                    return
+                if (u.get("role") or "") not in ("admin", SUPER_ROLE):
+                    return self.err(403, "只有管理员能做日志治理")
+                if not self.need_perm(("audit_view",)):
+                    return
+                if (data.get("confirm") or "").strip() != "清理日志":
+                    return self.err(409, "高危操作需要二次确认：请再点一次并确认「清理日志」")
+
+                r = prune_audit(days=data.get("days") or None,
+                                max_rows=data.get("max") or None,
+                                archive=(data.get("archive", True) is not False),
+                                actor=u["username"])
+                return self.send_json(dict(r, stats=audit_stats()))
+            if path == "/api/signup/rotate":
+                return self.signup_rotate()
+            if path == "/api/signup/set":
+                return self.signup_set(data)
+            if path == "/api/signup/allow":
+                return self.signup_allow_toggle(data)
+            if path == "/api/register/send":
+                return self.register_send(data)
+            if path == "/api/register/verify":
+                return self.register_verify(data)
+            if path == "/api/me/password":
+                return self.me_password(data)
+            if path == "/api/pwd/request":
+                return self.pwd_request(data)
+            if path.startswith("/api/pwd/requests/"):
+                tail = path[len("/api/pwd/requests/"):]
+                seg, _, act = tail.partition("/")
+                if not seg.isdigit():
+                    return self.err(400, "申请 id 必须是数字")
+                if act == "approve":
+                    return self.pwd_approve(int(seg), data)
+                if act == "reject":
+                    return self.pwd_reject(int(seg), data)
+                return self.err(404, "unknown api")
+            if path == "/api/simulate":
+                if not self.need_perm(("sim_view",)):
+                    return
+                return self.simulate_api(data)
+            if path == "/api/builds":
+                return self.save_build(data)
+            if path == "/api/users":
+                if not self.need_perm(("people_edit",)):
+                    return
+                return self.user_create(data)
+            if path == "/api/members/import":
+                return self.members_import(data)
+            if path == "/api/perm_templates":
+                return self.perm_template_save(data)
+            if path.startswith("/api/data/"):
+                if not self.need_perm(("data_edit",)):
+                    return
+                return self.data_upsert(path.split("/")[3], data)
+        except Exception as e:
+            return self.err(500, f"{type(e).__name__}: {e}")
+        return self.err(404, "unknown api")
+
+    def do_PUT(self):
+        touch()
+        path = unquote(urlparse(self.path).path)
+        if self.guard_csrf(path):
+            return
+        try:
+            data = self.body()
+        except Exception:
+            data = {}
+        try:
+            if path == "/api/settings":
+                return self.settings_put(data)
+            if path.startswith("/api/users/"):
+                seg = path.rsplit("/", 1)[1]
+                if not seg.isdigit():
+                    return self.err(400, "用户 id 必须是数字")
+                return self.user_update(int(seg), data)
+            if path == "/api/battles":
+                return self.battle_upsert(data)
+            if path == "/api/battle_rows":
+                return self.battle_row_upsert(data)
+            if path == "/api/members":
+                return self.member_upsert(data)
+            if path.startswith("/api/data/"):
+                if not self.need_perm(("data_edit",)):
+                    return
+                return self.data_upsert(path.split("/")[3], data)
+        except Exception as e:
+            return self.err(500, f"{type(e).__name__}: {e}")
+        return self.err(404, "unknown api")
+
+    def do_DELETE(self):
+        touch()
+        path = unquote(urlparse(self.path).path)
+        if self.guard_csrf(path):
+            return
+        try:
+            if path.startswith("/api/users/"):
+                seg = path.rsplit("/", 1)[1]
+                if not seg.isdigit():
+                    return self.err(400, "用户 id 必须是数字")
+                return self.user_delete(int(seg))
+            if path.startswith("/api/battle_rows/"):
+                return self.battle_row_delete(path.rsplit("/", 1)[1])
+            if path.startswith("/api/battles/"):
+                return self.battle_delete(path.rsplit("/", 1)[1])
+            if path.startswith("/api/members/"):
+                return self.member_delete(path.rsplit("/", 1)[1])
+            if path.startswith("/api/data/"):
+                if not self.need_perm(("data_edit",)):
+                    return
+                return self.data_delete(path.split("/")[3], path.split("/")[4])
+            if path.startswith("/api/perm_templates/"):
+                seg = path.rsplit("/", 1)[1]
+                if not seg.isdigit():
+                    return self.err(400, "模板 id 必须是数字")
+                return self.perm_template_delete(int(seg))
+            if path.startswith("/api/builds/"):
+                u = self.require()
+                if not u:
+                    return
+                bid = int(path.rsplit("/", 1)[1])
+                with conn() as c:
+                    cur = c.execute("DELETE FROM builds WHERE id=? AND owner=?",
+                                    (bid, u["username"]))
+                    if cur.rowcount == 0:
+                        return self.err(404, "方案不存在")
+                log("删除方案", u["username"], "build#%d" % bid)
+                return self.send_json({"ok": True})
+        except Exception as e:
+            return self.err(500, f"{type(e).__name__}: {e}")
+        return self.err(404, "unknown api")
+
+    # ---------------- 密码：自助修改 / 申请重置 / 审批 ----------------
+    PWD_MIN = 8
+
+    def me_password(self, data):
+        """任何已登录用户改自己的密码：必须验旧密码。"""
+        u = self.require()
+        if not u:
+            return
+        old = (data.get("old") or "").strip()
+        new = (data.get("new") or "").strip()
+        bad = pwd_problem(new, u["username"])
+        if bad:
+            return self.err(400, bad)
+        if old == new:
+            return self.err(400, "新密码不能和旧密码一样")
+        with conn() as c:
+            row = c.execute("SELECT pwd FROM users WHERE id=?", (u["id"],)).fetchone()
+        if not row or not check_pwd(old, row["pwd"]):
+            return self.err(403, "旧密码不对")
+        with conn() as c:
+            c.execute("UPDATE users SET pwd=?, must_change=0, pwd_changed_at=?, updated_at=? WHERE id=?",
+                      (hash_pwd(new), now(), now(), u["id"]))
+            _auth = self.headers.get("Authorization") or ""
+            _tk = _auth[7:] if _auth.startswith("Bearer ") else ""
+            c.execute("DELETE FROM sessions WHERE user=? AND token<>?", (u["id"], _tk))
+            fresh = dict(c.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone())
+        log("修改密码", u["username"], "user#%d" % u["id"], "本人修改")
+        return self.send_json({"ok": True, "user": safe_user(fresh)})
+
+    def pwd_request(self, data):
+        """免登录提交重置申请：用户名 + 联系方式 + 原因。
+
+        任何账号（包括 admin）都能提；但批准环节有额外规则：
+          * 不能批准自己的申请；
+          * admin 的申请只有 admin 能批；
+          * 唯一管理员忘密码只能走命令行 --reset-pwd。
+        """
+        un = (data.get("username") or "").strip()
+        contact = (data.get("contact") or "").strip()
+        reason = (data.get("reason") or "").strip()[:200]
+        if not un or not contact:
+            return self.err(400, "请填用户名和联系方式")
+        ip = (self.client_address[0] if self.client_address else "") or "?"
+        if not pwd_req_allowed(ip):
+            return self.err(429, "提交太频繁（同一网络每小时最多 5 条），稍后再试")
+        with conn() as c:
+            row = c.execute("SELECT id, phone FROM users WHERE username=?", (un,)).fetchone()
+            if not row:
+                return self.err(404, "没有这个账号")
+            if not pwd_contact_ok(row["phone"], contact):
+                return self.err(403, "联系方式与账号登记的不一致：请填登记时的手机号（或它的后 4 位）")
+            pend = c.execute("SELECT id FROM pwd_requests WHERE user_id=? AND status='待处理'",
+                             (row["id"],)).fetchone()
+            if pend:
+                return self.err(409, "这个账号已经有一条待处理申请，等管理员处理")
+            c.execute("""INSERT INTO pwd_requests(user_id,username,reason,status,created_at,note)
+                         VALUES(?,?,?,'待处理',?,?)""",
+                      (row["id"], un, reason, now(), contact))
+        log("申请重置密码", un, "pwd_request", contact)
+        return self.send_json({"ok": True})
+
+    def pwd_approve(self, rid, data):
+        if not self.need_perm(("people_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        pw = (data.get("password") or "").strip()
+        bad = pwd_problem(pw)
+        if bad:
+            return self.err(400, "临时密码不合规：" + bad)
+        me = current_user(self)
+        with conn() as c:
+            r = c.execute("SELECT * FROM pwd_requests WHERE id=?", (rid,)).fetchone()
+            if not r:
+                return self.err(404, "申请不存在")
+            if r["status"] != "待处理":
+                return self.err(409, "这条申请已经处理过了")
+            tgt = c.execute("SELECT * FROM users WHERE id=?", (r["user_id"],)).fetchone()
+            if not tgt:
+                return self.err(404, "账号已不存在")
+            if tgt["username"] == me["username"]:
+                return self.err(403, "不能批准自己的密码重置申请，请找其他管理员处理")
+            if tgt["role"] in ("admin", SUPER_ROLE):
+                if (me.get("role") or "") not in ("admin", SUPER_ROLE):
+                    return self.err(403, "只有管理员能重置管理员密码")
+                n = c.execute("SELECT COUNT(*) n FROM users WHERE role IN ('admin','superadmin')").fetchone()["n"]
+                if n <= 1:
+                    return self.err(403, "这是唯一的管理员账号，网页里批不了：请在服务器上停掉服务，执行 python server.py --reset-pwd %s" % tgt["username"])
+            c.execute("DELETE FROM sessions WHERE user=?", (tgt["id"],))
+            c.execute("UPDATE users SET pwd=?, must_change=1, updated_at=? WHERE id=?",
+                      (hash_pwd(pw), now(), tgt["id"]))
+            c.execute("""UPDATE pwd_requests SET status='已批准', handled_at=?, handled_by=?, note=?
+                         WHERE id=?""", (now(), me["username"], (data.get("note") or "")[:200], rid))
+        log("批准重置密码", tgt["username"], "user#%d" % tgt["id"], "临时密码，需下次登录修改")
+        return self.send_json({"ok": True})
+
+    def pwd_reject(self, rid, data):
+        if not self.need_perm(("people_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        me = current_user(self)
+        with conn() as c:
+            r = c.execute("SELECT * FROM pwd_requests WHERE id=?", (rid,)).fetchone()
+            if not r or r["status"] != "待处理":
+                return self.err(409, "没有可驳回的待处理申请")
+            c.execute("""UPDATE pwd_requests SET status='已驳回', handled_at=?, handled_by=?, note=?
+                         WHERE id=?""", (now(), me["username"], (data.get("note") or "")[:200], rid))
+        log("驳回重置密码", r["username"], "user#%d" % r["user_id"], (data.get("note") or ""))
+        return self.send_json({"ok": True})
+
+    # ---------------- data management ----------------
+    def settings_put(self, data):
+        if self.need_auth() is None:
+            return
+        u = self.require()
+        if not u:
+            return
+        if not self.need_perm(("people_edit",)):
+            return
+        if (u.get("role") or "") not in ("admin", SUPER_ROLE):
+            return self.err(403, "只有管理员能改标题")
+        if ("audit_days" in data) or ("audit_max" in data):
+            try:
+                days = max(1, int(data.get("audit_days") or 0)) if "audit_days" in data else None
+                cap = max(100, int(data.get("audit_max") or 0)) if "audit_max" in data else None
+            except (TypeError, ValueError):
+                return self.err(400, "保留天数 / 条数上限要填整数")
+            changed = []
+            with conn() as c:
+                if days is not None:
+                    old = c.execute("SELECT v FROM settings WHERE k='audit_days'").fetchone()
+                    if (old["v"] if old else "") != str(days):
+                        c.execute("INSERT INTO settings(k,v) VALUES('audit_days',?)"
+                                  " ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(days),))
+                        changed.append("保留天数=%d" % days)
+                if cap is not None:
+                    old = c.execute("SELECT v FROM settings WHERE k='audit_max'").fetchone()
+                    if (old["v"] if old else "") != str(cap):
+                        c.execute("INSERT INTO settings(k,v) VALUES('audit_max',?)"
+                                  " ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(cap),))
+                        changed.append("上限=%d 条" % cap)
+            if not changed:
+                return self.send_json({"ok": True, "changed": False, "policy": audit_policy()})
+            log("改日志策略", u["username"], "settings", "、".join(changed))
+            return self.send_json({"ok": True, "changed": True, "policy": audit_policy()})
+        title = (data.get("title") or "").strip()
+        if not title:
+            return self.err(400, "标题不能空")
+        if len(title) > 60:
+            return self.err(400, "标题最多 60 个字")
+        with conn() as c:
+            old = c.execute("SELECT v FROM settings WHERE k='title'").fetchone()
+            if old and str(old["v"] or "") == title:
+                return self.send_json({"ok": True, "title": title, "changed": False})
+            c.execute("INSERT INTO settings(k,v) VALUES('title',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (title,))
+        bump_version()
+        log("改标题", u["username"], "settings", title)
+        return self.send_json({"ok": True, "title": title, "changed": True})
+
+    def data_upsert(self, table, data):
+        if self.need_auth() is None:
+            return
+        if table == "ships":
+            data = _normalize_ship(dict(data))
+        u = self.need_perm(("data_edit",))
+        if not u:
+            return
+        if table not in TABLES:
+            return self.err(404, "unknown table")
+        pk, cols = TABLES[table]
+        row = {}
+        for c in cols:
+            if c in data:
+                row[c] = data[c]
+        if not row.get(pk):
+            return self.err(400, "缺少主键 " + pk)
+        if table == "effects" and "effects_edit" not in perms_of(u):
+            return self.err(403, "效果库影响全站计算，需要「效果库·改」权限")
+        if table == "ships" and (u.get("role") or "") not in ("admin", SUPER_ROLE):
+            _sc = scope_of(u)
+            if _sc == "org":
+                row["owner_org"] = str(u.get("org") or "").strip()
+            elif _sc == "alliance":
+                row["owner_alliance"] = str(u.get("alliance") or "").strip()
+        for c in JSON_COLS.get(table, []):
+            if c in row and not isinstance(row[c], str):
+                row[c] = json.dumps(row[c], ensure_ascii=False)
+        with conn() as c:
+            old = c.execute(f"SELECT * FROM {table} WHERE {pk}=?", (row[pk],)).fetchone()
+            if old:
+                payload = {k: v for k, v in row.items() if k != pk}
+                diff = diff_keys(old, payload)
+                if not diff:
+                    return self.send_json({"ok": True, "id": row[pk],
+                                           "action": "无变化", "changed": 0})
+                sets = ",".join(f"{k}=?" for k in diff)
+                c.execute(f"UPDATE {table} SET {sets} WHERE {pk}=?",
+                          [row[k] for k in diff] + [row[pk]])
+                act = "修改数据"
+            else:
+                c.execute(f"INSERT INTO {table}({','.join(row)}) VALUES({','.join('?' * len(row))})",
+                          list(row.values()))
+                act = "新增数据"
+                diff = list(row.keys())
+        bump_version()
+        log(act, u["username"], f"{table}/{row[pk]}", "、".join(diff))
+        return self.send_json({"ok": True, "id": row[pk], "action": act, "changed": len(diff)})
+
+    def data_delete(self, table, rid):
+        if self.need_auth() is None:
+            return
+        u = self.need_perm(("data_edit",))
+        if not u:
+            return
+        if table not in TABLES:
+            return self.err(404, "unknown table")
+        pk, _ = TABLES[table]
+        if table == "effects" and "effects_edit" not in perms_of(u):
+            return self.err(403, "效果库影响全站计算，需要「效果库·改」权限")
+        if not self.need_conf(rid):
+            return
+        with conn() as c:
+            cur = c.execute(f"DELETE FROM {table} WHERE {pk}=?", (rid,))
+            if cur.rowcount == 0:
+                return self.err(404, "记录不存在")
+        bump_version()
+        log("删除数据", u["username"], f"{table}/{rid}")
+        return self.send_json({"ok": True})
+
+    # ---------------- 人员档案 ----------------
+    # ---------------- 战报分析 ----------------
+    B_ROW_FIELDS = ("side", "fleet", "ship", "config", "qty", "dmg_struct", "dmg_sys", "dmg_air",
+                    "repair", "taken", "alive", "note", "alive_n")
+
+    def battles_list(self):
+        if not self.need_perm(("battle_view",)):
+            return
+        u = current_user(self)
+        sc = scope_of(u)
+        with conn() as c:
+            bs = [dict(r) for r in c.execute("SELECT * FROM battles ORDER BY date DESC, id DESC")]
+            rows = [dict(r) for r in c.execute("SELECT * FROM battle_rows ORDER BY id")]
+        if sc == "self":        # 只看自己录的战报（老数据 owner 为空，对所有人可见）
+            bs = [b for b in bs if (b.get("owner") or "") in ("", u["username"])]
+            keep = {b["id"] for b in bs}
+            rows = [r for r in rows if r.get("battle") in keep]
+        return self.send_json({"ok": True, "scope": sc, "battles": bs, "rows": rows})
+
+    def battle_upsert(self, data):
+        if not self.need_perm(("battle_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        bid = str(data.get("id") or "").strip()
+        if not bid:
+            return self.err(400, "战报 ID 不能为空")
+        vals = [str(data.get(k) or "").strip() for k in ("date", "opponent", "mode", "duration", "note")]
+        diff = []
+        with conn() as c:
+            row = c.execute("SELECT * FROM battles WHERE id=?", (bid,)).fetchone()
+            if row:
+                payload = dict(zip(("date", "opponent", "mode", "duration", "note"), vals))
+                diff = diff_keys(row, payload)
+                if diff:
+                    c.execute("UPDATE battles SET date=?, opponent=?, mode=?, duration=?, note=? WHERE id=?",
+                              vals + [bid])
+                act = "修改战报" if diff else "无变化"
+            else:
+                c.execute("INSERT INTO battles(id,date,opponent,mode,duration,note,created_at,owner)"
+                          " VALUES(?,?,?,?,?,?,?,?)",
+                          [bid] + vals + [now(), (current_user(self) or {}).get("username") or ""])
+                act = "新增战报"
+                diff = list(("date", "opponent", "mode", "duration", "note"))
+        u = current_user(self)
+        if act != "无变化":
+            log(act, u["username"] if u else "-", bid, "、".join(diff))
+        with conn() as c:
+            fresh = dict(c.execute("SELECT * FROM battles WHERE id=?", (bid,)).fetchone())
+        return self.send_json({"ok": True, "battle": fresh})
+
+    def battle_delete(self, bid):
+        if not self.need_perm(("battle_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        if not self.need_conf(bid):
+            return
+        with conn() as c:
+            cur = c.execute("DELETE FROM battles WHERE id=?", (bid,))
+            c.execute("DELETE FROM battle_rows WHERE battle=?", (bid,))
+            if cur.rowcount == 0:
+                return self.err(404, "没有这场战报")
+        u = current_user(self)
+        log("删除战报", u["username"] if u else "-", bid)
+        return self.send_json({"ok": True})
+
+    def battle_row_upsert(self, data):
+        if not self.need_perm(("battle_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        bid = str(data.get("battle") or "").strip()
+        if not bid:
+            return self.err(400, "明细必须挂在一场战报下")
+        vals = []
+        qty_v = int(float(data.get("qty") or 0))
+        for k in self.B_ROW_FIELDS:
+            v = data.get(k)
+            if k == "qty":
+                vals.append(qty_v)
+            elif k == "alive_n":
+                if v is None or str(v).strip() == "":
+                    # 没填存活数就按 是/否 推导：是 → 全部存活，否 → 全灭
+                    vals.append(qty_v if str(data.get("alive") or "").strip() == "是" else 0)
+                else:
+                    vals.append(max(0, min(qty_v, int(float(v)))))
+            elif k in ("dmg_struct", "dmg_sys", "dmg_air", "repair", "taken"):
+                vals.append(float(v or 0))
+            else:
+                vals.append("" if v is None else str(v).strip())
+        rid = data.get("id")
+        diff = []
+        with conn() as c:
+            if rid:
+                old = c.execute("SELECT * FROM battle_rows WHERE id=?", (int(rid),)).fetchone()
+                payload = dict(zip(self.B_ROW_FIELDS, vals))
+                diff = diff_keys(old, payload) if old else list(payload.keys())
+                if diff:
+                    sets = ", ".join("%s=?" % k for k in self.B_ROW_FIELDS)
+                    c.execute("UPDATE battle_rows SET " + sets + " WHERE id=?", vals + [int(rid)])
+            else:
+                cols = ["battle"] + list(self.B_ROW_FIELDS)
+                c.execute("INSERT INTO battle_rows(" + ", ".join(cols) + ") VALUES(" + ", ".join("?" * len(cols)) + ")",
+                          [bid] + vals)
+                rid = c.execute("SELECT last_insert_rowid() r").fetchone()["r"]
+                diff = list(self.B_ROW_FIELDS)
+        u = current_user(self)
+        if diff:
+            log("保存战报明细", u["username"] if u else "-", "%s/%s" % (bid, vals[1]),
+                "、".join(diff))
+        with conn() as c:
+            fresh = dict(c.execute("SELECT * FROM battle_rows WHERE id=?", (rid,)).fetchone())
+        return self.send_json({"ok": True, "row": fresh})
+
+    def battle_row_delete(self, rid):
+        if not self.need_perm(("battle_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        with conn() as c:
+            cur = c.execute("DELETE FROM battle_rows WHERE id=?", (int(rid),))
+            if cur.rowcount == 0:
+                return self.err(404, "没有这条明细")
+        u = current_user(self)
+        log("删除战报明细", u["username"] if u else "-", "#%d" % int(rid))
+        return self.send_json({"ok": True})
+    # 人员档案的完整字段表（导出 / 文档 / 校验共用；顺序即界面顺序）
+    M_FIELDS = ("id", "name", "org", "faction", "alliance", "squad",
+                "phone", "wechat", "qq", "links", "rating", "updated_at", "note")
+
+    def members_list(self, q):
+        u = self.need_perm(("roster_view",))
+        if not u:
+            return
+        kw = (q.get("q") or [""])[0].strip()
+        field = (q.get("field") or ["all"])[0].strip() or "all"
+        if field not in ("all", "id", "name", "org", "faction", "links"):
+            return self.err(400, "这个字段不参与查询（只能按 ID / 名称 / 组织 / 隶属 / 关联账号 查）")
+        limit = min(500, max(1, int((q.get("limit") or ["200"])[0] or 200)))
+        where, args = "", []
+        if kw:
+            like = "%" + kw + "%"
+            if field != "all":
+                where = " WHERE IFNULL(%s,'') LIKE ?" % field
+                args = [like]
+            else:
+                # 只搜这五列：电话 / 微信 / QQ / 评级 / 备注 永不参与查询
+                cols = ("id", "name", "org", "faction", "links")
+                where = " WHERE " + " OR ".join("IFNULL(%s,'') LIKE ?" % c for c in cols)
+                args = [like] * len(cols)
+        sc = scope_of(u)
+        if sc == "org":                      # 只看本组织
+            org = str(u.get("org") or "").strip()
+            where += (" AND " if where else " WHERE ") + "IFNULL(org,'')=?"
+            args.append(org)
+        elif sc == "alliance":               # 只看本联合体
+            where += (" AND " if where else " WHERE ") + "IFNULL(alliance,'')=?"
+            args.append(str(u.get("alliance") or "").strip())
+        elif sc == "self":                   # 只看自己（游戏 ID 存在 users.uid）
+            where += (" AND " if where else " WHERE ") + "id=?"
+            args.append(str(u.get("uid") or "").strip())
+        with conn() as c:
+            total = c.execute("SELECT COUNT(*) n FROM members" + where, args).fetchone()["n"]
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM members" + where +
+                " ORDER BY updated_at DESC, id LIMIT %d" % limit, args).fetchall()]
+        allow_pii = pii_ok(u)
+        return self.send_json({"ok": True, "total": total, "scope": sc, "pii": allow_pii,
+                               "rows": mask_pii(rows, allow_pii)})
+
+    def member_history(self, mid, q):
+        u = self.need_perm(("roster_view",))
+        if not u:
+            return
+        mid = str(mid).strip()
+        fields = [x.strip() for x in ((q.get("fields") or [""])[0] or "").split(",") if x.strip()]
+        limit = min(500, max(1, int((q.get("limit") or ["200"])[0] or 200)))
+        offset = max(0, int((q.get("offset") or ["0"])[0] or 0))
+        where = "WHERE member_id=?"
+        args = [mid]
+        if fields:
+            where += " AND field IN (%s)" % ",".join("?" * len(fields))
+            args += fields
+        with conn() as c:
+            total = c.execute("SELECT COUNT(*) n FROM member_history " + where, args).fetchone()["n"]
+            # 计数始终按「该档案全部字段」统计，供前端 chip 显示/置灰
+            counts = {r["field"]: r["n"] for r in c.execute(
+                "SELECT field, COUNT(*) n FROM member_history WHERE member_id=? GROUP BY field", (mid,))}
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM member_history " + where + " ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                args + [limit, offset]).fetchall()]
+            mem = c.execute("SELECT name, org FROM members WHERE id=?", (mid,)).fetchone()
+        allow = pii_ok(u)
+        if not allow:
+            for r in rows:
+                if int(r.get("masked") or 0):
+                    r["old_val"] = mh_mask(r["old_val"])
+                    r["new_val"] = mh_mask(r["new_val"])
+        return self.send_json({"ok": True, "rows": rows, "pii": allow,
+                               "total": total, "counts": counts, "offset": offset,
+                               "more": offset + len(rows) < total,
+                               "member": dict(mem) if mem else None})
+
+    def member_history_recent(self, q):
+        u = self.need_perm(("roster_view",))
+        if not u:
+            return
+        days = min(365, max(1, int((q.get("days") or ["7"])[0] or 7)))
+        field = (q.get("field") or [""])[0].strip()
+        limit = min(500, max(1, int((q.get("limit") or ["100"])[0] or 100)))
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
+        sql = ("SELECT h.*, m.name AS mname, m.org AS morg FROM member_history h"
+               " LEFT JOIN members m ON m.id=h.member_id WHERE h.ts>=? AND h.field<>'__init__'")
+        args = [since]
+        if field:
+            sql += " AND h.field=?"
+            args.append(field)
+        sql += " ORDER BY h.ts DESC, h.id DESC LIMIT %d" % limit
+        with conn() as c:
+            rows = [dict(r) for r in c.execute(sql, args).fetchall()]
+        allow = pii_ok(u)
+        if not allow:
+            for r in rows:
+                if int(r.get("masked") or 0):
+                    r["old_val"] = mh_mask(r["old_val"])
+                    r["new_val"] = mh_mask(r["new_val"])
+        return self.send_json({"ok": True, "rows": rows, "pii": allow, "days": days})
+
+    def member_upsert(self, data):
+        u = self.need_perm(("roster_edit",))
+        if not u:
+            return
+        if self.need_auth() is None:
+            return
+        mid = str(data.get("id") or "").strip()
+        if not mid:
+            return self.err(400, "ID 不能为空")
+        if not mid.isdigit() or len(mid) < 5:
+            return self.err(400, "ID 应该是 5 位以上的数字（游戏 ID）")
+        vals = {k: (str(data.get(k)).strip() if data.get(k) is not None else "") for k in
+                ("name", "org", "faction", "alliance", "squad", "phone", "wechat", "qq",
+                 "links", "rating", "note")}
+        allow_pii = pii_ok(u)
+        if scope_of(u) == "org" and vals["org"] != str(u.get("org") or ""):
+            return self.err(403, "你只能维护本组织的人员；要改所属组织请找管理员")
+        if scope_of(u) == "alliance" and vals["alliance"] != str(u.get("alliance") or ""):
+            return self.err(403, "你只能维护本联合体的人员；要改所属联合体请找管理员")
+        ts = now()
+        with conn() as c:
+            old = c.execute("SELECT * FROM members WHERE id=?", (mid,)).fetchone()
+            if old and scope_of(u) == "org":
+                if str(old["org"] or "") != str(u.get("org") or ""):
+                    return self.err(403, "你只能改本组织的人员档案")
+            if old and scope_of(u) == "alliance":
+                if str(old["alliance"] or "") != str(u.get("alliance") or ""):
+                    return self.err(403, "你只能改本联合体的人员档案")
+            if old and not allow_pii:
+                # 前端拿到的是打码值；原样回传时不要把真实号码覆盖成 ****
+                for k in ("phone", "wechat", "qq"):
+                    if "****" in vals[k] or vals[k] == "***":
+                        vals[k] = str(old[k] or "")
+            if old:
+                diff = diff_keys(old, vals)
+                if not diff:
+                    return self.send_json({"ok": True, "row": mask_pii([dict(old)], allow_pii)[0],
+                                           "changed": 0})
+                sets = ", ".join("%s=?" % k for k in diff)
+                c.execute("UPDATE members SET " + sets + ", updated_at=? WHERE id=?",
+                          [vals[k] for k in diff] + [ts, mid])
+                _b = mh_batch(mid, ts)
+                for _k in diff:
+                    mh_add(c, mid, _b, _k, old[_k], vals[_k], u["username"], ts)
+                act = "修改人员档案"
+            else:
+                cols = ["id"] + list(vals.keys()) + ["updated_at"]
+                c.execute("INSERT INTO members(" + ", ".join(cols) + ") VALUES(" +
+                          ", ".join("?" * len(cols)) + ")", [mid] + list(vals.values()) + [ts])
+                mh_add(c, mid, mh_batch(mid, ts), "__create__", "", vals["name"], u["username"], ts)
+                act = "新增人员档案"
+                diff = list(vals.keys())
+        log(act, u["username"], "%s %s" % (mid, vals["name"]), "、".join(diff))
+        with conn() as c:
+            fresh = dict(c.execute("SELECT * FROM members WHERE id=?", (mid,)).fetchone())
+        return self.send_json({"ok": True, "row": mask_pii([fresh], allow_pii)[0],
+                               "changed": len(diff)})
+
+    def member_delete(self, mid):
+        u = self.need_perm(("roster_edit",))
+        if not u:
+            return
+        if self.need_auth() is None:
+            return
+        mid = str(mid).strip()
+        with conn() as c:
+            old = c.execute("SELECT org, alliance, name FROM members WHERE id=?", (mid,)).fetchone()
+            if not old:
+                return self.err(404, "没有这个 ID")
+            if scope_of(u) == "org" and str(old["org"] or "") != str(u.get("org") or ""):
+                return self.err(403, "你只能删本组织的人员档案")
+            if scope_of(u) == "alliance" and str(old["alliance"] or "") != str(u.get("alliance") or ""):
+                return self.err(403, "你只能删本联合体的人员档案")
+        if not self.need_conf(mid):
+            return
+        with conn() as c:
+            c.execute("DELETE FROM members WHERE id=?", (mid,))
+            mh_add(c, mid, mh_batch(mid, now()), "__delete__", old["name"], "", u["username"])
+        log("删除人员档案（高危）", u["username"], mid)
+        return self.send_json({"ok": True})
+
+    def members_import(self, data):
+        if not self.need_perm(("roster_edit",)):
+            return
+        if self.need_auth() is None:
+            return
+        rows = data.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            return self.err(400, "没有可导入的数据")
+        ts = now()
+        ins = 0
+        u = current_user(self)
+        with conn() as c:
+            for r in rows:
+                mid = str(r.get("id") or "").strip()
+                if not mid.isdigit():
+                    continue
+                vals = {"name": r.get("name") or "", "org": r.get("org") or "",
+                        "faction": r.get("faction") or "", "alliance": r.get("alliance") or "",
+                        "squad": r.get("squad") or "", "phone": r.get("phone") or "",
+                        "wechat": r.get("wechat") or "", "qq": r.get("qq") or "",
+                        "links": r.get("links") or "", "rating": r.get("rating") or "",
+                        "note": r.get("note") or ""}
+                old = c.execute("SELECT * FROM members WHERE id=?", (mid,)).fetchone()
+                if old and not diff_keys(old, vals):
+                    continue          # 与库里一模一样：不写库、不计入导入条数
+                c.execute("INSERT INTO members(id,name,org,faction,alliance,squad,phone,wechat,qq,"
+                          "links,rating,updated_at,note)"
+                          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                          " ON CONFLICT(id) DO UPDATE SET name=excluded.name, org=excluded.org,"
+                          " faction=excluded.faction, alliance=excluded.alliance, squad=excluded.squad,"
+                          " phone=excluded.phone, wechat=excluded.wechat,"
+                          " qq=excluded.qq, links=excluded.links, rating=excluded.rating,"
+                          " note=excluded.note, updated_at=excluded.updated_at",
+                          (mid, vals["name"], vals["org"], vals["faction"], vals["alliance"],
+                           vals["squad"], vals["phone"], vals["wechat"], vals["qq"],
+                           vals["links"], vals["rating"], r.get("updated_at") or ts,
+                           vals["note"]))
+                _b = mh_batch(mid, ts)
+                if old:
+                    for _k in diff_keys(old, vals):
+                        mh_add(c, mid, _b, _k, old[_k], vals[_k], u["username"], ts)
+                else:
+                    mh_add(c, mid, _b, "__create__", "", vals["name"], u["username"], ts)
+                ins += 1
+        if ins:
+            log("导入人员档案", u["username"] if u else "-", "%d 条" % ins)
+        return self.send_json({"ok": True, "imported": ins})
+
+    # ---------------- 权限模板 ----------------
+    def perm_templates_list(self):
+        u = self.need_perm(("people_view",))
+        if not u:
+            return
+        with conn() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM perm_templates ORDER BY builtin DESC, id")]
+        for r in rows:
+            r["perms"] = parse_perms(r.get("perms"))
+            r["scope"] = r.get("scope") or "all"
+        return self.send_json({"ok": True, "templates": rows})
+
+    def perm_template_save(self, data):
+        u = self.need_perm(("people_edit",))
+        if not u:
+            return
+        if self.need_auth() is None:
+            return
+        name = (data.get("name") or "").strip()[:40]
+        cn = (data.get("cn") or name).strip()[:40]
+        if not name:
+            return self.err(400, "模板标识不能空")
+        perms = parse_perms(data.get("perms"))
+        if not perms:
+            return self.err(400, "模板至少要有一项权限")
+        scope = scope_of({"scope": data.get("scope")})
+        with conn() as c:
+            old = c.execute("SELECT cn,perms,scope FROM perm_templates WHERE name=?", (name,)).fetchone()
+            if old and (str(old["cn"] or "") == cn and parse_perms(old["perms"]) == perms
+                        and str(old["scope"] or "all") == scope):
+                return self.send_json({"ok": True, "name": name, "changed": False})
+            c.execute("INSERT INTO perm_templates(name,cn,perms,scope,builtin,created_at)"
+                      " VALUES(?,?,?,?,0,?)"
+                      " ON CONFLICT(name) DO UPDATE SET cn=excluded.cn, perms=excluded.perms,"
+                      " scope=excluded.scope",
+                      (name, cn, ",".join(perms), scope, now()))
+        log("保存权限模板", u["username"], name, "%d 项" % len(perms))
+        return self.send_json({"ok": True, "name": name})
+
+    def perm_template_delete(self, tid):
+        u = self.need_perm(("people_edit",))
+        if not u:
+            return
+        if self.need_auth() is None:
+            return
+        with conn() as c:
+            r = c.execute("SELECT name, builtin FROM perm_templates WHERE id=?", (tid,)).fetchone()
+            if not r:
+                return self.err(404, "模板不存在")
+            if r["builtin"]:
+                return self.err(403, "内置模板不能删除")
+            c.execute("DELETE FROM perm_templates WHERE id=?", (tid,))
+        log("删除权限模板", u["username"], r["name"])
+        return self.send_json({"ok": True})
+
+    # ---------------- api ----------------
+    def version_publish(self, data):
+        """仅超级管理员：把当前内部版本标记为对外发布版本。"""
+        u = self.need_auth()
+        if not u:
+            return
+        if u["role"] != SUPER_ROLE:
+            return self.err(403, "只有超级管理员能发布版本")
+        label = (data.get("label") or "").strip()
+        note = (data.get("note") or "").strip()
+        if not label:
+            return self.err(400, "版本号不能为空")
+        if len(label) > 24:
+            return self.err(400, "版本号最多 24 个字符")
+        if len(note) > 120:
+            return self.err(400, "备注最多 120 个字符")
+        with conn() as c:
+            num = int(_meta(c, "version", 0) or 0)
+            for k, v in (("pub_ver", label), ("pub_num", num), ("pub_at", now()),
+                         ("pub_by", u["username"]), ("pub_note", note)):
+                c.execute("INSERT INTO meta(k,v) VALUES(?,?)"
+                          " ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+        log("发布版本", u["username"], "%s（内部第 %d 版）" % (label, num))
+        SSE.publish(num)
+        return self.send_json({"ok": True, "pub": pub_info()})
+
+    def api_get(self, path):
+        q = parse_qs(urlparse(self.path).query)
+        if path == "/api/stream":
+            return self.sse()
+        if path == "/api/blueprints":
+            _u = self.need_perm(("sim_view", "data_view"))
+            if not _u:
+                return
+            ships, planes, groups = load_bundle()
+            ships = ship_scope(ships, _u)
+            with conn() as c:
+                eff = [dict(r) for r in c.execute("SELECT * FROM effects ORDER BY id")]
+                attrs = [dict(r) for r in c.execute("SELECT * FROM attrs ORDER BY ord, id")]
+            return self.send_json({"ok": True, "version": get_version(), "pub": pub_info(),
+                                   "ships": ships, "planes": planes, "groups": groups,
+                                   "attrs": attrs, "effects": eff})
+        if path == "/api/export":
+            _u = self.need_perm(("export",))
+            if not _u:
+                return
+            ships, planes, groups = load_bundle()
+            ships = ship_scope(ships, _u)
+            with conn() as c:
+                eff = [dict(r) for r in c.execute("SELECT * FROM effects ORDER BY id")]
+                attrs = [dict(r) for r in c.execute("SELECT * FROM attrs ORDER BY ord, id")]
+            return self.send_json({"ok": True, "version": get_version(), "pub": pub_info(),
+                                   "ships": ships, "planes": planes, "groups": groups,
+                                   "attrs": attrs, "effects": eff})
+        if path == "/api/settings":
+            with conn() as c:
+                rows = c.execute("SELECT k,v FROM settings").fetchall()
+            cfg = {r["k"]: r["v"] for r in rows}
+            cfg.setdefault("title", "舰船蓝图 · 系统加点 · 搭载 · 人员")
+            return self.send_json({"ok": True, "settings": cfg})
+        if path == "/api/me":
+            u = current_user(self)
+            if not u:
+                return self.send_json({"ok": True, "user": None})
+            return self.send_json({"ok": True, "user": safe_user(u), "csrf": u.get("_csrf") or ""})
+        if path == "/api/pwd/requests":
+            if not self.need_perm(("people_view",)):
+                return
+            with conn() as c:
+                rows = c.execute("SELECT * FROM pwd_requests ORDER BY id DESC LIMIT 200").fetchall()
+            return self.send_json({"ok": True, "requests": [dict(r) for r in rows]})
+        if path == "/api/pwd/requests/mine":
+            u = self.require()
+            if not u:
+                return
+            with conn() as c:
+                rows = c.execute("SELECT * FROM pwd_requests WHERE user_id=? ORDER BY id DESC LIMIT 20",
+                                 (u["id"],)).fetchall()
+            return self.send_json({"ok": True, "requests": [dict(r) for r in rows]})
+        if path == "/api/perm_templates":
+            return self.perm_templates_list()
+        if path == "/api/builds":
+            u = self.require()
+            if not u:
+                return
+            with conn() as c:
+                rows = c.execute("SELECT * FROM builds WHERE owner=? ORDER BY id DESC",
+                                 (u["username"],)).fetchall()
+            return self.send_json({"ok": True, "builds": [dict(r) for r in rows]})
+        if path == "/api/battles":
+            return self.battles_list()
+        if path == "/api/member_history":
+            return self.member_history_recent(
+                {"days": q.get("days") or ["7"], "field": q.get("field") or [""],
+                 "limit": q.get("limit") or ["100"]})
+        if path.startswith("/api/members/") and path.endswith("/history"):
+            mid = path[len("/api/members/"):-len("/history")].strip("/")
+            return self.member_history(mid, {"fields": q.get("fields") or [""],
+                                             "limit": q.get("limit") or ["200"]})
+        if path == "/api/members":
+            return self.members_list(
+                {"q": q.get("q") or [""], "field": q.get("field") or ["all"],
+                 "limit": q.get("limit") or ["200"]})
+        if path == "/api/users":
+            u = self.need_perm(("people_view",))
+            if not u:
+                return
+            kw = (q.get("q") or [""])[0].strip()
+            sql, args = "SELECT * FROM users", []
+            _sc = scope_of(u)
+            if _sc == "self":               # 只能看自己这一条
+                sql += " WHERE id=?"
+                args = [u["id"]]
+                kw = ""                      # 自己那条不再按关键字过滤
+            elif _sc == "org":
+                sql += " WHERE IFNULL(org,'')=?"
+                args = [str(u.get("org") or "")]
+            elif _sc == "alliance":
+                sql += " WHERE IFNULL(alliance,'')=?"
+                args = [str(u.get("alliance") or "")]
+            if kw:
+                sql += (" AND " if " WHERE " in sql else " WHERE ") + \
+                       "(username LIKE ? OR name LIKE ? OR squadron LIKE ? OR phone LIKE ?)"
+                args = list(args) + ["%" + kw + "%"] * 4
+            with conn() as c:
+                rows = c.execute(sql + " ORDER BY id", args).fetchall()
+            return self.send_json({"ok": True, "users": [safe_user(dict(r)) for r in rows]})
+        if path == "/api/health":
+            # 免登录的存活探针：只回 ok，不暴露版本/数据量
+            return self.send_json({"ok": True, "ts": int(time.time()),
+                                   "signup": {"allow": signup_allow(), "need_code": bool(signup_code())}})
+        if path == "/api/signup/state":
+            u = self.require()
+            if not u:
+                return
+            if (u.get("role") or "") != SUPER_ROLE:
+                return self.err(403, "只有超级管理员能查看邀请码")
+            cd = signup_code()
+            return self.send_json({"ok": True, "allow": signup_allow(),
+                                   "code": cd, "need_code": bool(cd)})
+        if path == "/api/health/full":
+            if not self.require():
+                return
+            with conn() as c:
+                v = c.execute("PRAGMA user_version").fetchone()[0]
+                n_audit = c.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+            return self.send_json({"ok": True, "version": VERSION, "schema": v,
+                                   "audit": n_audit, "uptime": int(time.time() - STARTED_AT)})
+        if path == "/api/audit/stats":
+            u = self.need_perm(("audit_view", "audit_self"))
+            if not u:
+                return
+            return self.send_json({"ok": True, "stats": audit_stats(),
+                                   "can_prune": (u.get("role") or "") in ("admin", SUPER_ROLE)})
+        if path == "/api/audit":
+            u = self.need_perm(("audit_view", "audit_self"))
+            if not u:
+                return
+            kw = (q.get("q", [""])[0] or "").strip()
+            kind = (q.get("kind", [""])[0] or "").strip()
+            try:
+                limit = min(1000, max(1, int(q.get("limit", ["200"])[0])))
+            except ValueError:
+                limit = 200
+            where = " WHERE 1=1"
+            args = []
+            if kind:
+                where += " AND IFNULL(kind,'')=?"
+                args.append(kind)
+            if kw:
+                where += (" AND (ts LIKE ? OR actor LIKE ? OR action LIKE ? OR target LIKE ?"
+                          " OR detail LIKE ?)")
+                args += ["%" + kw + "%"] * 5
+            mine = perms_of(u)
+            only_self = ("audit_view" not in mine) or scope_of(u) == "self"
+            if only_self:                  # 只有 audit_self，或数据范围=自己：连分页与计数一起收窄
+                where += " AND IFNULL(actor,'')=?"
+                args.append(u["username"])
+            sql = "SELECT * FROM audit" + where + " ORDER BY id DESC LIMIT %d" % limit
+            with conn() as c:
+                rows = [dict(r) for r in c.execute(sql, args).fetchall()]
+                total = c.execute("SELECT COUNT(*) FROM audit" + where, args).fetchone()[0]
+            return self.send_json({"ok": True, "audit": rows, "self_only": only_self,
+                                   "total": total, "kind": kind, "q": kw})
+        return self.err(404, "unknown api")
+
+    def simulate_api(self, data):
+        ships, planes, groups = load_bundle()
+        bundle = {"plane": {p["id"]: p for p in planes}}
+        if data.get("planes_only"):
+            rows = []
+            for p in data.get("planes") or []:
+                pb = bundle["plane"].get(p.get("id"))
+                if not pb:
+                    continue
+                cnt = max(0, int(round(num(p.get("count"), 0))))
+                if cnt <= 0:
+                    continue
+                light = bool(data.get("light"))
+                rows.append({"name": pb["name"], "count": cnt,
+                             "groups": cnt, "per_group": 1,
+                             "dpm": 0.0 if light else round(pb["base"]["dpm"] * cnt, 1),
+                             "ehp": 0.0 if light else round(pb["base"]["ehp"] * cnt, 1)})
+            total = sum(r["dpm"] for r in rows)
+            return self.send_json({"ok": True, "result": {
+                "plane_only": True, "ship": "（未指定母舰）", "size": "", "mod_ok": False,
+                "dpm": 0, "plane_dpm": round(total, 1), "total_dpm": round(total, 1),
+                "ehp": 0, "repair": 0, "tech": 0, "techcap": 0,
+                "launch": None, "planes": rows, "violations": [], "detail": [],
+                "systems": []}})
+        ship = next((s for s in ships if s["id"] == data.get("ship")), None)
+        if not ship:
+            return self.err(400, "blueprint not found")
+        res = simulate(ship, data.get("modules") or {}, data.get("alloc") or {},
+                       bundle, data.get("planes") or [], light=bool(data.get("light")))
+        return self.send_json({"ok": True, "result": res})
+
+    def stream_ticket(self):
+        u = self.require()
+        if not u:
+            return
+        tk = issue_ticket(u["username"])
+        return self.send_json({"ok": True, "ticket": tk, "ttl": TICKET_TTL})
+
+    def sse(self):
+        q = parse_qs(urlparse(self.path).query)
+        tk = (q.get("ticket", [""])[0] or "").strip()
+        who = use_ticket(tk)
+        if not who:
+            return self.err(401, "实时连接需要有效的一次性 ticket（刷新页面重试）")
+        if SSE.count() >= SSE_MAX_CLIENTS:
+            return self.send_json({"ok": False, "code": "sse_full",
+                                   "error": "实时刷新连接已满，手动刷新页面即可看到最新数据"}, 503)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        q = SSE.add()
+        live_add(1)
+        try:
+            self.wfile.write(("event: version\ndata: %d\n\n" % get_version()).encode())
+            self.wfile.flush()
+            deadline = time.time() + 3600
+            while time.time() < deadline:
+                touch()
+                try:
+                    ver = q.get(timeout=25)
+                    self.wfile.write(("event: version\ndata: %d\n\n" % ver).encode())
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            SSE.drop(q)
+            live_add(-1)
+
+    def login(self, data):
+        name = (data.get("username") or "").strip()
+        pwd = data.get("password") or ""
+        ip = (self.client_address[0] if self.client_address else "") or "?"
+        wait = login_wait(ip, name)
+        if wait:
+            log("登录失败", name, ip, "锁定中，还需 %d 秒" % wait)
+            return self.send_json({"ok": False, "code": "locked",
+                                   "error": "登录失败次数太多，请 %d 秒后再试" % wait}, 429)
+        with conn() as c:
+            r = c.execute("SELECT * FROM users WHERE username=?", (name,)).fetchone()
+            if not r or not check_pwd(pwd, r["pwd"]):
+                left = login_failed(ip, name)
+                log("登录失败", name, ip, "密码错误" + ("，已锁定 %d 秒" % left if left else ""))
+                msg = "用户名或密码错误" if not left else "登录失败次数太多，请 %d 秒后再试" % left
+                return self.send_json({"ok": False, "error": msg,
+                                       "code": "locked" if left else "bad_pwd"}, 401)
+            if (r["status"] or "") not in ("在职", ""):
+                return self.err(403, "账号已停用")
+            token = secrets.token_hex(16)
+            csrf = secrets.token_urlsafe(24)
+            now_ts = int(time.time())
+            c.execute("DELETE FROM sessions WHERE expire<?", (now_ts,))
+            c.execute("INSERT INTO sessions(token,user,expire,csrf) VALUES(?,?,?,?)",
+                      (token, r["id"], now_ts + SESSION_HOURS * 3600, csrf))
+            # 注意：同一秒内登录多次时 expire 会相同，必须用 rowid 兜底排序，
+            # 否则刚签发的 token 可能被当成“旧的”删掉，用户登录后立刻 401。
+            c.execute("DELETE FROM sessions WHERE user=? AND token NOT IN "
+                      "(SELECT token FROM sessions WHERE user=? ORDER BY expire DESC, rowid DESC LIMIT 3)",
+                      (r["id"], r["id"]))
+        login_ok(ip, name)
+        if not (r["uid"] or "").strip():
+            _g = guess_uid(None, r["username"], dict(r).get("phone"))
+            if _g:
+                # 必须自己开 with：上面 with 块已提交，继续用 c 会留下未提交的写事务，
+                # 之后所有写操作都会 database is locked。
+                with conn() as c2:
+                    c2.execute("UPDATE users SET uid=? WHERE id=?", (_g, r["id"]))
+                r = dict(r)
+                r["uid"] = _g
+        log("登录", name, "session")
+        return self.send_json({"ok": True, "token": token, "csrf": csrf,
+                               "user": safe_user(dict(r))})
+
+    def save_build(self, data):
+        u = self.require()
+        if not u:
+            return
+        with conn() as c:
+            cur = c.execute(
+                "INSERT INTO builds(owner,ship,name,modules,alloc,planes,note,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (u["username"], data.get("ship"), data.get("name") or "未命名方案",
+                 json.dumps(data.get("modules") or {}, ensure_ascii=False),
+                 json.dumps(data.get("alloc") or {}, ensure_ascii=False),
+                 json.dumps(data.get("planes") or [], ensure_ascii=False),
+                 data.get("note") or "", now()))
+        log("保存方案", u["username"], "build#%d" % cur.lastrowid, data.get("name") or "")
+        return self.send_json({"ok": True, "id": cur.lastrowid})
+
+    # ---- 注册（试行：验证码直接回显，不真发短信/邮件）----
+    def _need_super(self):
+        u = self.require()
+        if not u:
+            return None
+        if (u.get("role") or "") != SUPER_ROLE:
+            self.err(403, "只有超级管理员能管理邀请码")
+            return None
+        return u
+
+    def signup_rotate(self):
+        u = self._need_super()
+        if not u:
+            return
+        code = gen_invite_code()
+        _set_setting("signup_code", code)
+        _set_setting("signup_allow", "1")
+        log("重置邀请码", u["username"], code)
+        return self.send_json({"ok": True, "code": code, "allow": True})
+
+    def signup_set(self, data):
+        u = self._need_super()
+        if not u:
+            return
+        code = (data.get("code") or "").strip()
+        if len(code) > 32:
+            return self.err(400, "邀请码最多 32 个字符")
+        _set_setting("signup_code", code)
+        if code:
+            _set_setting("signup_allow", "1")
+        log("设置邀请码", u["username"], code or "（空 = 注册不再需要邀请码）")
+        return self.send_json({"ok": True, "code": code, "need_code": bool(code)})
+
+    def signup_allow_toggle(self, data):
+        u = self._need_super()
+        if not u:
+            return
+        on = bool(data.get("allow"))
+        _set_setting("signup_allow", "1" if on else "0")
+        log("自助注册开关", u["username"], "开" if on else "关")
+        return self.send_json({"ok": True, "allow": on})
+
+    def register_send(self, data):
+        import random
+        if not signup_allow():
+            return self.err(403, "本站未开放自助注册，请联系管理员建号")
+        if signup_code() and (data.get("inv") or "").strip() != signup_code():
+            return self.err(403, "邀请码不对，请向管理员索取")
+        un = (data.get("username") or "").strip()
+        pw = (data.get("pwd") or "").strip()
+        uid = (data.get("uid") or "").strip()
+        contact = (data.get("contact") or "").strip()
+        if not (3 <= len(un) <= 20) or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in un):
+            return self.err(400, "账号要 3–20 位字母/数字/下划线")
+        _bad = pwd_problem(pw, un)
+        if _bad:
+            return self.err(400, _bad)
+        if not uid:
+            return self.err(400, "ID 必填")
+        is_phone = contact.isdigit() and len(contact) == 11 and contact[0] == "1"
+        is_mail = ("@" in contact) and ("." in contact.split("@")[-1]) and len(contact) <= 80
+        if not (is_phone or is_mail):
+            return self.err(400, "手机号或邮箱格式不对")
+        ip = (self.client_ip() if self.client_address else "") or "?"
+        ts_now = int(time.time())
+        with conn() as c:
+            c.execute("DELETE FROM send_log WHERE ts < ?", (ts_now - 86400 * 2,))
+            last = c.execute("SELECT ts FROM send_log WHERE contact=? AND ip=? ORDER BY ts DESC LIMIT 1",
+                             (contact, ip)).fetchone()
+            if last and ts_now - int(last["ts"]) < SEND_COOLDOWN:
+                return self.err(429, "验证码刚发过，%d 秒后再试" % (SEND_COOLDOWN - (ts_now - int(last["ts"]))))
+            day_start = ts_now - (ts_now % 86400)
+            cnt = c.execute("SELECT COUNT(*) AS n FROM send_log WHERE ip=? AND ts >= ?",
+                            (ip, day_start)).fetchone()["n"]
+            if cnt >= SEND_DAILY_IP:
+                return self.err(429, "这个网络今天已经发过 %d 次验证码，明天再试或联系管理员" % SEND_DAILY_IP)
+        code = "%06d" % random.randint(0, 999999)
+        exp = ts_now + 600
+        with conn() as c:
+            if c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone():
+                return self.err(409, "这个账号已被占用")
+            c.execute("""INSERT INTO signups(username,pwd,uid,name,org,addr,contact,code,exp,ts)
+                         VALUES(?,?,?,?,?,?,?,?,?,?)
+                         ON CONFLICT(username) DO UPDATE SET pwd=excluded.pwd,uid=excluded.uid,
+                         name=excluded.name,org=excluded.org,addr=excluded.addr,
+                         contact=excluded.contact,code=excluded.code,exp=excluded.exp,ts=excluded.ts""",
+                      (un, hash_pwd(pw), uid, data.get("name") or "", data.get("org") or "",
+                       data.get("addr") or "", contact, code, exp, now()))
+            c.execute("INSERT INTO send_log(ip,contact,un,ts) VALUES(?,?,?,?)",
+                      (ip, contact, un, ts_now))
+        log("申请注册", un, "signups", contact)
+        return self.send_json({"ok": True, "code": code, "exp": exp, "mode": "trial",
+                               "msg": "试行模式：验证码直接返回"})
+
+    def register_verify(self, data):
+        if not signup_allow():
+            return self.err(403, "本站未开放自助注册，请联系管理员建号")
+        if signup_code() and (data.get("inv") or "").strip() != signup_code():
+            return self.err(403, "邀请码不对，请向管理员索取")
+        un = (data.get("username") or "").strip()
+        code = (data.get("code") or "").strip()
+        if not un or not code:
+            return self.err(400, "账号和验证码都要填")
+        with conn() as c:
+            row = c.execute("SELECT * FROM signups WHERE username=?", (un,)).fetchone()
+            if not row:
+                return self.err(404, "没有这个待验证的申请，请重新发送验证码")
+            if row["code"] != code:
+                return self.err(400, "验证码不对")
+            if int(row["exp"] or 0) < int(time.time()):
+                return self.err(400, "验证码已过期，请重新发送")
+            if c.execute("SELECT 1 FROM users WHERE username=?", (un,)).fetchone():
+                return self.err(409, "这个账号已被占用")
+            c.execute("""INSERT INTO users(username,pwd,role,name,squadron,phone,status,note,perms,
+                         uid,org,addr,verified,created_at,updated_at)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (un, row["pwd"], "viewer", row["name"] or "", row["org"] or "",
+                       row["contact"], "在职", "自助注册", "sim_view,battle_view", row["uid"] or "",
+                       row["org"] or "", row["addr"] or "", 1, now(), now()))
+            c.execute("DELETE FROM signups WHERE username=?", (un,))
+        bump_version()
+        log("注册成功", un, "users", "初始权限 sim_view,battle_view（只读）")
+        return self.send_json({"ok": True, "username": un,
+                                "perms": ["sim_view", "battle_view"]})
+
+    def user_create(self, data):
+        if self.need_auth() is None:
+            return
+        u = self.need_perm(("people_edit",))
+        if not u:
+            return
+        name = (data.get("username") or "").strip()
+        if not name:
+            return self.err(400, "缺少登录名")
+        if _role(data.get("role")) == SUPER_ROLE and (u.get("role") or "") != SUPER_ROLE:
+            return self.err(403, "只有超级管理员能创建超级管理员")
+        if _role(data.get("role")) == "admin" and (u.get("role") or "") != SUPER_ROLE:
+            return self.err(403, "只有超级管理员能创建管理员")
+        try:
+            with conn() as c:
+                c.execute("INSERT INTO users(username,pwd,role,name,squadron,phone,status,note,"
+                          "perms,scope,org,perm_expire_at,alliance,created_at,updated_at)"
+                          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (name, hash_pwd(data.get("password") or "123456"),
+                           _role(data.get("role")), data.get("name") or name,
+                           data.get("squadron") or "", data.get("phone") or "",
+                           data.get("status") or "在职", data.get("note") or "",
+                           ",".join(parse_perms(data.get("perms"))),
+                           scope_of({"scope": data.get("scope")}),
+                           (data.get("org") or "").strip(),
+                           (data.get("perm_expire_at") or "").strip(),
+                           (data.get("alliance") or "").strip(), now(), now()))
+        except sqlite3.IntegrityError:
+            return self.err(409, "登录名已存在")
+        log("新增人员", u["username"], name, _role(data.get("role")))
+        return self.send_json({"ok": True})
+
+    def user_update(self, uid, data):
+        if self.need_auth() is None:
+            return
+        u = self.need_perm(("people_edit",))
+        if not u:
+            return
+        fields, args = [], []
+        with conn() as c:
+            tgt = c.execute("SELECT role, username FROM users WHERE id=?", (uid,)).fetchone()
+        if not tgt:
+            return self.err(404, "人员不存在")
+        me = current_user(self)
+        my_role = me.get("role") or ""
+        tgt_role = tgt["role"] or ""
+        is_top = my_role == SUPER_ROLE
+        is_mgr = my_role in ("admin", SUPER_ROLE)
+        if tgt_role == SUPER_ROLE and not is_top:
+            return self.err(403, "超级管理员账号只有超级管理员能修改")
+        if tgt_role == "admin" and not is_mgr:
+            return self.err(403, "只有管理员能修改管理员账号")
+        if data.get("password") and tgt_role in ("admin", SUPER_ROLE) and not is_mgr:
+            return self.err(403, "只有管理员能修改管理员密码")
+        if "role" in data and _role(data.get("role")) == SUPER_ROLE and not is_top:
+            return self.err(403, "只有超级管理员能设置超级管理员")
+        if "role" in data and _role(data.get("role")) == "admin" and not is_top:
+            return self.err(403, "只有超级管理员能设置管理员角色")
+        if tgt_role in ("admin", SUPER_ROLE) and (
+                ("role" in data and _role(data.get("role")) not in ("admin", SUPER_ROLE))
+                or ("status" in data and str(data.get("status") or "") != "在职")):
+            with conn() as c2:
+                n = c2.execute("SELECT COUNT(*) n FROM users WHERE role IN ('admin','superadmin')").fetchone()["n"]
+            if n <= 1:
+                return self.err(403, "这是唯一的管理员账号，不能降级或停用；先把别的账号设为管理员")
+        gate = ("role", "perms", "status", "scope", "perm_expire_at", "org", "alliance")
+        if not is_mgr and any(k in data for k in gate):
+            return self.err(403, "只有管理员能改角色、权限和状态")
+        if "perms" in data:
+            fields.append("perms=?")
+            args.append(",".join(parse_perms(data.get("perms"))))
+        if "scope" in data:
+            fields.append("scope=?")
+            args.append(scope_of({"scope": data.get("scope")}))
+        if "perm_expire_at" in data:
+            fields.append("perm_expire_at=?")
+            args.append((data.get("perm_expire_at") or "").strip())
+        for k in ("role", "name", "squadron", "phone", "status", "note", "org", "alliance"):
+            if k in data:
+                fields.append(k + "=?")
+                args.append(_role(data[k]) if k == "role" else data[k])
+        if data.get("password"):
+            fields.append("pwd=?")
+            args.append(hash_pwd(data["password"]))
+            fields.append("pwd_changed_at=?")
+            args.append(now())
+            if data.get("must_change"):
+                fields.append("must_change=?")
+                args.append(1)
+        if not fields:
+            return self.err(400, "没有要改的字段")
+        # 与库里原值比一遍：没有任何字段变化就不写库、不写审计
+        probe = {}
+        for k in ("perms", "scope", "perm_expire_at", "role", "name", "squadron",
+                  "phone", "status", "note", "org", "alliance"):
+            if k in data:
+                if k == "perms":
+                    probe[k] = ",".join(parse_perms(data.get("perms")))
+                elif k == "scope":
+                    probe[k] = scope_of({"scope": data.get("scope")})
+                elif k == "role":
+                    probe[k] = _role(data[k])
+                elif k == "perm_expire_at":
+                    probe[k] = (data.get("perm_expire_at") or "").strip()
+                else:
+                    probe[k] = data[k]
+        with conn() as c:
+            cur_row = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if not cur_row:
+            return self.err(404, "人员不存在")
+        diff = diff_keys(cur_row, probe) if not data.get("password") else ["password"]
+        if not diff:
+            return self.send_json({"ok": True, "changed": False})
+        fields.append("updated_at=?")
+        args.append(now())
+        args.append(uid)
+        with conn() as c:
+            cur = c.execute("UPDATE users SET " + ",".join(fields) + " WHERE id=?", args)
+            if cur.rowcount == 0:
+                return self.err(404, "人员不存在")
+        log("修改人员", u["username"], tgt["username"] or ("user#%d" % uid),
+            "、".join(sorted(diff)))
+        return self.send_json({"ok": True, "changed": len(diff)})
+
+    def user_delete(self, uid):
+        if self.need_auth() is None:
+            return
+        u = self.need_perm(("people_edit",))
+        if not u:
+            return
+        if uid == u["id"]:
+            return self.err(400, "不能删除自己")
+        with conn() as c:
+            r = c.execute("SELECT username, role FROM users WHERE id=?", (uid,)).fetchone()
+            if not r:
+                return self.err(404, "人员不存在")
+            if r["role"] == SUPER_ROLE and (u.get("role") or "") != SUPER_ROLE:
+                return self.err(403, "超级管理员账号只有超级管理员能删除")
+            if r["role"] in ("admin", SUPER_ROLE):
+                n = c.execute("SELECT COUNT(*) n FROM users WHERE role IN ('admin','superadmin')").fetchone()["n"]
+                if n <= 1:
+                    return self.err(403, "这是唯一的管理员账号，不能删除；先把别的账号设为管理员")
+        if not self.need_conf(r["username"]):
+            return
+        with conn() as c:
+            c.execute("DELETE FROM users WHERE id=?", (uid,))
+            c.execute("DELETE FROM sessions WHERE user=?", (uid,))
+        log("删除人员", u["username"], r["username"])
+        return self.send_json({"ok": True})
+
+
+class QuietServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys
+        et = sys.exc_info()[0]
+        if et in (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TimeoutError):
+            return
+        super().handle_error(request, client_address)
+
+
+DEFAULT_ADMIN_PWDS = ("admin123", "Fleet#2026", "123456", "viewer123", "editor123")
+
+
+def ensure_initial_passwords():
+    """交付/首次运行：凡是还在用出厂口令的账号，一律换成一次性随机口令。
+
+    同一个包发给多个人也互不相通；口令写在数据目录的「初始口令.txt」里，
+    首次登录会强制修改，改完这个文件就可以删掉。
+    """
+    out = []
+    with conn() as c:
+        rows = c.execute("SELECT id,username,pwd,role FROM users ORDER BY id").fetchall()
+        for r in rows:
+            if not any(check_pwd(p, r["pwd"]) for p in DEFAULT_ADMIN_PWDS):
+                continue
+            pwd = secrets.token_urlsafe(8)
+            c.execute("UPDATE users SET pwd=?, must_change=1, updated_at=? WHERE id=?",
+                      (hash_pwd(pwd), now(), r["id"]))
+            out.append((r["username"], r["role"], pwd))
+    if not out:
+        return []
+
+    role_cn = {"admin": "管理员", "editor": "编辑", "viewer": "只读"}
+    txt = os.path.join(DATA_DIR, "初始口令.txt")
+    lines = ["FleetTool 初始账号（首次登录后必须修改口令）", ""]
+    for un, role, pwd in out:
+        lines.append("  账号：%-12s 口令：%-14s %s" % (un, pwd, role_cn.get(role, role)))
+    lines.append("")
+    lines.append("改完口令后，这个文件可以删掉。")
+    body = "\n".join(lines) + "\n"
+    try:
+        with open(txt, "w", encoding="utf-8") as f:
+            f.write(body)
+    except OSError:
+        txt = "(无法写入初始口令文件)"
+    print("=" * 60)
+    print(body.rstrip())
+    print("-" * 60)
+    print("已写入：%s" % txt)
+    print("=" * 60)
+    return out
+
+
+def open_browser(url):
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def main():
+    # 兜底：唯一管理员忘了密码、网页里没人能批的时候，在服务器本机执行
+    #   python server.py --reset-pwd <账号> [新口令]
+    if len(sys.argv) >= 3 and sys.argv[1] == "--reset-pwd":
+        who = (sys.argv[2] or "").strip()
+        newpw = (sys.argv[3] if len(sys.argv) >= 4 else "").strip() or secrets.token_urlsafe(9)
+        init_db()
+        with conn() as c:
+            row = c.execute("SELECT id FROM users WHERE username=?", (who,)).fetchone()
+            if not row:
+                print("没有这个账号：%s" % who)
+                return 3
+            c.execute("UPDATE users SET pwd=?, must_change=1, updated_at=?, pwd_changed_at=? WHERE id=?",
+                      (hash_pwd(newpw), now(), now(), row["id"]))
+        log("命令行重置密码", "cli", who, "本地兜底，需下次登录改密")
+        print("已重置 %s 的口令：%s" % (who, newpw))
+        print("（这个口令只能用一次，登录后会强制改密码）")
+        return 0
+    # 只有在「第一次运行、data.db 还不存在」时才轮换出厂口令：
+    # 交付出去的新库由程序自己生成，口令变成随机值写进初始口令.txt；
+    # 已经有库的情况下（自己用、或者别人已经在用）每次启动都不再动口令。
+    # 需要强制重新轮换时设 FT_ROTATE=1。
+    first_run = not os.path.exists(DB_PATH)
+    init_db()
+    if os.environ.get("FT_ROTATE") == "1" or (FROZEN and first_run):
+        ensure_initial_passwords()
+    srv = None
+    port = PORT
+    for i in range(0, 21):
+        try:
+            srv = QuietServer((HOST, port), Handler)
+            break
+        except OSError as e:
+            if i == 20:
+                print("端口 %d~%d 都被占用：%s" % (PORT, PORT + 20, e))
+                return 2
+            port += 1
+    url = "http://%s:%d/" % ("127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST, port)
+    print("FleetTool v%s 已启动：%s（数据库结构 v%d）" % (VERSION, url, SCHEMA_VERSION))
+    print("数据目录：%s" % DATA_DIR)
+    print("关闭这个窗口即停止服务。")
+    if IDLE_EXIT:
+        print("页面全关掉后 %d 秒自动退出（改 FT_IDLE_SEC 调时长，FT_IDLE_EXIT=0 关闭）。" % IDLE_SEC)
+        threading.Thread(target=idle_watchdog, daemon=True).start()
+    threading.Thread(target=audit_janitor, daemon=True).start()
+    if FROZEN or os.environ.get("FT_OPEN") == "1":
+        threading.Timer(1.2, open_browser, args=(url,)).start()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

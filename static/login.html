@@ -1,0 +1,134 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · 舰队工具</title>
+<style>
+:root{--bg:#0f1620;--card:#16212e;--line:#27364a;--ink:#e6edf6;--dim:#8fa3ba;--acc:#3d7eff;--ok:#37b26a;--bad:#e2564a;--warn:#e0a93b}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(900px 600px at 20% 0%,#1b2a3d,var(--bg));color:var(--ink);
+ font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;padding:28px}
+.shell{width:min(920px,100%);display:grid;grid-template-columns:1fr 1fr;gap:22px}
+@media(max-width:820px){.shell{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 22px 18px;
+ box-shadow:0 18px 50px rgba(0,0,0,.35)}
+h1{margin:0 0 4px;font-size:19px;letter-spacing:.5px}
+h2{margin:0 0 14px;font-size:15px;color:var(--dim);font-weight:500}
+.sub{color:var(--dim);font-size:12.5px;margin:0 0 16px}
+label{display:block;font-size:12.5px;color:var(--dim);margin:10px 0 4px}
+label b{color:var(--bad);font-weight:500}
+input{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);
+ background:#0d151f;color:var(--ink);font:inherit;outline:none}
+input:focus{border-color:var(--acc)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px 14px;margin-top:16px;
+ border-radius:9px;border:1px solid transparent;background:var(--acc);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn.ghost{background:transparent;border-color:var(--line);color:var(--ink);font-weight:500}
+.btn.ok{background:var(--ok)}
+.tabs{display:flex;gap:4px;background:#0d151f;border:1px solid var(--line);border-radius:10px;padding:4px;margin-bottom:16px}
+.tabs button{flex:1;padding:8px;border:0;border-radius:7px;background:transparent;color:var(--dim);font:inherit;cursor:pointer}
+.tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.hint{font-size:12px;color:var(--dim);margin-top:10px}
+.msg{margin-top:12px;font-size:12.5px;padding:9px 11px;border-radius:8px;display:none}
+.msg.show{display:block}
+.msg.bad{background:rgba(226,86,74,.13);border:1px solid rgba(226,86,74,.45);color:#ffb4ad}
+.msg.ok{background:rgba(55,178,106,.13);border:1px solid rgba(55,178,106,.45);color:#a8e6c0}
+.msg.warn{background:rgba(224,169,59,.12);border:1px solid rgba(224,169,59,.45);color:#f0d39a}
+.step2{display:none}
+.step2.on{display:block}
+code{background:#0d151f;border:1px solid var(--line);padding:1px 6px;border-radius:6px;color:#9fd0ff}
+.foot{grid-column:1/-1;text-align:center;color:var(--dim);font-size:12px}
+.foot a{color:var(--acc);text-decoration:none}
+</style></head>
+<body>
+<div class="shell">
+  <div class="card">
+    <h1>舰队工具</h1>
+    <p class="sub">登录后进入工作台</p>
+
+    <label>账号</label>
+    <input id="lgUser" autocomplete="username" placeholder="用户名">
+    <label>密码</label>
+    <input id="lgPwd" type="password" autocomplete="current-password" placeholder="密码">
+    <button class="btn" id="lgGo">登录</button>
+    <div id="lgMsg" class="msg"></div>
+
+    <div style="margin-top:10px"><a href="#" id="forgotLink" style="font-size:13px">忘记密码？申请管理员重置 →</a></div>
+    <div id="forgotBox" style="display:none;margin-top:10px">
+      <label>账号</label><input id="fgUser" placeholder="要重置的用户名">
+      <label>联系方式</label><input id="fgContact" placeholder="手机号 / 邮箱，方便管理员核实">
+      <label>说明（可选）</label><input id="fgReason" placeholder="例如：密码忘了 / 换手机了">
+      <button class="btn" id="fgSend">提交申请</button>
+      <div class="hint">管理员批准后会给一个临时密码，登录后请立即改密。</div>
+      <div id="fgMsg" class="msg"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>说明</h2>
+    <p class="sub" style="margin-bottom:10px">本系统不开放自助注册，账号由管理员在「人员管理」里开通。</p>
+    <div class="hint" style="line-height:1.9">
+      · 忘记密码：点左边「申请管理员重置」；<br>
+      · 需要更多权限（数据管理 / 人员管理 / 信息查询）：找管理员勾选；<br>
+      · 提示「请先修改密码」时，按提示改完即可使用。
+    </div>
+    <a class="btn ghost" href="/index.html" style="margin-top:14px;text-decoration:none">直接进入主页面 →</a>
+  </div>
+
+  <div class="foot">舰队工具</div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+function show(el, text, kind) { if (!el) return; el.textContent = text; el.className = 'msg ' + (kind || 'bad') + ' show'; }
+function nextUrl() {
+  const q = new URLSearchParams(location.search);
+  const n = q.get('next');
+  return (n && n.charAt(0) === '/') ? n : '/index.html';
+}
+async function doLogin() {
+  const u = $('#lgUser').value.trim(), p = $('#lgPwd').value, box = $('#lgMsg');
+  if (!u || !p) return show(box, '账号和密码都要填');
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) return show(box, j.error || ('登录失败 ' + r.status));
+    localStorage.setItem('ft_token', j.token);
+    location.replace(nextUrl());
+  } catch (e) { show(box, '网络错误：' + e.message); }
+}
+$('#lgGo').onclick = doLogin;
+$('#lgPwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+$('#lgUser').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#lgPwd').focus(); });
+
+$('#forgotLink').onclick = (ev) => {
+  ev.preventDefault();
+  const b = $('#forgotBox');
+  b.style.display = (b.style.display === 'none' || !b.style.display) ? '' : 'none';
+};
+$('#fgSend').onclick = async () => {
+  const box = $('#fgMsg');
+  const body = {
+    username: $('#fgUser').value.trim(),
+    contact: $('#fgContact').value.trim(),
+    reason: $('#fgReason').value.trim()
+  };
+  if (!body.username || !body.contact) return show(box, '账号和联系方式都要填');
+  try {
+    const r = await fetch('/api/pwd/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) show(box, '已提交，等管理员处理；批准后请用临时密码登录并立即改密。', 'ok');
+    else show(box, j.error || ('提交失败 ' + r.status));
+  } catch (e) { show(box, '提交失败：' + e.message); }
+};
+(function () {
+  const t = sessionStorage.getItem('ft_flash');
+  if (t) { sessionStorage.removeItem('ft_flash'); show($('#lgMsg'), t, 'bad'); }
+})();
+</script>
+</body></html>
