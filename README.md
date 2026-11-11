@@ -1,4 +1,4 @@
-# 元空间舰船工具
+# 追毫中枢 · 舰船工具
 
 舰船 / 搭载系统 / 加点树 / 战报分析 / 人员档案，一个零依赖的 Python 网页服务。
 
@@ -36,7 +36,7 @@ python -X utf8 server.py 8787
 
 ## 部署
 
-见 [部署指南](https://github.com/)（同目录 `元空间舰船工具-GitHub部署指南.md`）：
+见 [部署指南](https://github.com/)（同目录 `部署说明`）：
 
 - **Render / Railway / Fly.io**：识别根目录 `Dockerfile`，挂载卷到 `/data`，设 `FT_DATA=/data`。
 - **自己的服务器**：`deploy/github/docker-compose.yml` + `Caddyfile`，`docker compose up -d --build`。

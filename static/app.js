@@ -492,7 +492,7 @@ function applyBrand(t) {
 async function loadSettings() {
   try {
     const r = await api('/api/settings');
-    const t = (r.settings && r.settings.title) || '元空间';
+    const t = (r.settings && r.settings.title) || '追毫中枢';
     applyBrand(t);
     const btn = $('#brandEdit');
     if (btn) btn.style.display = (S.user && (S.user.role === 'admin' || S.user.role === 'superadmin')) ? '' : 'none';
