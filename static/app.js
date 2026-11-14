@@ -702,7 +702,11 @@ function renderTree() {
     const lane = el('div', 'wiz-lane');
     cols.forEach((col, ci) => {
       const box = el('div', 'wiz-col');
-      box.appendChild(el('div', 'wiz-colhead', '第 ' + (ci + 1) + ' 层'));
+      box.dataset.col = String(ci + 1);
+      box.dataset.cnt = String(col.length);
+      const head = el('div', 'wiz-colhead', '第 ' + (ci + 1) + ' 层');
+      head.appendChild(el('span', '', ' ' + col.length + ' 个节点'));
+      box.appendChild(head);
       col.forEach(({code, node}) => box.appendChild(nodeCard(node, sl, sy, code)));
       lane.appendChild(box);
     });
@@ -4721,3 +4725,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     load();
   };
 })();
+
+/* 构建标记：排查「服务器是不是旧文件」用 */
+window.__APP_VER = '2026-11-14.3';
+try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}

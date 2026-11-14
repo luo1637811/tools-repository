@@ -461,3 +461,35 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .seSq .mini:hover{color:#f87171}
 .seOps{white-space:nowrap}
 .seOps .btn{margin-right:4px}
+
+/* ======== 加点树分层：桌面横向滚动、窄屏纵向叠层，任何时候都能看出第几层 ======== */
+#tree .wiz-lane{
+  display:flex; gap:14px; overflow-x:auto; padding:6px 2px 12px;
+  align-items:flex-start; scroll-snap-type:x proximity;
+}
+#tree .wiz-col{flex:0 0 236px; scroll-snap-align:start; min-width:0}
+#tree .wiz-colhead{
+  position:sticky; top:0; z-index:3; display:flex; align-items:baseline; gap:6px;
+  font-size:12px; font-weight:600; color:#8fc2ff; letter-spacing:.3px;
+  padding:5px 4px 6px; margin-bottom:6px;
+  background:linear-gradient(180deg, rgba(13,18,25,.98) 60%, rgba(13,18,25,.86));
+  border-bottom:1px solid var(--line);
+}
+#tree .wiz-colhead span{color:var(--dim);font-weight:400;font-size:11px}
+#tree .wiz-col[data-col="2"] .wiz-colhead{color:#f0c154}
+#tree .wiz-col[data-col="3"] .wiz-colhead{color:#7ee2a8}
+#tree .wiz-col[data-col="4"] .wiz-colhead{color:#c79bff}
+
+@media (max-width:1000px){
+  #tree .wiz-lane{flex-direction:column; overflow-x:visible; gap:4px}
+  #tree .wiz-col{
+    flex:0 0 auto; width:100%; min-width:0;
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+    gap:8px; align-items:start;
+  }
+  #tree .wiz-colhead{
+    grid-column:1 / -1; position:static; background:none; border-bottom:0;
+    border-top:1px dashed var(--line); padding:10px 2px 4px; margin-bottom:0;
+  }
+  #tree .wiz-col:first-child .wiz-colhead{border-top:0;padding-top:2px}
+}
