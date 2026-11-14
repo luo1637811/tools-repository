@@ -4724,7 +4724,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-15.1';
+window.__APP_VER = '2026-11-15.2';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
@@ -4742,10 +4742,14 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
   async function load() {
     const card = document.getElementById('rcCard');
     if (!card) return;
-    const me = (window.S && S.user) || null;
-    if (!me || me.role !== 'superadmin') { card.classList.add('hide'); return; }
-    card.classList.remove('hide');
-    try { paint(await api('/api/rc/state')); } catch (e) { paint(null); }
+    /* 不依赖 window.S：直接用接口鉴权，非超管会返回 403 */
+    try {
+      const st = await api('/api/rc/state');
+      card.classList.remove('hide');
+      paint(st);
+    } catch (e) {
+      card.classList.add('hide');
+    }
   }
   async function gen() {
     if (!confirm('重新生成会作废现有全部恢复码，确定继续？')) return;
