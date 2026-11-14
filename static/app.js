@@ -2393,6 +2393,8 @@ function wizRender() {
         extra.forEach(e => list.push([e.id, (e.name || e.id) + '（自定义）']));
         const cur = (WIZ.dNode && WIZ.dNode.effect) || '';
         if (cur && cur !== '__custom__' && !byId[cur]) list.push([cur, '（效果已不存在：' + cur + '）']);
+        /* 当前节点的效果若是自定义的，给一个删除入口（服务端只允许删自定义效果） */
+        if (cur && NODE_EFFECT_IDS.indexOf(cur) < 0 && byId[cur]) list.push(['__del__', '⚠ 删除这个自定义效果']);
         return list;
       };
 
@@ -2432,7 +2434,7 @@ function wizRender() {
         parSel2.onchange = () => { WIZ.dNode.parent2 = parSel2.value; };
         const effSel = wIn(f, '效果', WIZ.dNode, 'effect', 'select', effOptions());
         effSel.value = WIZ.dNode.effect || 'dmg';
-        effSel.onchange = () => {
+        effSel.onchange = async () => {
           if (effSel.value === '__custom__') {
             const nm = prompt('这个节点加的是什么效果？（中文名，例：暴击伤害）');
             if (!nm) { effSel.value = WIZ.dNode.effect || 'dmg'; return; }
@@ -2442,6 +2444,19 @@ function wizRender() {
               .then(() => loadBlueprints(true))
               .then(() => { toast('已加入效果库：' + nm, 'good'); wizRender(); })
               .catch(e => toast('保存失败：' + e.message, 'bad'));
+          } else if (effSel.value === '__del__') {
+            const curE = WIZ.dNode.effect || '';
+            const used = WIZ.nodes.filter(y => y.effect === curE).length;
+            if (!confirm('删除效果「' + effName(curE) + '」？' + (used ? '\n当前有 ' + used + ' 个节点在用它，删掉后会变成未知效果。' : ''))) {
+              effSel.value = curE; return;
+            }
+            try {
+              await api('/api/data/effects/' + encodeURIComponent(curE), { method: 'DELETE', confirm: curE });
+              await loadBlueprints(true);
+              WIZ.dNode.effect = 'dmg';
+              toast('已删除效果', 'good');
+              wizRender();
+            } catch (err) { toast('删除失败：' + err.message, 'bad'); effSel.value = curE; }
           } else if (effSel.value) { WIZ.dNode.effect = effSel.value; }
         };
         const bNew = el('button', 'btn sm ghost', '＋ 新建效果'); bNew.type = 'button';
@@ -4724,7 +4739,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-15.2';
+window.__APP_VER = '2026-11-15.3';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
