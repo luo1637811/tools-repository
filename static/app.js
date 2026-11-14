@@ -602,18 +602,20 @@ function renderBaseAttrs() {
     || '<tr><td colspan="' + COLS.length + '" class="dim">' + (weaponOnly ? '这艘船没有武器系统' : '这艘船还没有系统') + '</td></tr>';
 
   if (tiles) {
-    const bHull = Number(base.hull) || 0;
+    const st = sysTotals(ship);
+    const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
+    const bHull = pick('hull', base.hull);
     const bPct = (Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0);
     const hullFinal = bHull ? bHull * (1 + bPct / 100) : 0;
-    const armor = (Number(base.armor) || 0) + (Number(agg.armor) || 0);
-    const shield = (Number(base.shield) || 0) + (Number(agg.shield) || 0);
+    const armor = pick('armor', base.armor) + (Number(agg.armor) || 0);
+    const shield = pick('shield', base.shield) + (Number(agg.shield) || 0);
     const ws = sys.filter(x => x.w);
     const sum = k => ws.reduce((a, x) => a + (Number(x.n[k]) || 0), 0);
     const tile = (k, v, s2) => '<div class="basetile"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + (s2 || '') + '</div></div>';
     tiles.innerHTML = [
       tile('结构值', hullFinal ? fmtNum(hullFinal) : '—',
         bHull ? (bPct ? fmtNum(bHull) + ' ×（1+' + (Math.round(bPct * 100) / 100) + '%）' : '来自系统') : '缺装甲系统数值'),
-      tile('抵抗伤害 / 护盾', fmtNum(armor) + ' / ' + (base.shield !== undefined ? fmtNum(shield) + '%' : '—'), '物理减伤 / 能量减伤'),
+      tile('抵抗伤害 / 护盾', fmtNum(armor) + ' / ' + ((st.has.shield || base.shield !== undefined) ? fmtNum(shield) + '%' : '—'), '物理减伤 / 能量减伤'),
       tile('巡航 / 曲率',
         fmtNum(effVal('speed', base.cruise, agg)) + ' / ' + fmtNum(effVal('warp', base.warp, agg)),
         (Number(agg.speed) || Number(agg.warp)) ? '已含加点加成' : 'jm'),
@@ -678,7 +680,16 @@ function renderTree() {
   const sl = S.slots[S.cur];
   const ship = shipOf(sl.ship);
   const sy = ship.systems.find(x => x.id === S.sys[S.cur]);
-  const host = $('#tree'); host.innerHTML = '';
+  const host = $('#tree');
+  /* 每次重绘都会重建 DOM，横向滚动位置会被浏览器重置为 0
+     → 在第 2 层点一下「+」就被甩回第 1 层。
+     这里在同一「方案 + 舰船 + 系统」下记住并还原 scrollLeft/scrollTop。 */
+  const laneKey = S.cur + '|' + (sl.ship || '') + '|' + (S.sys[S.cur] || '');
+  const prevLane = host.querySelector('.wiz-lane');
+  const keep = host.dataset.laneKey === laneKey && prevLane;
+  const keepLeft = keep ? prevLane.scrollLeft : 0;
+  const keepTop = keep ? prevLane.scrollTop : 0;
+  host.innerHTML = '';
   if (!sy) { host.appendChild(el('div', 'muted', '这条船还没有系统数据，去「数据管理」加。')); return; }
   if (Number(sy.no_nodes) || !sy.nodes.length) {
     host.appendChild(el('div', 'muted',
@@ -696,6 +707,9 @@ function renderTree() {
       lane.appendChild(box);
     });
     host.appendChild(lane);
+    host.dataset.laneKey = laneKey;
+    if (keepLeft) lane.scrollLeft = keepLeft;
+    if (keepTop) lane.scrollTop = keepTop;
   }
 
   const used = ship.systems.reduce((a, x) => a + sysUsed(x), 0);
@@ -849,6 +863,22 @@ function slotAgg(slotKey) {
   return agg;
 }
 
+/* 结构值 / 抵抗伤害 / 护盾 以「系统数值」为准：ships.base 只是旧副本，可能没跟着系统更新 */
+function sysTotals(ship) {
+  const sum = { hull: 0, armor: 0, shield: 0 };
+  const has = { hull: 0, armor: 0, shield: 0 };
+  ((ship && ship.systems) || []).forEach(sy => {
+    let n = {};
+    try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
+    Object.keys(sum).forEach(k => {
+      if (n[k] === undefined || n[k] === null || n[k] === '') return;
+      sum[k] += Number(n[k]) || 0;
+      has[k] = 1;
+    });
+  });
+  return { sum: sum, has: has };
+}
+
 /* 一行一个基础加成项：key 用于取值，label/unit 用于显示 */
 const CMP_ROWS = [
   { k: 'hull',       t: '结构值',   u: '点' },
@@ -876,10 +906,12 @@ function slotBaseVals(slotKey) {
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
     Object.keys(sum).forEach(k => { sum[k] += Number(n[k]) || 0; });
   });
+  const st = sysTotals(ship);
+  const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
   return {
-    hull: (Number(base.hull) || 0) * (1 + ((Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0)) / 100),
-    armor: effVal('armor', base.armor, agg),
-    shield: effVal('shield', base.shield, agg),
+    hull: pick('hull', base.hull) * (1 + ((Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0)) / 100),
+    armor: effVal('armor', pick('armor', base.armor), agg),
+    shield: effVal('shield', pick('shield', base.shield), agg),
     eva: effVal('eva', base.eva, agg),
     cruise: effVal('speed', base.cruise, agg),
     warp: effVal('warp', base.warp, agg),
@@ -2941,36 +2973,80 @@ function exportNodeCsv() {
   document.body.appendChild(a); a.click(); a.remove();
 }
 
-/* ---------- 实时 ---------- */
-let STREAM_RETRY = null;
+/* ---------- 实时（SSE）：断线只在「确实连不上」时提示，恢复后自动消失 ---------- */
+let STREAM_RETRY = null, STREAM_ES = null, STREAM_PROBE = null, STREAM_DOWN_AT = 0;
+
+function offlineBox() { return document.getElementById('offline'); }
+function showOffline(on, msg) {
+  const b = offlineBox();
+  if (!b) return;
+  if (msg) {
+    const s = b.querySelector('#offlineMsg');
+    if (s) s.textContent = msg; else b.textContent = msg;
+  }
+  b.classList.toggle('hide', !on);
+}
+async function healthOk() {
+  try {
+    const r = await fetch('/api/health', {cache: 'no-store'});
+    return !!(r && r.ok);
+  } catch (e) { return false; }
+}
+function streamUp() {
+  STREAM_DOWN_AT = 0;
+  if (STREAM_PROBE) { clearInterval(STREAM_PROBE); STREAM_PROBE = null; }
+  showOffline(false);
+}
+function streamDown() {
+  if (!STREAM_DOWN_AT) STREAM_DOWN_AT = Date.now();
+  if (STREAM_PROBE) return;
+  STREAM_PROBE = setInterval(async () => {
+    if (await healthOk()) { streamUp(); return; }           // 服务端正常 = 只是这条流断了，不吓用户
+    if (Date.now() - STREAM_DOWN_AT < 8000) return;          // 8 秒宽限，防抖
+    showOffline(true, navigator.onLine === false
+      ? '网络已断开，恢复后会自动重连。'
+      : '实时同步已断开，正在重连……这期间页面仍可正常保存，数字可能不是最新的。');
+  }, 3000);
+}
+function scheduleStream(ms) {
+  if (STREAM_RETRY) clearTimeout(STREAM_RETRY);
+  STREAM_RETRY = setTimeout(connectStream, ms);
+}
 async function connectStream() {
-  // 先换一张一次性 ticket，再连 SSE（token 不再出现在 URL 里）
+  if (STREAM_ES) { try { STREAM_ES.close(); } catch (e) {} STREAM_ES = null; }
   let tk = '';
   try {
     const r = await api('/api/stream_ticket', {method: 'POST'});
     tk = r.ticket || '';
   } catch (e) {
     $('#liveTag').textContent = '实时 · 未连接';
-    if (STREAM_RETRY) clearTimeout(STREAM_RETRY);
-    STREAM_RETRY = setTimeout(connectStream, 5000);
+    streamDown();
+    scheduleStream(5000);
     return;
   }
   const es = new EventSource('/api/stream?ticket=' + encodeURIComponent(tk));
+  STREAM_ES = es;
+  es.onopen = () => { $('#liveTag').textContent = '实时 · 已连接'; streamUp(); };
   es.addEventListener('version', ev => {
+    streamUp();
     const v = +ev.data;
     $('#liveTag').textContent = '实时 · v' + v;
     if (v !== S.version && S.bp) { S.version = v; loadBlueprints(true); }
   });
-  es.onopen = () => {
-    $('#liveTag').textContent = '实时 · 已连接';
-    const off = document.getElementById('offline');
-    if (off) off.classList.add('hide');
-  };
   es.onerror = () => {
+    /* EventSource 自带重连不会再次触发 onopen，所以这里主动关掉重建；
+       同时横幅要等「health 也不通」才显示，避免一次抖动就报警。 */
     $('#liveTag').textContent = '实时 · 重连中';
-    const off = document.getElementById('offline');
-    if (off) off.classList.remove('hide');
+    try { es.close(); } catch (e) {}
+    if (STREAM_ES === es) STREAM_ES = null;
+    streamDown();
+    scheduleStream(3000);
   };
+}
+if (!window.__netBound) {
+  window.__netBound = 1;
+  window.addEventListener('online', () => { healthOk().then(ok => { if (ok) streamUp(); }); });
+  window.addEventListener('offline', () => showOffline(true, '网络已断开，恢复后会自动重连。'));
 }
 
 
