@@ -462,34 +462,29 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .seOps{white-space:nowrap}
 .seOps .btn{margin-right:4px}
 
-/* ======== 加点树分层：桌面横向滚动、窄屏纵向叠层，任何时候都能看出第几层 ======== */
+/* ======== 加点树：行对齐的层列（一层一列，父节点对齐子节点中线，单容器滚动） ======== */
 #tree .wiz-lane{
-  display:flex; gap:14px; overflow-x:auto; padding:6px 2px 12px;
-  align-items:flex-start; scroll-snap-type:x proximity;
+  display:grid; grid-auto-flow:row;
+  grid-template-columns:repeat(var(--cols,3), 232px);
+  column-gap:26px; row-gap:8px; align-items:start;
+  overflow-x:auto; overflow-y:visible; padding:6px 2px 4px;
+  scroll-snap-type:x proximity;
 }
-#tree .wiz-col{flex:0 0 236px; scroll-snap-align:start; min-width:0}
 #tree .wiz-colhead{
   position:sticky; top:0; z-index:3; display:flex; align-items:baseline; gap:6px;
-  font-size:12px; font-weight:600; color:#8fc2ff; letter-spacing:.3px;
-  padding:5px 4px 6px; margin-bottom:6px;
-  background:linear-gradient(180deg, rgba(13,18,25,.98) 60%, rgba(13,18,25,.86));
+  font-size:12px; font-weight:600; letter-spacing:.3px;
+  padding:5px 4px 6px; margin-bottom:2px;
+  background:linear-gradient(180deg, rgba(13,18,25,.98) 55%, rgba(13,18,25,.72));
   border-bottom:1px solid var(--line);
 }
 #tree .wiz-colhead span{color:var(--dim);font-weight:400;font-size:11px}
-#tree .wiz-col[data-col="2"] .wiz-colhead{color:#f0c154}
-#tree .wiz-col[data-col="3"] .wiz-colhead{color:#7ee2a8}
-#tree .wiz-col[data-col="4"] .wiz-colhead{color:#c79bff}
+#tree .wiz-colhead[data-lv="1"]{color:#8fc2ff}
+#tree .wiz-colhead[data-lv="2"]{color:#f0c154}
+#tree .wiz-colhead[data-lv="3"]{color:#7ee2a8}
+#tree .wiz-colhead[data-lv="4"]{color:#c79bff}
+#tree .wiz-lane > .node{width:auto;box-sizing:border-box;align-self:start;min-width:0}
+#tree .wiz-xhint{font-size:11px;padding:2px 4px 8px}
 
-@media (max-width:1000px){
-  #tree .wiz-lane{flex-direction:column; overflow-x:visible; gap:4px}
-  #tree .wiz-col{
-    flex:0 0 auto; width:100%; min-width:0;
-    display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
-    gap:8px; align-items:start;
-  }
-  #tree .wiz-colhead{
-    grid-column:1 / -1; position:static; background:none; border-bottom:0;
-    border-top:1px dashed var(--line); padding:10px 2px 4px; margin-bottom:0;
-  }
-  #tree .wiz-col:first-child .wiz-colhead{border-top:0;padding-top:2px}
+@media (max-width:760px){
+  #tree .wiz-lane{grid-template-columns:repeat(var(--cols,3), min(80vw, 300px));column-gap:16px}
 }
