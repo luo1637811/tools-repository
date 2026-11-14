@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS squads(
 CREATE TABLE IF NOT EXISTS recovery_codes(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
   code_hash TEXT NOT NULL, batch TEXT, used_at TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS effect_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT,
+  name TEXT, unit TEXT, note TEXT, status TEXT DEFAULT '待处理',
+  created_at TEXT, handled_by TEXT, handled_at TEXT);
+
 """
 
 EFFECTS_SEED = [

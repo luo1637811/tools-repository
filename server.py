@@ -1331,6 +1331,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/season/op":
                 return self.season_op(data)
+            if path == "/api/effreq/create":
+                return self.effreq_create(data)
+            if path.startswith("/api/effreq/") and path.endswith("/handle"):
+                return self.effreq_handle(path.split("/")[3], data)
             if path == "/api/rc/generate":
                 return self.rc_generate()
             if path == "/api/rc/reset":
@@ -1710,6 +1714,70 @@ class Handler(BaseHTTPRequestHandler):
         log("救援令牌重置密码", un, "user#%d" % r["id"], "令牌已作废，全部会话已踢出")
         return self.send_json({"ok": True, "username": un})
 
+    # ---------------- 效果申请（管理员申请，超管审批） ----------------
+    def effreq_list(self):
+        u = self.need_auth()
+        if not u:
+            return
+        with conn() as c:
+            if (u.get("role") or "") == SUPER_ROLE:
+                rows = c.execute(
+                    "SELECT * FROM effect_requests ORDER BY CASE status WHEN '待处理' THEN 0 ELSE 1 END, id DESC LIMIT 200"
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM effect_requests WHERE user_id=? ORDER BY id DESC LIMIT 50", (u["id"],)
+                ).fetchall()
+        return self.send_json({"ok": True, "rows": [dict(r) for r in rows]})
+
+    def effreq_create(self, data):
+        u = self.need_auth()
+        if not u:
+            return
+        name = (data.get("name") or "").strip()
+        if not name:
+            return self.err(400, "请填效果名称")
+        if len(name) > 20:
+            return self.err(400, "名称最多 20 个字")
+        unit = (data.get("unit") or "").strip()[:8]
+        note = (data.get("note") or "").strip()[:120]
+        with conn() as c:
+            if c.execute("SELECT id FROM effects WHERE name=?", (name,)).fetchone():
+                return self.err(409, "效果库里已经有「%s」，直接选用即可" % name)
+            if c.execute("SELECT id FROM effect_requests WHERE name=? AND status='待处理'", (name,)).fetchone():
+                return self.err(409, "「%s」已有待处理申请，请等待审批" % name)
+            c.execute("INSERT INTO effect_requests(user_id,username,name,unit,note,status,created_at)"
+                      " VALUES(?,?,?,?,?,?,?)",
+                      (u["id"], u["username"], name, unit, note, "待处理", now()))
+            rid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        log("申请新增效果", u["username"], name, note)
+        return self.send_json({"ok": True, "id": rid})
+
+    def effreq_handle(self, rid, data):
+        u = self._need_super()
+        if not u:
+            return
+        act = (data.get("act") or "").strip()
+        with conn() as c:
+            r = c.execute("SELECT * FROM effect_requests WHERE id=?", (rid,)).fetchone()
+            if not r:
+                return self.err(404, "申请不存在")
+            if (r["status"] or "") != "待处理":
+                return self.err(409, "这条申请已经处理过了")
+            if act == "approve":
+                eid = "e" + str(int(time.time() * 1000))[-9:]
+                c.execute("INSERT INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                          (eid, r["name"], r["unit"] or "", r["note"] or r["name"]))
+                st = "已批准"
+            elif act == "reject":
+                st = "已驳回"
+            else:
+                return self.err(400, "act 只能是 approve / reject")
+            c.execute("UPDATE effect_requests SET status=?, handled_by=?, handled_at=? WHERE id=?",
+                      (st, u["username"], now(), rid))
+        log("审批效果申请", u["username"], r["name"], st)
+        return self.send_json({"ok": True, "status": st})
+
     # ---------------- data management ----------------
     def settings_put(self, data):
         if self.need_auth() is None:
@@ -1778,6 +1846,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(400, "缺少主键 " + pk)
         if table == "effects" and "effects_edit" not in perms_of(u):
             return self.err(403, "效果库影响全站计算，需要「效果库·改」权限")
+        if table == "effects":
+            # 只有超级管理员能新增效果项；普通管理员只能选用已有项
+            with conn() as _c:
+                _exists = _c.execute("SELECT id FROM effects WHERE id=?", (row[pk],)).fetchone()
+                if not _exists:
+                    if (u.get("role") or "") != SUPER_ROLE:
+                        return self.err(403, "新增效果项需要超级管理员；请从现有效果里选择")
+                    _nm = str(row.get("name") or "").strip()
+                    if _nm:
+                        _dup = _c.execute(
+                            "SELECT id FROM effects WHERE name=? AND id<>?", (_nm, row[pk])).fetchone()
+                        if _dup:
+                            return self.err(409, "已有同名效果「%s」（id=%s），请直接选它" % (_nm, _dup["id"]))
         if table == "ships" and (u.get("role") or "") not in ("admin", SUPER_ROLE):
             _sc = scope_of(u)
             if _sc == "org":
@@ -2463,6 +2544,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "user": safe_user(u), "csrf": u.get("_csrf") or ""})
         if path == "/api/rc/state":
             return self.rc_state()
+        if path == "/api/effreqs":
+            return self.effreq_list()
         if path == "/api/pwd/requests":
             if not self.need_perm(("people_view",)):
                 return

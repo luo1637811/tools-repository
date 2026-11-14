@@ -2388,11 +2388,27 @@ function wizRender() {
         const byId = {};
         all.forEach(e => { byId[e.id] = e; });
         const list = NODE_EFFECT_IDS.filter(k => byId[k]).map(k => [k, byId[k].name]);
+        /* 同名去重：内置优先，其次按 id 升序；同名重复项不再重复列出 */
+        const seen = {};
+        NODE_EFFECT_IDS.forEach(k => { if (byId[k]) seen[String(byId[k].name || k)] = k; });
         const extra = all.filter(e => NODE_EFFECT_IDS.indexOf(e.id) < 0)
-          .slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh'));
-        extra.forEach(e => list.push([e.id, (e.name || e.id) + '（自定义）']));
+          .slice()
+          .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh')
+            || String(a.id).localeCompare(String(b.id)));
+        extra.forEach(e => {
+          const nm = String(e.name || e.id);
+          if (seen[nm]) return;
+          seen[nm] = e.id;
+          list.push([e.id, nm + '（自定义）']);
+        });
         const cur = (WIZ.dNode && WIZ.dNode.effect) || '';
-        if (cur && cur !== '__custom__' && !byId[cur]) list.push([cur, '（效果已不存在：' + cur + '）']);
+        /* 本节点用的是被合并掉的重复项时，补一条并标注，避免下拉显示空白 */
+        if (cur && cur !== '__custom__' && byId[cur]) {
+          const nm = String(byId[cur].name || '');
+          if (nm && seen[nm] && seen[nm] !== cur) {
+            list.unshift([cur, nm + '（本条在用·重复项，建议改用上面那条）']);
+          }
+        }
         /* 当前节点的效果若是自定义的，给一个删除入口（服务端只允许删自定义效果） */
         if (cur && NODE_EFFECT_IDS.indexOf(cur) < 0 && byId[cur]) list.push(['__del__', '⚠ 删除这个自定义效果']);
         return list;
@@ -2432,7 +2448,9 @@ function wizRender() {
         parSel.onchange = () => { WIZ.dNode.parent = parSel.value; };
         const parSel2 = wIn(f, '前置节点 2（可选，满足其一即可）', WIZ.dNode, 'parent2', 'select', pOpts);
         parSel2.onchange = () => { WIZ.dNode.parent2 = parSel2.value; };
-        const effSel = wIn(f, '效果', WIZ.dNode, 'effect', 'select', effOptions());
+        const _effs = effOptions();
+        if (WIZ.dNode.effect && !_effs.some(o => o[0] === WIZ.dNode.effect)) WIZ.dNode.effect = 'dmg';
+        const effSel = wIn(f, '效果', WIZ.dNode, 'effect', 'select', _effs);
         effSel.value = WIZ.dNode.effect || 'dmg';
         effSel.onchange = async () => {
           if (effSel.value === '__custom__') {
@@ -2459,9 +2477,24 @@ function wizRender() {
             } catch (err) { toast('删除失败：' + err.message, 'bad'); effSel.value = curE; }
           } else if (effSel.value) { WIZ.dNode.effect = effSel.value; }
         };
-        const bNew = el('button', 'btn sm ghost', '＋ 新建效果'); bNew.type = 'button';
-        bNew.onclick = mkEffect;
-        f.appendChild(bNew);
+        if (S.user && S.user.role === 'superadmin') {
+          const bNew = el('button', 'btn sm ghost', '＋ 新建效果'); bNew.type = 'button';
+          bNew.onclick = mkEffect;
+          f.appendChild(bNew);
+        } else {
+          const bReq = el('button', 'btn sm ghost', '申请新增效果…'); bReq.type = 'button';
+          bReq.onclick = async () => {
+            const nm = prompt('要新增的效果名称（例：暴击伤害）');
+            if (!nm) return;
+            const un = prompt('单位（可留空，例：% / 点 / 秒）', '') || '';
+            try {
+              await api('/api/effreq/create', { method: 'POST', body: { name: nm.trim(), unit: un.trim() } });
+              toast('已提交申请，超级管理员批准后即可选用', 'good');
+            } catch (err) { toast('提交失败：' + err.message, 'bad'); }
+          };
+          f.appendChild(bReq);
+          f.appendChild(el('div', 'muted', '新增效果需超管批准；进度可在「人员管理 → 效果申请」查看。'));
+        }
         /* 自定义效果（不在固定 21 项里的）允许删除；被节点用时提示会一起失效 */
         const curEff = WIZ.dNode.effect || '';
         const isCustom = curEff && NODE_EFFECT_IDS.indexOf(curEff) < 0 &&
@@ -4047,7 +4080,7 @@ function showTab(tab) {
   if (tab === 'data') { renderData(); renderAudit(); }
   if (tab === 'roster') loadRosterQuery();
   if (tab === 'rosterM') loadRosterAdmin();
-  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); }
+  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); if (window.__er) window.__er(); }
   if (tab === 'audit') loadAudit();
   if (tab === 'season' && window.renderSeason) renderSeason();
   if (tab === 'battle') {
@@ -4739,7 +4772,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-15.3';
+window.__APP_VER = '2026-11-16.2';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
@@ -4793,4 +4826,61 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
   if (b) b.onclick = gen;
   const r = document.getElementById('rcRefresh');
   if (r) r.onclick = load;
+})();
+
+
+/* ---------- 效果申请（超管审批管理员提交的新效果） ---------- */
+(function () {
+  function row(r) {
+    const d = document.createElement('div');
+    d.className = 'histitem';
+    d.style.gridTemplateColumns = '1fr 90px 130px';
+    const a = document.createElement('div');
+    a.textContent = (r.name || '') + (r.unit ? '（' + r.unit + '）' : '') + ' · ' + (r.username || '');
+    const b = document.createElement('div');
+    b.className = 'muted';
+    b.textContent = r.status || '';
+    const c = document.createElement('div');
+    if ((r.status || '') === '待处理') {
+      const ok = document.createElement('button');
+      ok.className = 'btn sm'; ok.textContent = '批准';
+      ok.onclick = function () { handle(r.id, 'approve'); };
+      const no = document.createElement('button');
+      no.className = 'btn sm ghost'; no.textContent = '驳回'; no.style.marginLeft = '6px';
+      no.onclick = function () { handle(r.id, 'reject'); };
+      c.appendChild(ok); c.appendChild(no);
+    }
+    d.appendChild(a); d.appendChild(b); d.appendChild(c);
+    return d;
+  }
+  async function handle(id, act) {
+    if (!confirm(act === 'approve' ? '批准后会把该效果加入效果库，确定？' : '确定驳回这条申请？')) return;
+    try {
+      await api('/api/effreq/' + id + '/handle', { method: 'POST', body: { act: act } });
+      toast(act === 'approve' ? '已批准并加入效果库' : '已驳回', 'good');
+      await loadBlueprints(true);
+      load();
+    } catch (e) { toast('操作失败：' + e.message, 'bad'); }
+  }
+  async function load() {
+    const card = document.getElementById('erCard');
+    if (!card) return;
+    let j;
+    try { j = await api('/api/effreqs'); } catch (e) { card.classList.add('hide'); return; }
+    const rows = (j && j.rows) || [];
+    const isSuper = !!(window.S && S.user && S.user.role === 'superadmin');
+    if (!isSuper && !rows.length) { card.classList.add('hide'); return; }
+    card.classList.remove('hide');
+    const body = document.getElementById('erBody');
+    body.innerHTML = '';
+    const pend = rows.filter(function (r) { return (r.status || '') === '待处理'; });
+    const note = document.createElement('div');
+    note.className = 'muted';
+    note.textContent = pend.length ? ('待处理 ' + pend.length + ' 条') : '暂无待处理申请。';
+    body.appendChild(note);
+    rows.slice(0, 30).forEach(function (r) { body.appendChild(row(r)); });
+  }
+  window.__er = load;
+  const btn = document.getElementById('erRefresh');
+  if (btn) btn.onclick = load;
 })();
