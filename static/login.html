@@ -61,6 +61,29 @@ code{background:#0d151f;border:1px solid var(--line);padding:1px 6px;border-radi
       <div class="hint">管理员批准后会给一个临时密码，登录后请立即改密。</div>
       <div id="fgMsg" class="msg"></div>
     </div>
+
+    <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap">
+      <a href="#" id="rcLink" style="font-size:13px">超管：用恢复码重置 →</a>
+      <a href="#" id="rsLink" style="font-size:13px">超管：用救援令牌 →</a>
+    </div>
+
+    <div id="rcBox" style="display:none;margin-top:10px">
+      <label>账号</label><input id="rcUser" placeholder="超级管理员用户名">
+      <label>恢复码</label><input id="rcCode" placeholder="LGLR-XXXX-XXXX（一次性）">
+      <label>新密码</label><input id="rcPwd" type="password" placeholder="至少 8 位，含字母和数字">
+      <button class="btn ok" id="rcGo">用恢复码重置</button>
+      <div class="hint">用掉一个码后，其余 9 个会一起作废；成功后所有设备需要重新登录。</div>
+      <div id="rcMsg" class="msg"></div>
+    </div>
+
+    <div id="rsBox" style="display:none;margin-top:10px">
+      <label>账号</label><input id="rsUser" placeholder="超级管理员用户名">
+      <label>救援令牌</label><input id="rsTok" placeholder="服务器生成，10 分钟内有效">
+      <label>新密码</label><input id="rsPwd" type="password" placeholder="至少 8 位，含字母和数字">
+      <button class="btn ok" id="rsGo">用令牌重置</button>
+      <div class="hint">服务器执行 <code>python3 deploy/reset_pw.py --token 账号</code> 得到令牌。</div>
+      <div id="rsMsg" class="msg"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -126,6 +149,40 @@ $('#fgSend').onclick = async () => {
     else show(box, j.error || ('提交失败 ' + r.status));
   } catch (e) { show(box, '提交失败：' + e.message); }
 };
+function toggle(id) {
+  const b = $(id);
+  b.style.display = (b.style.display === 'none' || !b.style.display) ? '' : 'none';
+}
+$('#rcLink').onclick = (ev) => { ev.preventDefault(); toggle('#rcBox'); };
+$('#rsLink').onclick = (ev) => { ev.preventDefault(); toggle('#rsBox'); };
+
+async function postJson(url, body, box) {
+  try {
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok && j.ok, msg: j.error || ('失败 ' + r.status) };
+  } catch (e) { return { ok: false, msg: '网络错误：' + e.message }; }
+}
+$('#rcGo').onclick = async () => {
+  const box = $('#rcMsg');
+  const body = { username: $('#rcUser').value.trim(), code: $('#rcCode').value.trim(), pwd: $('#rcPwd').value };
+  if (!body.username || !body.code || !body.pwd) return show(box, '账号、恢复码、新密码都要填');
+  const r = await postJson('/api/rc/reset', body, box);
+  if (r.ok) show(box, '已重置，请用新密码登录（其余恢复码已作废）。', 'ok');
+  else show(box, r.msg);
+};
+$('#rsGo').onclick = async () => {
+  const box = $('#rsMsg');
+  const body = { username: $('#rsUser').value.trim(), token: $('#rsTok').value.trim(), pwd: $('#rsPwd').value };
+  if (!body.username || !body.token || !body.pwd) return show(box, '账号、令牌、新密码都要填');
+  const r = await postJson('/api/rescue/reset', body, box);
+  if (r.ok) show(box, '已重置，请用新密码登录。', 'ok');
+  else show(box, r.msg);
+};
+
 (function () {
   const t = sessionStorage.getItem('ft_flash');
   if (t) { sessionStorage.removeItem('ft_flash'); show($('#lgMsg'), t, 'bad'); }

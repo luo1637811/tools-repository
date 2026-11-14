@@ -323,6 +323,22 @@
 
 <!-- ============ 人员 ============ -->
 <section id="tab-people" class="hide">
+  <div class="card hide" id="rcCard">
+    <div class="toolbar">
+      <h3 style="margin:0">超管恢复码</h3>
+      <span class="grow"></span>
+      <button class="btn ghost" id="rcRefresh">刷新</button>
+      <button class="btn" id="rcGen">生成 / 重发 10 个</button>
+    </div>
+    <div class="muted" style="margin:6px 0 10px">
+      忘记超管密码时，在登录页点「超管：用恢复码重置」，输入账号 + 一个恢复码 + 新密码即可自助找回。
+      恢复码只显示这一次，请打印或存进密码管理器；<b>用掉其中任意一个，其余 9 个会一起作废</b>。
+    </div>
+    <div id="rcState" class="muted">—</div>
+    <div id="rcCodes" class="rcbox hide"></div>
+    <div class="muted" id="rcNote" style="margin-top:8px"></div>
+  </div>
+
   <div class="card">
     <div class="toolbar">
       <h3 style="margin:0">密码重置申请</h3>

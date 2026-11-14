@@ -4032,7 +4032,7 @@ function showTab(tab) {
   if (tab === 'data') { renderData(); renderAudit(); }
   if (tab === 'roster') loadRosterQuery();
   if (tab === 'rosterM') loadRosterAdmin();
-  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); }
+  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); }
   if (tab === 'audit') loadAudit();
   if (tab === 'season' && window.renderSeason) renderSeason();
   if (tab === 'battle') {
@@ -4724,5 +4724,54 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-14.5';
+window.__APP_VER = '2026-11-15.1';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
+
+
+/* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
+(function () {
+  function paint(st) {
+    const box = document.getElementById('rcState');
+    if (!box) return;
+    const left = (st && st.left != null) ? st.left : 0;
+    let t = '剩余可用恢复码：' + left + ' 个';
+    if (st && st.created) t += '（上次生成 ' + st.created + '）';
+    if (st && st.last_used) t += '；最近使用 ' + st.last_used;
+    box.textContent = t;
+  }
+  async function load() {
+    const card = document.getElementById('rcCard');
+    if (!card) return;
+    const me = (window.S && S.user) || null;
+    if (!me || me.role !== 'superadmin') { card.classList.add('hide'); return; }
+    card.classList.remove('hide');
+    try { paint(await api('/api/rc/state')); } catch (e) { paint(null); }
+  }
+  async function gen() {
+    if (!confirm('重新生成会作废现有全部恢复码，确定继续？')) return;
+    try {
+      const j = await api('/api/rc/generate', { method: 'POST', body: {} });
+      const box = document.getElementById('rcCodes');
+      box.innerHTML = '';
+      (j.codes || []).forEach(function (c) {
+        const d = document.createElement('div');
+        d.className = 'rccode';
+        d.textContent = c;
+        d.title = '点击复制';
+        d.onclick = function () {
+          try { navigator.clipboard.writeText(c); toast('已复制 ' + c, 'ok'); } catch (e) {}
+        };
+        box.appendChild(d);
+      });
+      box.classList.remove('hide');
+      paint(j);
+      const note = document.getElementById('rcNote');
+      if (note) note.textContent = '上面这些码只显示这一次，关掉页面就看不到了；用掉任意一个，其余 9 个一起作废。';
+    } catch (e) { toast('生成失败：' + e.message, 'bad'); }
+  }
+  window.__rc = load;
+  const b = document.getElementById('rcGen');
+  if (b) b.onclick = gen;
+  const r = document.getElementById('rcRefresh');
+  if (r) r.onclick = load;
+})();

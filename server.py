@@ -376,6 +376,74 @@ def gen_invite_code():
             + "-" + "".join(_s.choice(a) for _ in range(4)))
 
 
+# ---------------- 超管自助找回：恢复码 / 救援令牌 ----------------
+RC_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+RC_COUNT = 10               # 一次生成多少个
+RC_TRY_PER_HOUR = 5         # 每小时最多试错次数
+_RC_FAIL = {}
+
+
+def rc_new_code():
+    import secrets as _s
+    body = "".join(_s.choice(RC_ALPHABET) for _ in range(8))
+    return "LGLR-%s-%s" % (body[:4], body[4:])
+
+
+def rc_hash(code):
+    """只比较规范化后的字符：去掉 LGLR 前缀、连字符、空格，全部大写。"""
+    s = "".join(ch for ch in str(code or "").upper() if ch.isalnum())
+    if s.startswith("LGLR"):
+        s = s[4:]
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def rc_wait(key):
+    """限流：同账号+同 IP 每小时最多 RC_TRY_PER_HOUR 次失败。"""
+    t = time.time()
+    arr = [x for x in _RC_FAIL.get(key, []) if t - x < 3600]
+    _RC_FAIL[key] = arr
+    if len(arr) >= RC_TRY_PER_HOUR:
+        return int(3600 - (t - arr[0])) + 1
+    return 0
+
+
+def rc_fail(key):
+    _RC_FAIL.setdefault(key, []).append(time.time())
+
+
+def rescue_key(username):
+    return "rescue:" + username.lower()
+
+
+def rescue_make(username):
+    """生成 8 位一次性救援令牌，10 分钟有效；返回明文。"""
+    import secrets as _s
+    tok = "".join(_s.choice(RC_ALPHABET) for _ in range(4)) + "-" + \
+          "".join(_s.choice(RC_ALPHABET) for _ in range(4))
+    raw = hashlib.sha256(tok.encode("utf-8")).hexdigest() + "|" + str(int(time.time()) + 600)
+    _set_setting(rescue_key(username), raw)
+    return tok
+
+
+def rescue_check(username, token):
+    raw = _setting(rescue_key(username), "") or ""
+    parts = raw.split("|")
+    if len(parts) != 2:
+        return False
+    try:
+        exp = int(parts[1])
+    except ValueError:
+        return False
+    if time.time() > exp:
+        return False
+    return hashlib.sha256(str(token or "").strip().upper().encode("utf-8")).hexdigest() == parts[0]
+
+
+def rescue_drop(username):
+    with conn() as c:
+        c.execute("DELETE FROM settings WHERE k=?", (rescue_key(username),))
+
+
 _STATIC_CACHE = {}          # (path, mtime_ns, size) -> (raw, gz)
 
 
@@ -1221,7 +1289,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    CSRF_EXEMPT = ("/api/login", "/api/register/send", "/api/register/verify", "/api/pwd/request")
+    CSRF_EXEMPT = ("/api/login", "/api/register/send", "/api/register/verify",
+                   "/api/pwd/request", "/api/rc/reset", "/api/rescue/reset")
 
     def guard_csrf(self, path):
         """双提交校验：写请求必须带与会话匹配的 X-CSRF。返回 True 表示已拦下。"""
@@ -1262,6 +1331,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/season/op":
                 return self.season_op(data)
+            if path == "/api/rc/generate":
+                return self.rc_generate()
+            if path == "/api/rc/reset":
+                return self.rc_reset(data)
+            if path == "/api/rescue/reset":
+                return self.rescue_reset(data)
             if path == "/api/login":
                 return self.login(data)
             if path == "/api/version/publish":
@@ -1501,6 +1576,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.err(404, "账号已不存在")
             if tgt["username"] == me["username"]:
                 return self.err(403, "不能批准自己的密码重置申请，请找其他管理员处理")
+            if tgt["role"] == SUPER_ROLE:
+                return self.err(403, "超级管理员的密码不能由他人重置；请在服务器上执行 deploy/reset_pw.py")
             if tgt["role"] in ("admin", SUPER_ROLE):
                 if (me.get("role") or "") not in ("admin", SUPER_ROLE):
                     return self.err(403, "只有管理员能重置管理员密码")
@@ -1529,6 +1606,109 @@ class Handler(BaseHTTPRequestHandler):
                          WHERE id=?""", (now(), me["username"], (data.get("note") or "")[:200], rid))
         log("驳回重置密码", r["username"], "user#%d" % r["user_id"], (data.get("note") or ""))
         return self.send_json({"ok": True})
+
+    # ---------------- 超管自助找回：恢复码 / 救援令牌 ----------------
+    def _ip(self):
+        return (self.client_address[0] if self.client_address else "") or ""
+
+    def rc_state(self):
+        u = self.require()
+        if not u:
+            return
+        if (u.get("role") or "") != SUPER_ROLE:
+            return self.err(403, "只有超级管理员有恢复码")
+        with conn() as c:
+            r = c.execute("""SELECT COUNT(*) AS n, MAX(created_at) AS t FROM recovery_codes
+                             WHERE user_id=? AND (used_at IS NULL OR used_at='')""",
+                          (u["id"],)).fetchone()
+            last = c.execute("""SELECT MAX(used_at) AS t FROM recovery_codes
+                                WHERE user_id=? AND used_at IS NOT NULL AND used_at<>''""",
+                             (u["id"],)).fetchone()
+        return self.send_json({"ok": True, "left": int(r["n"] or 0),
+                               "created": r["t"] or "",
+                               "last_used": last["t"] or ""})
+
+    def rc_generate(self):
+        u = self.require()
+        if not u:
+            return
+        if (u.get("role") or "") != SUPER_ROLE:
+            return self.err(403, "只有超级管理员能生成恢复码")
+        codes = [rc_new_code() for _ in range(RC_COUNT)]
+        batch = now()
+        with conn() as c:
+            c.execute("DELETE FROM recovery_codes WHERE user_id=?", (u["id"],))
+            for code in codes:
+                c.execute("""INSERT INTO recovery_codes(user_id, code_hash, batch, created_at)
+                             VALUES(?,?,?,?)""", (u["id"], rc_hash(code), batch, batch))
+        log("生成恢复码", u["username"], "recovery", "共 %d 个，旧码全部作废" % RC_COUNT)
+        return self.send_json({"ok": True, "codes": codes, "batch": batch, "left": RC_COUNT})
+
+    def rc_reset(self, data):
+        """公开接口：超管用恢复码自助重置密码（用掉一个 → 其余全部作废）。"""
+        un = (data.get("username") or "").strip()
+        code = (data.get("code") or "").strip()
+        pw = (data.get("pwd") or data.get("password") or "").strip()
+        key = "rc:%s:%s" % (un.lower(), self._ip())
+        w = rc_wait(key)
+        if w:
+            return self.err(429, "尝试次数太多，请 %d 秒后再试" % w)
+        if not un or not code:
+            return self.err(400, "请填写账号和恢复码")
+        bad = pwd_problem(pw, un)
+        if bad:
+            return self.err(400, bad)
+        with conn() as c:
+            r = c.execute("SELECT id, username, role FROM users WHERE username=?", (un,)).fetchone()
+            if not r or (r["role"] or "") != SUPER_ROLE:
+                rc_fail(key)
+                return self.err(403, "账号或恢复码不对")
+            row = c.execute("""SELECT id FROM recovery_codes
+                               WHERE user_id=? AND code_hash=? AND (used_at IS NULL OR used_at='')""",
+                            (r["id"], rc_hash(code))).fetchone()
+            if not row:
+                rc_fail(key)
+                return self.err(403, "账号或恢复码不对")
+            ts = now()
+            c.execute("UPDATE recovery_codes SET used_at=? WHERE id=?", (ts, row["id"]))
+            c.execute("""DELETE FROM recovery_codes
+                         WHERE user_id=? AND (used_at IS NULL OR used_at='')""", (r["id"],))
+            c.execute("""UPDATE users SET pwd=?, must_change=0, pwd_changed_at=?, updated_at=?
+                         WHERE id=?""", (hash_pwd(pw), ts, ts, r["id"]))
+            c.execute("DELETE FROM sessions WHERE user=?", (r["id"],))
+        log("恢复码重置密码", un, "user#%d" % r["id"], "其余恢复码已作废，全部会话已踢出")
+        return self.send_json({"ok": True, "username": un})
+
+    def rescue_reset(self, data):
+        """公开接口：用服务器端生成的救援令牌重置密码（10 分钟内一次性）。"""
+        un = (data.get("username") or "").strip()
+        tok = (data.get("token") or "").strip()
+        pw = (data.get("pwd") or data.get("password") or "").strip()
+        key = "rs:%s:%s" % (un.lower(), self._ip())
+        w = rc_wait(key)
+        if w:
+            return self.err(429, "尝试次数太多，请 %d 秒后再试" % w)
+        if not un or not tok:
+            return self.err(400, "请填写账号和救援令牌")
+        bad = pwd_problem(pw, un)
+        if bad:
+            return self.err(400, bad)
+        with conn() as c:
+            r = c.execute("SELECT id, username, role FROM users WHERE username=?", (un,)).fetchone()
+        if not r or (r["role"] or "") != SUPER_ROLE:
+            rc_fail(key)
+            return self.err(403, "账号或令牌不对")
+        if not rescue_check(un, tok):
+            rc_fail(key)
+            return self.err(403, "令牌不对或已过期（10 分钟有效，请重新生成）")
+        ts = now()
+        rescue_drop(un)
+        with conn() as c:
+            c.execute("""UPDATE users SET pwd=?, must_change=0, pwd_changed_at=?, updated_at=?
+                         WHERE id=?""", (hash_pwd(pw), ts, ts, r["id"]))
+            c.execute("DELETE FROM sessions WHERE user=?", (r["id"],))
+        log("救援令牌重置密码", un, "user#%d" % r["id"], "令牌已作废，全部会话已踢出")
+        return self.send_json({"ok": True, "username": un})
 
     # ---------------- data management ----------------
     def settings_put(self, data):
@@ -2281,6 +2461,8 @@ class Handler(BaseHTTPRequestHandler):
             if not u:
                 return self.send_json({"ok": True, "user": None})
             return self.send_json({"ok": True, "user": safe_user(u), "csrf": u.get("_csrf") or ""})
+        if path == "/api/rc/state":
+            return self.rc_state()
         if path == "/api/pwd/requests":
             if not self.need_perm(("people_view",)):
                 return
@@ -2713,6 +2895,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(403, "只有管理员能修改管理员账号")
         if (data.get("pwd") or data.get("password")) and tgt_role in ("admin", SUPER_ROLE) and not is_mgr:
             return self.err(403, "只有管理员能修改管理员密码")
+        # 超管密码只能本人改：任何其他超管都改不动（防止互改/夺号）
+        if (data.get("pwd") or data.get("password")) and tgt_role == SUPER_ROLE \
+                and str(uid) != str(me.get("id")):
+            return self.err(403, "超级管理员的密码只能本人修改；忘记密码请在服务器上执行 deploy/reset_pw.py")
+        # 超管的角色/状态也不允许在网页里互相改（含自降级），统一走命令行，避免误操作与夺权
+        if tgt_role == SUPER_ROLE and (("role" in data and _role(data.get("role")) != SUPER_ROLE)
+                                       or ("status" in data and str(data.get("status") or "") != "在职")):
+            return self.err(403, "超级管理员的角色/状态不能在网页里修改；请在服务器上执行 deploy/reset_pw.py --role / --delete")
         if "role" in data and _role(data.get("role")) == SUPER_ROLE and not is_top:
             return self.err(403, "只有超级管理员能设置超级管理员")
         if "role" in data and _role(data.get("role")) == "admin" and not is_top:
@@ -2796,8 +2986,8 @@ class Handler(BaseHTTPRequestHandler):
             r = c.execute("SELECT username, role FROM users WHERE id=?", (uid,)).fetchone()
             if not r:
                 return self.err(404, "人员不存在")
-            if r["role"] == SUPER_ROLE and (u.get("role") or "") != SUPER_ROLE:
-                return self.err(403, "超级管理员账号只有超级管理员能删除")
+            if r["role"] == SUPER_ROLE:
+                return self.err(403, "超级管理员账号不能通过网页删除；如需移除请在服务器上执行 deploy/reset_pw.py --delete %s" % r["username"])
             if r["role"] in ("admin", SUPER_ROLE):
                 n = c.execute("SELECT COUNT(*) n FROM users WHERE role IN ('admin','superadmin')").fetchone()["n"]
                 if n <= 1:
