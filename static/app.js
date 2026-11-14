@@ -696,57 +696,17 @@ function renderTree() {
       '「' + sy.name + '」没有可加点项 —— 它是纯被动/基础系统，不消耗技术值。'
       + '要给别的系统加点，点上面的系统页签；要给它加节点，去「数据管理 → 加点」新增一行（系统填 ' + sy.id + '）。'));
   }
-  /* 分层树：一层一列 + 按行对齐（父节点对齐到子节点中线），整体只有一个滚动容器 */
+  /* 横向分层：一层一列，列内按录入顺序往下排（与「数据管理 → 加点」里的顺序一致） */
   const cols = treeCols(sy.nodes);
   if (cols.length) {
     const lane = el('div', 'wiz-lane');
-    lane.style.setProperty('--cols', String(cols.length));
-
-    /* 行号：叶子按出现顺序占行，父节点取子节点行号中位数 → 子节点挂在父节点正下方 */
-    const kidsOf = {};
-    sy.nodes.forEach(n => {
-      const p0 = firstPar(n.parent);
-      (kidsOf[p0] = kidsOf[p0] || []).push(n);
-    });
-    const rowOf = {};
-    let cursor = 0;
-    const place = (n, depth) => {
-      if (rowOf[n.id] !== undefined) return rowOf[n.id];
-      if (depth > 24) { rowOf[n.id] = cursor++; return rowOf[n.id]; }
-      const kids = (kidsOf[n.id] || []).filter(k => k.id !== n.id);
-      if (!kids.length) { rowOf[n.id] = cursor++; return rowOf[n.id]; }
-      const rs = kids.map(k => place(k, depth + 1));
-      rowOf[n.id] = Math.round((Math.min.apply(null, rs) + Math.max.apply(null, rs)) / 2);
-      return rowOf[n.id];
-    };
-    cols.forEach(col => col.forEach(({ node }) => place(node, 0)));
-    sy.nodes.forEach(n => { if (rowOf[n.id] === undefined) rowOf[n.id] = cursor++; });
-
-    /* 第 1 行放层标题 */
     cols.forEach((col, ci) => {
-      const head = el('div', 'wiz-colhead', '第 ' + (ci + 1) + ' 层');
-      head.dataset.lv = String(ci + 1);
-      head.appendChild(el('span', '', ' ' + col.length + ' 个节点'));
-      head.style.gridColumn = String(ci + 1);
-      head.style.gridRow = '1';
-      lane.appendChild(head);
+      const box = el('div', 'wiz-col');
+      box.appendChild(el('div', 'wiz-colhead', '第 ' + (ci + 1) + ' 层'));
+      col.forEach(({ code, node }) => box.appendChild(nodeCard(node, sl, sy, code)));
+      lane.appendChild(box);
     });
-    /* 卡片：列 = 层，行 = 上面算出的行号（+2 因为第 1 行是标题） */
-    cols.forEach((col, ci) => {
-      col.forEach(({ code, node }) => {
-        const card = nodeCard(node, sl, sy, code);
-        card.style.gridColumn = String(ci + 1);
-        card.style.gridRow = String((rowOf[node.id] || 0) + 2);
-        lane.appendChild(card);
-      });
-    });
-
     host.appendChild(lane);
-    if (cols.length > 1) {
-      const hint = el('div', 'wiz-xhint muted',
-        '共 ' + cols.length + ' 层 · 左右滚动可查看后面的层');
-      host.appendChild(hint);
-    }
     host.dataset.laneKey = laneKey;
     if (keepLeft) lane.scrollLeft = keepLeft;
     if (keepTop) lane.scrollTop = keepTop;
@@ -4764,5 +4724,5 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-14.4';
+window.__APP_VER = '2026-11-14.5';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
