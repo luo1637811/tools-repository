@@ -2409,8 +2409,8 @@ function wizRender() {
             list.unshift([cur, nm + '（本条在用·重复项，建议改用上面那条）']);
           }
         }
-        /* 当前节点的效果若是自定义的，给一个删除入口（服务端只允许删自定义效果） */
-        if (cur && NODE_EFFECT_IDS.indexOf(cur) < 0 && byId[cur]) list.push(['__del__', '⚠ 删除这个自定义效果']);
+        /* 超管：改 / 删 这个效果（合并为一个入口；内置效果只能改名、不能删） */
+        if (cur && byId[cur] && S.user && S.user.role === 'superadmin') list.push(['__edit__', '✎ 修改 / 删除这个效果…']);
         return list;
       };
 
@@ -2449,7 +2449,9 @@ function wizRender() {
         const parSel2 = wIn(f, '前置节点 2（可选，满足其一即可）', WIZ.dNode, 'parent2', 'select', pOpts);
         parSel2.onchange = () => { WIZ.dNode.parent2 = parSel2.value; };
         const _effs = effOptions();
-        if (WIZ.dNode.effect && !_effs.some(o => o[0] === WIZ.dNode.effect)) WIZ.dNode.effect = 'dmg';
+        const _curE = WIZ.dNode.effect;
+        if (_curE && !_effs.some(o => o[0] === _curE))
+          _effs.unshift([_curE, '⚠ 已删除：' + _curE + '（保留原值，改选其它项才会覆盖）']);
         const effSel = wIn(f, '效果', WIZ.dNode, 'effect', 'select', _effs);
         effSel.value = WIZ.dNode.effect || 'dmg';
         effSel.onchange = async () => {
@@ -2462,19 +2464,37 @@ function wizRender() {
               .then(() => loadBlueprints(true))
               .then(() => { toast('已加入效果库：' + nm, 'good'); wizRender(); })
               .catch(e => toast('保存失败：' + e.message, 'bad'));
-          } else if (effSel.value === '__del__') {
+          } else if (effSel.value === '__edit__') {
             const curE = WIZ.dNode.effect || '';
-            const used = WIZ.nodes.filter(y => y.effect === curE).length;
-            if (!confirm('删除效果「' + effName(curE) + '」？' + (used ? '\n当前有 ' + used + ' 个节点在用它，删掉后会变成未知效果。' : ''))) {
-              effSel.value = curE; return;
+            const curName = effName(curE);
+            const builtin = NODE_EFFECT_IDS.indexOf(curE) >= 0;
+            const tip = builtin
+              ? '「' + curName + '」是内置效果：只能改名，不能删除。\n\n输入新名称后回车；直接回车=不改。'
+              : '「' + curName + '」\n\n输入新名称 = 改名\n输入 DEL = 删除这个效果\n直接回车 = 什么都不做';
+            const ans = prompt(tip, curName);
+            if (ans === null) { effSel.value = curE; return; }
+            const v = ans.trim();
+            if (!v || v === curName) { effSel.value = curE; return; }
+            if (!builtin && v.toUpperCase() === 'DEL') {
+              const used = WIZ.nodes.filter(y => y.effect === curE).length;
+              if (!confirm('删除效果「' + curName + '」？' + (used ? '\n有 ' + used + ' 个节点在用它，删掉后会变成失效引用。' : ''))) {
+                effSel.value = curE; return;
+              }
+              try {
+                await api('/api/data/effects/' + encodeURIComponent(curE), { method: 'DELETE', confirm: curE });
+                await loadBlueprints(true);
+                WIZ.dNode.effect = 'dmg';
+                toast('已删除效果', 'good');
+                wizRender();
+              } catch (err) { toast('删除失败：' + err.message, 'bad'); effSel.value = curE; }
+              return;
             }
             try {
-              await api('/api/data/effects/' + encodeURIComponent(curE), { method: 'DELETE', confirm: curE });
+              await api('/api/data/effects', { method: 'PUT', body: { id: curE, name: v } });
               await loadBlueprints(true);
-              WIZ.dNode.effect = 'dmg';
-              toast('已删除效果', 'good');
+              toast('已改名：' + v, 'good');
               wizRender();
-            } catch (err) { toast('删除失败：' + err.message, 'bad'); effSel.value = curE; }
+            } catch (err) { toast('改名失败：' + err.message, 'bad'); effSel.value = curE; }
           } else if (effSel.value) { WIZ.dNode.effect = effSel.value; }
         };
         if (S.user && S.user.role === 'superadmin') {
@@ -4772,7 +4792,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.2';
+window.__APP_VER = '2026-11-16.4';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 

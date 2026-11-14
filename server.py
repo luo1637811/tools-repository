@@ -1859,6 +1859,16 @@ class Handler(BaseHTTPRequestHandler):
                             "SELECT id FROM effects WHERE name=? AND id<>?", (_nm, row[pk])).fetchone()
                         if _dup:
                             return self.err(409, "已有同名效果「%s」（id=%s），请直接选它" % (_nm, _dup["id"]))
+                else:
+                    # 改名 / 改单位 / 改备注：仅超级管理员
+                    if (u.get("role") or "") != SUPER_ROLE:
+                        return self.err(403, "修改效果需要超级管理员")
+                    _nm = str(row.get("name") or "").strip()
+                    if _nm:
+                        _dup = _c.execute(
+                            "SELECT id FROM effects WHERE name=? AND id<>?", (_nm, row[pk])).fetchone()
+                        if _dup:
+                            return self.err(409, "已有同名效果「%s」（id=%s）" % (_nm, _dup["id"]))
         if table == "ships" and (u.get("role") or "") not in ("admin", SUPER_ROLE):
             _sc = scope_of(u)
             if _sc == "org":
@@ -1900,6 +1910,8 @@ class Handler(BaseHTTPRequestHandler):
         pk, _ = TABLES[table]
         if table == "effects" and "effects_edit" not in perms_of(u):
             return self.err(403, "效果库影响全站计算，需要「效果库·改」权限")
+        if table == "effects" and (u.get("role") or "") != SUPER_ROLE:
+            return self.err(403, "删除效果需要超级管理员")
         if not self.need_conf(rid):
             return
         with conn() as c:
