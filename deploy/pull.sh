@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 追毫中枢 · 从 GitHub 拉取最新代码
 #   清单只从 raw.githubusercontent.com 取（CDN 会缓存旧版，导致“无变化”或“大小不符”）
-#   正文文件按 sha256 + 字节数双重校验，四镜像轮换，校验不过绝不覆盖线上
+#   正文文件按 sha256 + 字节数双重校验，三镜像轮换，校验不过绝不覆盖线上
 # 用法：sudo bash deploy/pull.sh
 set -u
 
