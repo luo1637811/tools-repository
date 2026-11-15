@@ -159,8 +159,11 @@ async function loadBlueprints(silent) {
     const j = await api('/api/blueprints');
     S.bp = j; S.version = j.version; S.pub = j.pub || null;
     renderVerTag();
-    SLOTS.forEach(k => { if (!S.slots[k].ship) S.slots[k].ship = j.ships[0].id; });
-    S.sys[S.cur] = S.sys[S.cur] || (shipOf(S.slots[S.cur].ship) || {systems: []}).systems[0].id;
+    const firstShip = (j.ships || [])[0];
+    SLOTS.forEach(k => { if (!S.slots[k].ship) S.slots[k].ship = firstShip ? firstShip.id : ''; });
+    const _sh0 = S.slots[S.cur] && shipOf(S.slots[S.cur].ship);
+    const _sy0 = ((_sh0 && _sh0.systems) || [])[0];
+    S.sys[S.cur] = S.sys[S.cur] || (_sy0 ? _sy0.id : '');
     renderEditor();
     SLOTS.forEach(recalc);
     if (!silent) toast('数据已刷新 v' + j.version, 'good');
@@ -184,8 +187,18 @@ async function loadBlueprints(silent) {
       }
       return;
     }
-    toast('载入失败：' + e.message, 'bad');
-    setTimeout(() => loadBlueprints(true), 1500);
+    const st = (e && e.status) || 0;
+    S.loadTries = (S.loadTries || 0) + 1;
+    if (st >= 400 && st < 500) {           /* 4xx 是确定性错误，重试只会刷屏 */
+      if (!S.loadWarned) { S.loadWarned = true; toast('载入失败：' + e.message, 'bad'); }
+      return;
+    }
+    if (S.loadTries > 3) {                 /* 连续 3 次失败就停手，别再弹 */
+      if (!S.loadWarned) { S.loadWarned = true; toast('载入失败：' + e.message, 'bad'); }
+      return;
+    }
+    toast('载入失败：' + e.message + '（第 ' + S.loadTries + ' 次重试）', 'bad');
+    setTimeout(() => loadBlueprints(true), 1500 * S.loadTries);
   }
 }
 
@@ -213,7 +226,7 @@ function fillShipSelect(sl, kind) {
   sel.onchange = () => {
     sl.ship = sel.value; sl.noCarrier = false; sl.modules = {}; sl.alloc = {};
     sl.carrierMods = undefined; sl.planes = [];
-    S.sys[S.cur] = ((shipOf(sl.ship) || {}).systems || [{}])[0].id;
+    S.sys[S.cur] = ((((shipOf(sl.ship) || {}).systems || [])[0]) || {}).id || '';
     renderEditor(); recalc(S.cur); syncUrl();
   };
 }
@@ -249,9 +262,10 @@ function renderEditor() {
   if (sl.ship && !shipOf(sl.ship) && (S.bp.ships || []).length) {
     try { toast('原来选的舰船已不存在（' + sl.ship + '），已切到第一艘', 'warn'); } catch (e) {}
     sl.ship = S.bp.ships[0].id;
-    S.sys[S.cur] = ((shipOf(sl.ship) || {}).systems || [])[0] ? shipOf(sl.ship).systems[0].id : '';
+    const _fs = ((shipOf(sl.ship) || {}).systems || [])[0];
+    S.sys[S.cur] = _fs ? _fs.id : '';
   }
-  const ship = shipOf(sl.ship);
+  const ship = shipOf(sl.ship) || { id: '', name: '', systems: [], base: {}, tech_total: 0, kind: '', cls: '', size: '' };
   const all = S.slots[S.cur].pick || '';
   const kindSel = $('#kindFilter');
   if (kindSel) {
@@ -267,7 +281,7 @@ function renderEditor() {
       const list = (S.bp.ships || []).filter(s => !S.slots[S.cur].pick || s.kind === S.slots[S.cur].pick);
       if (list.length && !list.some(s => s.id === sl.ship)) {
         sl.ship = list[0].id; sl.alloc = {}; sl.modules = {};
-        S.sys[S.cur] = (shipOf(sl.ship).systems[0] || {}).id;
+        S.sys[S.cur] = ((((shipOf(sl.ship) || {}).systems || [])[0]) || {}).id || '';
       }
       renderEditor(); recalc(S.cur);
     };
@@ -360,8 +374,8 @@ function renderEditor() {
 function renderSystems() {
   const ship = shipOf(S.slots[S.cur].ship);
   const st = $('#sysTabs'); st.innerHTML = '';
-  if (!S.sys[S.cur] || !ship.systems.find(x => x.id === S.sys[S.cur]))
-    S.sys[S.cur] = (ship.systems[0] || {}).id;
+  if (!S.sys[S.cur] || !(ship.systems || []).find(x => x.id === S.sys[S.cur]))
+    S.sys[S.cur] = (((ship.systems || [])[0]) || {}).id || '';
   ship.systems.forEach(sy => {
     const noPts = Number(sy.no_nodes) || !sy.nodes.length;
     const b = el('button', (sy.id === S.sys[S.cur] ? 'on' : '') + (noPts ? ' nopts' : ''),
@@ -777,8 +791,8 @@ function treeCols(nodes) {
 function renderTree() {
   renderBaseAttrs();
   const sl = S.slots[S.cur];
-  const ship = shipOf(sl.ship);
-  const sy = ship.systems.find(x => x.id === S.sys[S.cur]);
+  const ship = shipOf(sl.ship) || { id: '', name: '', systems: [], base: {}, tech_total: 0, kind: '', cls: '', size: '' };
+  const sy = (ship.systems || []).find(x => x.id === S.sys[S.cur]);
   const host = $('#tree');
   /* 每次重绘都会重建 DOM，横向滚动位置会被浏览器重置为 0
      → 在第 2 层点一下「+」就被甩回第 1 层。
@@ -930,7 +944,7 @@ function nodeCard(nd, sl, sy, code) {
     if (cur === 0 && sy.tech_cap && sysActive(sy) >= sy.tech_cap)
       return toast('「' + sy.name + '」可用节点 ' + sy.tech_cap + ' 个，已点亮 ' + sysActive(sy)
         + ' 个（系统里共 ' + sy.nodes.length + ' 个）。先把不用的节点减到 0，再点新的。', 'bad');
-    const ship = shipOf(sl.ship);
+    const ship = shipOf(sl.ship) || { id: '', name: '', systems: [], base: {}, tech_total: 0, kind: '', cls: '', size: '' };
     const total = ship.systems.reduce((a, x) => a + sysUsed(x), 0);
     if (ship.tech_total && total + delta > ship.tech_total)
       return toast('变形技术值不够：还要 ' + delta + '，只剩 ' + (ship.tech_total - total), 'bad');
@@ -1300,7 +1314,7 @@ function renderPlanesInner(host) {
         sl.carrierMods = (sh.modules || []).filter(m => m.mkind).map(m => m.id);
         sl.modules = {};
         syncLaunchSlots((sh.modules || []).filter(m => m.mkind), k);
-        S.sys[k] = (sh.systems[0] || {}).id;
+        S.sys[k] = (((sh.systems || [])[0]) || {}).id || '';
       }
       recalc(k); setTimeout(renderPlanes, 240);
     };
@@ -4343,7 +4357,7 @@ document.addEventListener('click', ev => {
 
 $('#resetAlloc').onclick = () => {
   const ship = shipOf(S.slots[S.cur].ship);
-  const sy = ship.systems.find(x => x.id === S.sys[S.cur]);
+  const sy = (ship.systems || []).find(x => x.id === S.sys[S.cur]);
   if (sy) sy.nodes.forEach(nd => delete S.slots[S.cur].alloc[nd.id]);
   renderTree(); recalc(S.cur);
 };
@@ -5174,7 +5188,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.22';
+window.__APP_VER = '2026-11-17.23';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
