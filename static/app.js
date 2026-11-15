@@ -431,7 +431,7 @@ const ROLE_PERMS = {
 };
 const TAB_PERM = {sim: 'sim_view', battle: 'battle_view', data: 'data_view',
                   roster: 'roster_view', rosterM: 'roster_view',
-                  audit: 'audit_view', people: 'people_view', season: 'season_view'};
+                  audit: 'audit_view', people: 'people_view', season: 'season_view', posts: ''};
 function myPerms() {
   if (!S.user) return [];
   if (S.user.role === 'superadmin') return Object.keys(PERM_LABEL);
@@ -4141,10 +4141,10 @@ function showTab(tab) {
   diag('click ' + tab + ' | panes=' + panes.length + ' | pane=' + (pb ? 'yes' : 'NO-EL') +
        ' | hidden=' + (pb ? pb.classList.contains('hide') : '?'));
   if (tab === 'sim') renderPlanes();
-  if (tab === 'data') { renderData(); renderAudit(); }
+  if (tab === 'data') { renderData(); renderAudit(); if (window.__er) window.__er(); }
   if (tab === 'roster') loadRosterQuery();
   if (tab === 'rosterM') loadRosterAdmin();
-  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); if (window.__er) window.__er(); }
+  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); }
   if (tab === 'audit') loadAudit();
   if (tab === 'season' && window.renderSeason) renderSeason();
   if (tab === 'posts' && window.__posts) window.__posts();
@@ -4895,7 +4895,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.2';
+window.__APP_VER = '2026-11-17.3';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 

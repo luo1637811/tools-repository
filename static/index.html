@@ -26,10 +26,10 @@
 </div>
 
 <nav>
+  <button data-tab="posts">交流<span class="badge hide" id="postBadge">0</span></button>
   <button data-tab="sim" data-perm="sim_view" class="on">舰船数据</button>
   <button data-tab="battle" data-perm="battle_view">战报分析</button>
           <button data-tab="season" data-perm="season_view">星域编制</button>
- <button data-tab="posts">交流<span class="badge hide" id="postBadge">0</span></button>
   <button data-tab="data" data-perm="data_view">数据管理</button>
   <button data-tab="roster" data-perm="roster_view">人员查询</button>
   <button data-tab="rosterM" data-perm="roster_view">人员档案</button>
@@ -181,6 +181,11 @@
       点「保存改动」写库，全站实时刷新。
     </div>
   </div>
+  <div class="card hide" id="erCard">
+          <div class="sebar"><b>效果申请</b><span class="muted">管理员申请新增的节点效果；批准后会进入效果库</span>
+            <button class="btn ghost sm" id="erRefresh">刷新</button></div>
+          <div id="erBody" class="muted">暂无待处理申请。</div>
+        </div>
 </section>
 
 <section id="tab-battle" data-perm="battle_view" class="hide">
@@ -329,11 +334,7 @@
 
 <!-- ============ 人员 ============ -->
 <section id="tab-people" class="hide">
-  <div class="card hide" id="erCard">
-        <div class="sebar"><b>效果申请</b><span class="muted">管理员申请新增的节点效果；批准后会进入效果库</span>
-          <button class="btn ghost sm" id="erRefresh">刷新</button></div>
-        <div id="erBody" class="muted">暂无待处理申请。</div>
-      </div>
+  
       <div class="card hide" id="rcCard">
     <div class="toolbar">
       <h3 style="margin:0">超管恢复码</h3>

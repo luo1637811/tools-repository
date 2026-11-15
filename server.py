@@ -1727,6 +1727,8 @@ class Handler(BaseHTTPRequestHandler):
         u = self.need_auth()
         if not u:
             return
+        if not self.need_perm(("data_view",)):
+            return
         with conn() as c:
             if (u.get("role") or "") == SUPER_ROLE:
                 rows = c.execute(
