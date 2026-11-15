@@ -3133,8 +3133,8 @@ class Handler(BaseHTTPRequestHandler):
         name = (data.get("username") or "").strip()
         if not name:
             return self.err(400, "缺少登录名")
-        if _role(data.get("role")) == SUPER_ROLE and (u.get("role") or "") != SUPER_ROLE:
-            return self.err(403, "只有超级管理员能创建超级管理员")
+        if _role(data.get("role")) == SUPER_ROLE:
+            return self.err(403, "超级管理员账号不能在网页上创建；请在服务器执行 deploy/reset_pw.py --role superadmin 指定")
         if _role(data.get("role")) == "admin" and (u.get("role") or "") != SUPER_ROLE:
             return self.err(403, "只有超级管理员能创建管理员")
         try:
@@ -3174,8 +3174,8 @@ class Handler(BaseHTTPRequestHandler):
         is_mgr = my_role in ("admin", SUPER_ROLE)
         if tgt_role == SUPER_ROLE and not is_top:
             return self.err(403, "超级管理员账号只有超级管理员能修改")
-        if tgt_role == "admin" and not is_mgr:
-            return self.err(403, "只有管理员能修改管理员账号")
+        if tgt_role in ("admin", SUPER_ROLE) and not is_top:
+            return self.err(403, "只有超级管理员能修改管理员/超级管理员账号")
         if (data.get("pwd") or data.get("password")) and tgt_role in ("admin", SUPER_ROLE) and not is_mgr:
             return self.err(403, "只有管理员能修改管理员密码")
         # 超管密码只能本人改：任何其他超管都改不动（防止互改/夺号）
@@ -3186,8 +3186,8 @@ class Handler(BaseHTTPRequestHandler):
         if tgt_role == SUPER_ROLE and (("role" in data and _role(data.get("role")) != SUPER_ROLE)
                                        or ("status" in data and str(data.get("status") or "") != "在职")):
             return self.err(403, "超级管理员的角色/状态不能在网页里修改；请在服务器上执行 deploy/reset_pw.py --role / --delete")
-        if "role" in data and _role(data.get("role")) == SUPER_ROLE and not is_top:
-            return self.err(403, "只有超级管理员能设置超级管理员")
+        if "role" in data and _role(data.get("role")) == SUPER_ROLE and tgt_role != SUPER_ROLE:
+            return self.err(403, "超级管理员角色不能在网页上授予；请在服务器执行 deploy/reset_pw.py --role superadmin")
         if "role" in data and _role(data.get("role")) == "admin" and not is_top:
             return self.err(403, "只有超级管理员能设置管理员角色")
         if tgt_role in ("admin", SUPER_ROLE) and (

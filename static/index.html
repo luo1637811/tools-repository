@@ -334,10 +334,6 @@
 
 <!-- ============ 人员 ============ -->
 <section id="tab-people" class="hide">
-  <div class="card" id="tplCard">
-    <div class="cardhead"><b>权限模板</b><span class="tag">新建人员时可一键套用；勾好权限后也能另存为模板</span><button class="btn ghost sm" id="tplRefresh" style="margin-left:auto">刷新</button></div>
-    <div id="tplBody"><div class="pempty">加载中…</div></div>
-  </div>
 
   
       <div class="card hide" id="rcCard">
@@ -476,6 +472,7 @@
   <label class="row"><span>姓名</span><input type="text" name="name"></label>
   <label class="row"><span>角色</span><select name="role">
     <option value="viewer">只读</option><option value="editor">编辑</option><option value="admin">管理员</option><option value="superadmin">超级管理员</option></select></label>
+  <label class="row"><span>权限模板</span><select name="tpl" id="uTpl"><option value="">（不套用，手工勾选）</option></select></label>
   <label class="row"><span>大区</span><input type="text" name="squadron"></label>
   <label class="row"><span>电话</span><input type="text" name="phone"></label>
   <label class="row"><span>状态</span><select name="status"><option>在职</option><option>停用</option><option>退役</option></select></label>

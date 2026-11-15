@@ -1841,7 +1841,10 @@ function openUserDlg(u) {
   f.password.value = ''; f.name.value = u ? u.name : '';
   f.role.value = u ? u.role : 'viewer';
   const supOpt = f.role.querySelector('option[value=superadmin]');
-  if (supOpt) supOpt.disabled = !(S.user && S.user.role === 'superadmin');
+  const iTop = !!(S.user && S.user.role === 'superadmin');
+  if (supOpt) supOpt.disabled = true;   /* 超管角色只能服务器指定 */
+  const admOpt = f.role.querySelector('option[value=admin]');
+  if (admOpt) admOpt.disabled = !iTop;
   f.role.dataset.fixed = (f.role.value === 'admin' || f.role.value === 'superadmin') ? '1' : '0'; f.squadron.value = u ? u.squadron : '';
   f.phone.value = u ? u.phone : ''; f.status.value = u ? u.status : '在职';
   f.note.value = u ? u.note : '';
@@ -5207,9 +5210,7 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
   const bodyEl = () => document.getElementById('tplBody');
 
   async function load() {
-    const c = cardEl(); if (!c) return;
-    if (!can('people_view')) { c.classList.add('hide'); return; }
-    c.classList.remove('hide');
+    if (!can('people_view')) return;
     try {
       const r = await api('/api/perm_templates');
       TPL = r.templates || [];
@@ -5219,8 +5220,43 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
     }
   }
 
+  function fillSelect() {
+    const sel = document.getElementById('uTpl');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">（不套用，手工勾选）</option>';
+    TPL.forEach((t, i) => {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = (t.cn || t.name) + ' · ' + ((t.perms || []).length) + ' 项 · '
+        + (SCOPE_CN[t.scope] || '全部');
+      sel.appendChild(o);
+    });
+    if (cur && TPL[Number(cur)]) sel.value = cur;
+    sel.onchange = () => {
+      if (sel.value === '') return;
+      const t = TPL[Number(sel.value)];
+      if (t) applyTplLocal(t);
+    };
+  }
+
+  function applyTplLocal(t) {
+    const want = {};
+    (t.perms || []).forEach((k) => { want[k] = 1; });
+    document.querySelectorAll('#permBox input').forEach((cb) => {
+      if (!cb.disabled) cb.checked = !!want[cb.value];
+    });
+    const rd2 = [...document.querySelectorAll('#scopeBox input[name=scope]')]
+      .find((r) => r.value === (t.scope || 'all'));
+    if (rd2) { rd2.checked = true; rd2.dispatchEvent(new Event('change', { bubbles: true })); }
+    toast('已套用「' + (t.cn || t.name) + '」：权限与范围已填好，补上登录名/密码再点保存', 'ok');
+  }
+
+  window.__tplFill = fillSelect;
+
   function paint() {
-    const b = bodyEl(); if (!b) return;
+    fillSelect();
+    return;
     if (!TPL.length) { b.innerHTML = '<div class="pempty">还没有模板</div>'; return; }
     const tbl = el('table', 'tbl');
     const thead = el('thead');
