@@ -947,6 +947,7 @@ LEGACY_PERMS = {
 
 TEMPLATE_SEED = [
     ("admin_full", "管理员（全权限）", ALL_PERMS, "all"),
+    ("season_editor", "星域编制（看/改）", ("season_view", "season_edit"), "all"),
     ("editor", "编辑（数据 + 战报）",
      ("sim_view", "sim_edit", "battle_view", "battle_edit", "data_view", "data_edit", "export"), "all"),
     ("viewer", "只读（看船看战报）", ("sim_view", "battle_view"), "all"),

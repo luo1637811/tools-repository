@@ -420,14 +420,14 @@ const PERM_GROUPS = [
   {mod: '战报分析', view: 'battle_view', edit: 'battle_edit'},
   {mod: '数据管理', view: 'data_view', edit: 'data_edit', extra: [['effects_edit', '效果库']]},
   {mod: '星域编制', view: 'season_view', edit: 'season_edit'},
-  {mod: '人员档案', view: 'roster_view', edit: 'roster_edit', extra: [['roster_pii', '看明文']]},
+  {mod: '人员档案', view: 'roster_view', edit: 'roster_edit'},
   {mod: '人员管理', view: 'people_view', edit: 'people_edit'},
   {mod: '操作日志', view: 'audit_view', extra: [['audit_self', '只看自己']]},
   {mod: '导出', view: 'export'},
 ];
 const ROLE_PERMS = {
   viewer: 'sim_view,battle_view',
-  editor: 'sim_view,sim_edit,battle_view,battle_edit,data_view,data_edit,export',
+  editor: 'sim_view,sim_edit,battle_view,battle_edit,data_view,data_edit,season_view,season_edit,export',
 };
 const TAB_PERM = {sim: 'sim_view', battle: 'battle_view', data: 'data_view',
                   roster: 'roster_view', rosterM: 'roster_view',
