@@ -4809,10 +4809,10 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
           + (pplKnown() ? ' · ' + n0(x.n) + ' 人' : '') + '</div>';
         if (edit) {
           h += '<div class="seqo">'
-            + '<button class="mini" data-se="ren" data-lv="squad" data-id="' + x.id
-            + '" data-name="' + esc(x.name) + '" title="改名">改</button>'
-            + '<button class="mini" data-se="del" data-lv="squad" data-id="' + x.id
-            + '" data-name="' + esc(x.name) + '" title="删除">×</button>'
+            + '<button class="mini edit" data-se="ren" data-lv="squad" data-id="' + x.id
+            + '" data-name="' + esc(x.name) + '" title="改名" aria-label="改名">✎</button>'
+            + '<button class="mini del" data-se="del" data-lv="squad" data-id="' + x.id
+            + '" data-name="' + esc(x.name) + '" title="删除" aria-label="删除">✕</button>'
             + '</div>';
         }
         h += '</div>';
@@ -4997,7 +4997,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.4';
+window.__APP_VER = '2026-11-17.5';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
