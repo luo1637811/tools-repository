@@ -575,7 +575,7 @@ function renderBaseAttrs() {
     if (_keepSlot(u)) return true;            // A1 / M1 永远保留
     return !!_chosen[L];                      // 其它槽位：装了才显示
   };
-  const hasBay = rows.some(x => sysBays(x.sy).length > 0);
+  const hasBay = sys.some(x => _slotShown(x.sy.slot) && sysBays(x.sy).length > 0);
   const rows = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
     .sort((a, b2) => (b2.w - a.w) || String(a.sy.slot || '').localeCompare(String(b2.sy.slot || '')));
 
@@ -4883,7 +4883,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.11';
+window.__APP_VER = '2026-11-16.12';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
