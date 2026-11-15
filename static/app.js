@@ -190,6 +190,7 @@ function fillShipSelect(sl, kind) {
 
 /* 把「方案 / 蓝图 / 系统」写进地址栏，刷新或发给别人能回到同一处 */
 function syncUrl() {
+  if (S.booting) return;   /* boot 期间不许改写地址栏，否则 ?ship= 会被冲成第一艘 */
   try {
     const sl = S.slots[S.cur];
     const p = new URLSearchParams(location.search);
@@ -203,6 +204,10 @@ function syncUrl() {
       localStorage.setItem('ft_lastSel', JSON.stringify({
         slot: S.cur, ship: (sl && sl.ship) || '', sys: (S.sys && S.sys[S.cur]) || ''
       }));
+      /* A/B 两套方案各自选的舰船也记住，刷新后切槽位不会掉回第一艘 */
+      localStorage.setItem('ft_slots', JSON.stringify(SLOTS.map(k => ({
+        k: k, ship: (S.slots[k] && S.slots[k].ship) || '', sys: (S.sys && S.sys[k]) || ''
+      }))));
     } catch (e2) {}
   } catch (e) {}
 }
@@ -550,8 +555,28 @@ function renderBaseAttrs() {
       w: (n.dmg_atk !== undefined || n.dmg_air !== undefined || n.dmg_siege !== undefined) };
   });
   const hasWeapon = sys.some(x => x.w);
-  const hasBay = sys.some(x => sysBays(x.sy).length > 0);
-  const rows = sys.filter(x => !weaponOnly || x.w)
+  /* 只在这艘船确实装了模块时，才显示「舱位」这类模块相关内容 */
+  const _slCur = S.slots[S.cur] || {};
+  const _chosen = _slCur.modules || {};
+  const hasMod = !!Object.keys(_chosen).length;
+  /* 超主力：槽位没装模块时整行隐藏；A1 / M1 作为基础槽始终保留 */
+  const _isSuper = (ship.kind || '') === '超主力舰';
+  const _keepSlot = (sl) => {
+    const u = String(sl || '').toUpperCase();
+    return u === 'A1' || u === 'M1';
+  };
+  const _hasCand = {};
+  (ship.modules || []).forEach(m => { const L = (m.slot || '').charAt(0).toUpperCase(); if (L) _hasCand[L] = 1; });
+  const _slotShown = (sl) => {
+    if (!_isSuper) return true;
+    const u = String(sl || '').toUpperCase();
+    const L = u.charAt(0);
+    if (!L || !_hasCand[L]) return true;      // 不是可替换槽位（装甲/动力/能源/指挥）
+    if (_keepSlot(u)) return true;            // A1 / M1 永远保留
+    return !!_chosen[L];                      // 其它槽位：装了才显示
+  };
+  const hasBay = rows.some(x => sysBays(x.sy).length > 0);
+  const rows = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
     .sort((a, b2) => (b2.w - a.w) || String(a.sy.slot || '').localeCompare(String(b2.sy.slot || '')));
 
   const COLS = [
@@ -582,7 +607,9 @@ function renderBaseAttrs() {
     if (c.k === 'name') return '<td>' + mhEsc(x.sy.name) + '</td>';
     if (c.k === 'kind') return '<td>' + (x.w ? '<span class="tagw">武器</span>' : '<span class="tagf">功能</span>') + '</td>';
     if (c.k === 'bay') {
-      const bs = sysBays(x.sy);
+      /* 没装模块时，模块提供的战机/护航艇舱位不显示；系统自带的（无人机）照常显示 */
+      let bs = sysBays(x.sy);
+      if (!hasMod) bs = bs.filter(b => (b.kind || '') === '无人机');
       if (!bs.length) return '<td class="dim">—</td>';
       return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap).join(' · ') + '</td>';
     }
@@ -4399,22 +4426,27 @@ $('#pwdReqBtn').onclick = loadPwdReqs;
      不提前捕获的话，刷新后会被改回默认的「舰船数据」。 */
   const wantTabBoot = (new URLSearchParams(location.search).get('tab') || '').trim();
   if (wantTabBoot) S.tab = wantTabBoot;
+  /* 记下“进入页面时”的地址栏：loadBlueprints → renderEditor → syncUrl 会把 ?ship= 改写成
+     第一艘船（cv3000），不提前捕获的话，后面的还原永远读到错的船。 */
+  const bootQS = new URLSearchParams(location.search);
+  S.booting = true;
   try {
     const j = await api('/api/me');
     S.user = j.user;
     S.csrf = j.csrf || '';
   } catch (e) {
     S.token = ''; localStorage.removeItem('ft_token');
+    S.booting = false;
     goLogin('登录已过期，请重新登录');
     return;
   }
   whoami();
-  if (S.user && Number(S.user.must_change)) { openPwdDlg(true); return; }
+  if (S.user && Number(S.user.must_change)) { S.booting = false; openPwdDlg(true); return; }
   renderSlotTabs();
   await loadBlueprints(true);
   // 地址栏还原：?slot=b&ship=xxx&sys=yyy —— 收藏或发给别人能回到同一处
   try {
-    const p = new URLSearchParams(location.search);
+    const p = bootQS;
     const ss = (p.get('slot') || '').trim().toUpperCase();
     if (SLOTS.indexOf(ss) >= 0) S.cur = ss;
     /* 地址栏没带 ship（例如直接打开根地址）时，用上次记住的方案/舰船/系统 */
@@ -4444,6 +4476,23 @@ $('#pwdReqBtn').onclick = loadPwdReqs;
     renderEditor();
     SLOTS.forEach(recalc);
   } catch (e) {}
+  /* 另一套方案（非当前槽位）的舰船也从本地记录里还原 */
+  try {
+    const _all = JSON.parse(localStorage.getItem('ft_slots') || '[]');
+    (_all || []).forEach(it => {
+      const k = String((it && it.k) || '').toUpperCase();
+      if (!k || k === S.cur || SLOTS.indexOf(k) < 0) return;
+      const sh = it && it.ship;
+      if (sh && shipOf(sh)) S.slots[k].ship = sh;
+      const sp = S.slots[k].ship ? shipOf(S.slots[k].ship) : null;
+      const sy = it && it.sys;
+      if (sy && sp && (sp.systems || []).some(x => x.id === sy)) S.sys[k] = sy;
+    });
+    SLOTS.forEach(recalc);
+  } catch (e2) {}
+  /* 还原完成，恢复地址栏同步（把规范化后的 slot/ship/sys/tab 写回去） */
+  S.booting = false;
+  try { syncUrl(); } catch (e) {}
   renderPlanes(); renderData();
   connectStream();
   if (S.user && can('people_view')) { loadUsers(); loadPwdReqs(); }
@@ -4457,6 +4506,7 @@ $('#pwdReqBtn').onclick = loadPwdReqs;
     if (tb && can(permOf(tb))) setTimeout(() => tb.click(), 0);
     else S.tab = 'sim';   /* 没这个页签或没权限：回默认 */
   }
+  S.booting = false;   /* 兜底：无论中间哪一步抛错，都别让 syncUrl 永久失效 */
 })();
 
 /* ================= 已存方案 · 撤销 · 离开提醒 ================= */
@@ -4833,7 +4883,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.6';
+window.__APP_VER = '2026-11-16.11';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
