@@ -2518,7 +2518,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.err(400, "人数要填整数")
                 if hn < 0 or hn > 100000:
                     return self.err(400, "人数超出范围（0 ~ 100000）")
-                c.execute("UPDATE squads SET headcount=? WHERE id=?", (hn, rid2))
+                cur = c.execute("UPDATE squads SET headcount=? WHERE id=?", (hn, rid2))
+                if not cur.rowcount:
+                    return self.err(404, "小队不存在（可能已在别处删除）")
                 log("修改人数", u["username"], "squad#%d" % rid2, str(hn))
                 return self.send_json({"ok": True, "n": hn})
             if op in ("rename", "note"):

@@ -63,7 +63,11 @@ function sysBays(sy) {
 }
 function mk() { return {ship: null, noCarrier: false, modules: {}, alloc: {}, planes: [], carrierMods: undefined}; }
 
+let _toastLast = '', _toastAt = 0;
 function toast(msg, kind = '') {
+  const now = Date.now();
+  if (msg === _toastLast && now - _toastAt < 6000) return;   /* 403 风暴时不刷屏 */
+  _toastLast = msg; _toastAt = now;
   const d = el('div', '', msg);
   if (kind === 'bad') d.style.borderLeftColor = 'var(--bad)';
   if (kind === 'good') d.style.borderLeftColor = 'var(--good)';
@@ -95,7 +99,11 @@ async function api(path, opts = {}) {
   }
   if (!r.ok || j.ok === false) {
     if (j.code === 'must_change') { try { openPwdDlg(true); } catch (e) {} }
-    throw new Error(j.error || ('HTTP ' + r.status));
+    const err = new Error(j.error || ('HTTP ' + r.status));
+    err.status = r.status;
+    err.code = j.code || '';
+    err.perm = (r.status === 403);          /* 权限不足，调用方据此停止重试 */
+    throw err;
   }
   return j;
 }
@@ -156,7 +164,29 @@ async function loadBlueprints(silent) {
     renderEditor();
     SLOTS.forEach(recalc);
     if (!silent) toast('数据已刷新 v' + j.version, 'good');
-  } catch (e) { toast('载入失败：' + e.message, 'bad'); setTimeout(() => loadBlueprints(true), 1500); }
+  } catch (e) {
+    if (e && e.perm) {
+      /* 没权限就别每 1.5 秒重试（会刷出一屏「载入失败」），提示一次后停掉实时流 */
+      S.dead = true;
+      if (!S.permWarned) {
+        S.permWarned = true;
+        toast('没有「舰船数据·看」权限，请联系管理员续期', 'bad');
+      }
+      try { if (STREAM_ES) STREAM_ES.close(); } catch (e2) {}
+      const sec = document.getElementById('tab-sim');
+      if (sec && !document.getElementById('simNoPerm')) {
+        const dn = document.createElement('div');
+        dn.id = 'simNoPerm';
+        dn.className = 'card';
+        dn.innerHTML = '<div class="empty" style="padding:22px">当前账号没有「舰船数据·看」权限。'
+          + '权限到期或被收回时会看到这个提示，管理员续期后重新登录即可。</div>';
+        sec.insertBefore(dn, sec.firstChild);
+      }
+      return;
+    }
+    toast('载入失败：' + e.message, 'bad');
+    setTimeout(() => loadBlueprints(true), 1500);
+  }
 }
 
 /* 蓝图下拉：受「类型」与「找船」两个条件过滤；当前这条永远保留在列表里，避免选中的船被过滤掉 */
@@ -491,10 +521,16 @@ function applyPerms() {
     : '';
   const bar = $('#permExpired');
   if (bar) {
-    const ex = (S.user && S.user.perm_expired) || '';
-    bar.classList.toggle('hide', !ex);
-    if (ex) bar.textContent = '⚠ 你的权限已于 ' + ex + ' 到期：现在只能查看基础数据，'
-      + '数据管理、人员管理、操作日志等已关闭。请让管理员续期后重新登录。';
+    const flag = !!(S.user && S.user.perm_expired);
+    bar.classList.toggle('hide', !flag);
+    if (flag) {
+      const raw = S.user.perm_expire_at || '';
+      const day = (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw))
+        ? '（到期日 ' + raw.slice(0, 10) + '）' : '';
+      bar.textContent = '⚠ 权限已到期' + day
+        + '：现在只能查看基础数据，数据管理、人员管理、操作日志等已关闭。'
+        + '请让管理员续期后重新登录。';
+    }
   }
 }
 
@@ -3137,6 +3173,7 @@ async function connectStream() {
   } catch (e) {
     $('#liveTag').textContent = '实时 · 未连接';
     streamDown();
+    if (e && e.perm) return;              /* 权限不足：不再每 5 秒重连 */
     scheduleStream(5000);
     return;
   }
@@ -5010,7 +5047,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.7';
+window.__APP_VER = '2026-11-17.8';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
