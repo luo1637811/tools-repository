@@ -641,8 +641,22 @@ function renderBaseAttrs() {
     { k: 'dmg_atk', t: '对舰', w: 94, num: 1, weapon: 1 },
     { k: 'dmg_air', t: '对空', w: 86, num: 1, weapon: 1 },
     { k: 'dmg_siege', t: '攻城', w: 86, num: 1, weapon: 1 }
-  ].filter(c => (!c.weapon || hasWeapon) && (!c.bay || hasBay)
-    && (c.k !== 'eva' || sys.some(x => Number(x.n.eva) || Number(x.a.eva))));
+  ].filter(c => {
+    if (c.weapon && !hasWeapon) return false;
+    if (c.bay && !hasBay) return false;
+    if (c.k === 'slot' || c.k === 'name' || c.k === 'kind') return true;
+    if (c.k === 'speed') return rows.some(x => x.n.cruise !== undefined || x.n.warp !== undefined
+      || Number(x.a.speed) || Number(x.a.warp));
+    if (c.k === 'spd') return rows.some(x => x.n.spd !== undefined || Number(x.a.move));
+    /* 该列在所有可见行里既没基础值也没加成 → 不显示 */
+    return rows.some(x => x.n[c.k] !== undefined || Number(x.a[c.k]));
+  });
+
+  /* 「其他加成」列：本表没单列的加成键（命中 / 暴击 / 锁定 / 自定义效果…），有就显示 */
+  const EXTRA_USED = { hull:1, armor:1, shield:1, eva:1, speed:1, warp:1, spd:1, move:1,
+    repair:1, dmg_atk:1, dmg_air:1, dmg_siege:1, dmg:1 };
+  const extraOf = (x) => Object.keys(x.a || {}).filter(k => !EXTRA_USED[k] && Number(x.a[k]));
+  if (rows.some(x => extraOf(x).length)) COLS.push({ k: '__extra', t: '其他加成', w: 190 });
 
   const head = $('#baHead');
   if (head) {
@@ -659,6 +673,11 @@ function renderBaseAttrs() {
       if (!_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
       if (!bs.length) return '<td class="dim">—</td>';
       return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap).join(' · ') + '</td>';
+    }
+    if (c.k === '__extra') {
+      const ks = extraOf(x);
+      if (!ks.length) return '<td class="dim">—</td>';
+      return '<td class="bcell">' + ks.map(k => (EFF_CN[k] || k) + ' +' + fmtNum(x.a[k]) + '%').join(' · ') + '</td>';
     }
     if (c.k === 'speed') {
       const cr = n.cruise === undefined ? undefined : effVal('speed', n.cruise, x.a);
@@ -690,7 +709,8 @@ function renderBaseAttrs() {
     const armor = pick('armor', base.armor) + (Number(agg.armor) || 0);
     const shield = pick('shield', base.shield) + (Number(agg.shield) || 0);
     const ws = sys.filter(x => x.w);
-    const sum = k => ws.reduce((a, x) => a + (Number(x.n[k]) || 0), 0);
+    const wsum = sysDmgSum(ship, (S.slots[S.cur] || {}).alloc);
+    const sum = k => wsum[k];
     const tile = (k, v, s2) => '<div class="basetile"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + (s2 || '') + '</div></div>';
     tiles.innerHTML = [
       tile('结构值', hullFinal ? fmtNum(hullFinal) : '—',
@@ -771,11 +791,7 @@ function renderTree() {
   const keepTop = keep ? prevLane.scrollTop : 0;
   host.innerHTML = '';
   if (!sy) { host.appendChild(el('div', 'muted', '这条船还没有系统数据，去「数据管理」加。')); return; }
-  if (Number(sy.no_nodes) || !sy.nodes.length) {
-    host.appendChild(el('div', 'muted',
-      '「' + sy.name + '」没有可加点项 —— 它是纯被动/基础系统，不消耗技术值。'
-      + '要给别的系统加点，点上面的系统页签；要给它加节点，去「数据管理 → 加点」新增一行（系统填 ' + sy.id + '）。'));
-  }
+  /* 无加点项的纯被动系统：留空，不显示任何提示 */
   /* 横向分层：一层一列，列内按录入顺序往下排（与「数据管理 → 加点」里的顺序一致） */
   const cols = treeCols(sy.nodes);
   if (cols.length) {
@@ -975,18 +991,37 @@ const CMP_ROWS = [
   { k: 'dmg_siege',  t: '攻城',     u: '/分' }
 ];
 
+/* 对舰/对空/攻城 = 该系统展示的基础值 ×（1 + 该系统的伤害加成%）
+   要点：只对「基础值」与「加成」做计算，不引入周期/冷却等换算；
+   伤害节点挂在哪个系统上，就只抬哪个系统的三行（装甲系统的伤害节点不会串到武器上）。 */
+function sysDmgSum(ship, alloc) {
+  const out = { dmg_atk: 0, dmg_air: 0, dmg_siege: 0 };
+  ((ship && ship.systems) || []).forEach(sy => {
+    let n = {};
+    try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
+    if (n.dmg_atk === undefined && n.dmg_air === undefined && n.dmg_siege === undefined) return;
+    let pct = 0;
+    (sy.nodes || []).forEach(nd => {
+      const lv = Number((alloc || {})[nd.id] || 0);
+      if (!lv) return;
+      let e = nd.effect;
+      if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
+      pct += (Number((e || {}).dmg) || 0) * lv;
+    });
+    const mul = 1 + pct / 100;
+    ['dmg_atk', 'dmg_air', 'dmg_siege'].forEach(k => { out[k] += (Number(n[k]) || 0) * mul; });
+  });
+  return out;
+}
+
 function slotBaseVals(slotKey) {
   const sl = S.slots[slotKey];
   const ship = sl && shipOf(sl.ship);
   if (!ship) return null;
   const base = ship.base || {};
   const agg = slotAgg(slotKey);
-  const sum = { dmg_atk: 0, dmg_air: 0, dmg_siege: 0 };
-  (ship.systems || []).forEach(sy => {
-    let n = {};
-    try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
-    Object.keys(sum).forEach(k => { sum[k] += Number(n[k]) || 0; });
-  });
+  /* 对舰/对空/攻城：逐系统按「周期比」折算，各系统 持续/冷却 不同，不能全局乘一个系数 */
+  const sum = sysDmgSum(ship, sl.alloc);
   const st = sysTotals(ship);
   const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
   return {
@@ -1032,12 +1067,177 @@ function renderSlotTabs() {
   });
 }
 
+/* ---------- 属性存在性：有基础值或有加成，才算这艘船有这项 ---------- */
+function slotPresence(slotKey) {
+  const sl = S.slots[slotKey];
+  const ship = sl && shipOf(sl.ship);
+  const has = {};
+  if (!ship) return has;
+  const alloc = sl.alloc || {};
+  (ship.systems || []).forEach(sy => {
+    let n = {};
+    try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
+    Object.keys(n).forEach(k => { has[k] = 1; });
+    (sy.nodes || []).forEach(nd => {
+      const lv = Number(alloc[nd.id] || 0);
+      if (!lv) return;
+      let e = nd.effect;
+      if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
+      Object.keys(e || {}).forEach(k => { has[k] = 1; });
+    });
+  });
+  return has;
+}
+
+/* 效果键 → 中文名（新加的效果若不在表里，直接显示键名，保证看得见） */
+const EFF_CN = {
+  dmg: '伤害', cd: '冷却缩减', freq: '频率', dur: '持续缩短', cast: '持续缩短',
+  acc: '通用命中', acc_plane: '舰载机命中', acc_small: '小型命中', acc_large: '大型命中',
+  crit: '暴击', critres: '抗暴', lock: '锁定', lockeff_pct: '锁敌效率',
+  eva: '通用闪避', eva_missile: '导弹闪避', intc: '拦截率', focus: '锁定优先',
+  range: '目标范围', selfheal: '自维修', syshull: '系统结构', shield: '护盾', armor: '护甲',
+  hull: '结构', repair: '维修', speed: '巡航', warp: '曲率', move: '突防', spd: '突防',
+  cd_up: '冷却延长', heal: '维修', dmg_bonus: '伤害'
+};
+const CMP_SRC = {
+  hull: ['hull'], armor: ['armor'], shield: ['shield'], eva: ['eva'],
+  cruise: ['cruise', 'speed'], warp: ['warp'], spd: ['spd', 'move'], repair: ['repair'],
+  dmg_atk: ['dmg_atk', 'dmg'], dmg_air: ['dmg_air', 'dmg'], dmg_siege: ['dmg_siege', 'dmg']
+};
+const CMP_USED = {};
+Object.keys(CMP_SRC).forEach(k => CMP_SRC[k].forEach(s => { CMP_USED[s] = 1; }));
+
+/* ---------- 计算明细：基础值 / 加成来源 / 结果 ---------- */
+function calcRows(slotKey) {
+  const sl = S.slots[slotKey];
+  const ship = sl && shipOf(sl.ship);
+  if (!ship) return [];
+  const alloc = sl.alloc || {};
+  const base = ship.base || {};
+  const st = sysTotals(ship);
+  const nz = v => Number(v) || 0;
+  const sysSum = k => ((ship.systems || []).reduce((a, sy) => {
+    let n = {};
+    try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
+    return a + (Number(n[k]) || 0);
+  }, 0));
+
+  /* 每条加成的来源（用于「加成明细」） */
+  const items = {};
+  const addItem = (k, from, label, val) => { (items[k] = items[k] || []).push({ from: from, label: label, val: val }); };
+  (ship.systems || []).forEach(sy => (sy.nodes || []).forEach(nd => {
+    const lv = Number(alloc[nd.id] || 0);
+    if (!lv) return;
+    let e = nd.effect;
+    if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
+    Object.keys(e || {}).forEach(k => {
+      const v = (Number(e[k]) || 0) * lv;
+      if (v) addItem(k, sy.name || '', nd.label || '', v);
+    });
+  }));
+  const detailOf = keys => {
+    const arr = [];
+    keys.forEach(k => (items[k] || []).forEach(it => arr.push(it)));
+    if (!arr.length) return '';
+    const shown = arr.slice(0, 4).map(it => (it.from ? it.from + '·' : '') + it.label + ' +' + fmtNum(it.val) + '%');
+    return shown.join('；') + (arr.length > 4 ? '；等 ' + arr.length + ' 条' : '');
+  };
+  const sumOf = keys => keys.reduce((a, k) => a + (items[k] || []).reduce((b, x) => b + Number(x.val || 0), 0), 0);
+
+  const rows = [];
+  const push = (name, baseTxt, detail, result, unit) =>
+    rows.push({ name: name, baseTxt: baseTxt, detail: detail,
+      result: (typeof result === 'number' ? fmtNum(result) : result), unit: unit });
+
+  /* 结构值 = 基础 ×（1 + 加成%） */
+  {
+    const b = st.has.hull ? Number(st.sum.hull) : nz(base.hull);
+    const ownPct = nz(base.hull_bonus_pct);
+    const pct = sumOf(['hull']);
+    if (b || pct || ownPct) {
+      const d = [];
+      if (ownPct) d.push('舰船自带·结构加成 +' + fmtNum(ownPct) + '%');
+      const t = detailOf(['hull']);
+      if (t) d.push(t);
+      push('结构值', fmtNum(b), d.join('；') || '', b * (1 + (pct + ownPct) / 100), '点');
+    }
+  }
+  /* 加法：基础 + 加成 */
+  [['armor', '抵抗伤害', '点'], ['shield', '护盾值', '%'], ['eva', '通用闪避', '%']].forEach(function (it) {
+    const k = it[0], t = it[1], u = it[2];
+    const b = nz(base[k]), plus = sumOf([k]);
+    if (!b && !plus) return;
+    push(t, fmtNum(b), detailOf([k]), b + plus, u);
+  });
+  /* 乘法：基础 ×（1+加成%） */
+  [['cruise', '巡航速度', ['speed'], 'jm'], ['warp', '曲率速度', ['warp'], 'jm'],
+   ['repair', '维修量', ['repair'], '点']].forEach(function (it) {
+    const k = it[0], t = it[1], keys = it[2], u = it[3];
+    const b = nz(base[k]), pct = sumOf(keys);
+    if (!b && !pct) return;
+    push(t, fmtNum(b), detailOf(keys), b * (1 + pct / 100), u);
+  });
+  /* 减免：基础 ×（1−加成%） */
+  [['spd', '突防速度', ['move', 'spd'], 's'], ['cd', '冷却（频率）', ['freq', 'cd'], 's'],
+   ['dur', '持续时间', ['dur', 'cast'], 's']].forEach(function (it) {
+    const k = it[0], t = it[1], keys = it[2], u = it[3];
+    const b = nz(base[k]), pct = sumOf(keys);
+    if (!b && !pct) return;
+    push(t, fmtNum(b), detailOf(keys), b * (1 - pct / 100), u);
+  });
+  /* 对舰 / 对空 / 攻城 = 基础 ×（1 + 伤害加成%） */
+  const dmgPct = sumOf(['dmg']);
+  [['对舰', sysSum('dmg_atk')], ['对空', sysSum('dmg_air')], ['攻城', sysSum('dmg_siege')]].forEach(function (it) {
+    const t = it[0], b = it[1];
+    if (!b && !dmgPct) return;
+    push(t, fmtNum(b), detailOf(['dmg']), b * (1 + dmgPct / 100), '/分');
+  });
+  /* 其余只有加成的项 */
+  const USED = { hull: 1, hull_bonus: 1, armor: 1, shield: 1, eva: 1, speed: 1, warp: 1,
+    move: 1, spd: 1, repair: 1, cd: 1, freq: 1, dur: 1, cast: 1, dmg: 1 };
+  Object.keys(items).sort().forEach(k => {
+    if (USED[k]) return;
+    const v = sumOf([k]);
+    if (!v) return;
+    push('加成 · ' + (EFF_CN[k] || k), '', detailOf([k]), '+' + fmtNum(v), '%');
+  });
+  return rows;
+}
+
+function renderCalc() {
+  const body = $('#calcBody');
+  if (!body) return;
+  let rows = [];
+  try { rows = calcRows(S.cur); } catch (e) {
+    body.innerHTML = '<tr><td colspan="4" class="dim">计算明细渲染失败：' + mhEsc(e.message) + '</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="4" class="dim">这艘船还没有可显示的基础值 / 加成</td></tr>';
+  } else {
+    body.innerHTML = rows.map(r => '<tr><td>' + mhEsc(r.name) + '</td>'
+      + '<td class="num">' + (r.baseTxt === '' ? '' : mhEsc(r.baseTxt) + (r.unit ? ' ' + r.unit : '')) + '</td>'
+      + '<td class="bcell">' + mhEsc(r.detail || '') + '</td>'
+      + '<td class="num"><b>' + mhEsc(r.result) + '</b>' + (r.unit && String(r.result).indexOf('%') < 0 ? ' ' + r.unit : '') + '</td></tr>').join('');
+  }
+  const note = $('#calcNote');
+  if (note) note.textContent = '当前方案 ' + S.cur + '：共 ' + rows.length + ' 项。'
+    + '基础值与加成只在这艘船确实拥有时显示；没有基础也没有加成的项不列。';
+  const btn = $('#calcRefresh');
+  if (btn && !btn.dataset.bound) { btn.dataset.bound = '1'; btn.onclick = renderCalc; }
+}
+
 function renderResults() {
   renderSlotTabs();
   const body = $('#cmpBody'); body.innerHTML = '';
   const onlyDiff = !!($('#abDiff') && $('#abDiff').checked);
   const valsBySlot = SLOTS.map(k => slotBaseVals(k));
+  const presBySlot = SLOTS.map(k => slotPresence(k));
+  const aggsBySlot = SLOTS.map(k => slotAgg(k) || {});
   CMP_ROWS.forEach(row => {
+    const srcs = CMP_SRC[row.k] || [row.k];
+    /* 基础值与加成都没有 → 这行不显示 */
+    if (!presBySlot.some(p => srcs.some(s => p[s]))) return;
     const v = valsBySlot.map(o => (o ? o[row.k] : null));
     if (onlyDiff && v[0] !== null && v[1] !== null && Math.abs(v[0] - v[1]) < 1e-9) return;
     const tr = el('tr');
@@ -1052,9 +1252,27 @@ function renderResults() {
     body.appendChild(tr);
   });
 
-  $('#cmpNote').textContent = '对比的是「基础加成 · 系统提供 + 加点」的合计值：护甲 / 护盾 / 通用闪避按相加，'
-    + '冷却 / 锁定 / 突防按减免，其余按基础 ×（1+加成%）。这一页不算 DPM、有效血量、技术值。'
+  /* 其余加成（伤害% / 冷却缩减 / 命中 / 暴击 / 锁定 …）：有就显示，没有就跳过 */
+  const extraKeys = {};
+  presBySlot.forEach(p => Object.keys(p).forEach(k => { if (!CMP_USED[k]) extraKeys[k] = 1; }));
+  Object.keys(extraKeys).sort().forEach(k => {
+    const v = aggsBySlot.map(a => Number(a[k]) || 0);
+    if (!v.some(x => x)) return;
+    if (onlyDiff && Math.abs(v[0] - v[1]) < 1e-9) return;
+    const tr = el('tr', 'xrow');
+    tr.appendChild(el('td', '', '加成 · ' + (EFF_CN[k] || k) + '（%）'));
+    const best = Math.max.apply(null, v);
+    v.forEach(x => tr.appendChild(el('td', (x === best && x) ? 'best' : '', '+' + fmt(x, 1))));
+    const d = v[1] - v[0];
+    tr.appendChild(el('td', d === 0 ? '' : (d > 0 ? 'diff-pos' : 'diff-neg'),
+      (d > 0 ? '+' : '') + fmt(d, 1)));
+    body.appendChild(tr);
+  });
+
+  $('#cmpNote').textContent = '对比这两套方案在同一艘船上的基础值与加成合计。'
     + (onlyDiff ? '（只看有差异：A、B 相同的行已隐藏）' : '（绿色是两者中较高的一侧）');
+
+  try { renderCalc(); } catch (e) { /* 明细失败不影响主表 */ }
 }
 
 /* ---------- A / B 工具：复制、交换 ---------- */
@@ -5047,7 +5265,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.8';
+window.__APP_VER = '2026-11-17.14';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
