@@ -446,6 +446,7 @@ const PERM_IMPLIES = {sim_view: 'sim_edit', battle_view: 'battle_edit',
                      data_view: 'data_edit', roster_view: 'roster_edit',
                      people_view: 'people_edit'};
 function can(p) {
+  if (!p) return !!S.user;            // 没标注权限的页面/按钮：登录即可看
   const mine = myPerms();
   if (mine.indexOf(p) >= 0) return true;
   const e = PERM_IMPLIES[p];
@@ -4146,6 +4147,7 @@ function showTab(tab) {
   if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); if (window.__er) window.__er(); }
   if (tab === 'audit') loadAudit();
   if (tab === 'season' && window.renderSeason) renderSeason();
+  if (tab === 'posts' && window.__posts) window.__posts();
   if (tab === 'battle') {
     loadBattles()
       .then(() => diag('battle: loaded ' + S.battles.length + ' battles / ' + S.brows.length + ' rows'))
@@ -4893,7 +4895,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.14';
+window.__APP_VER = '2026-11-17.2';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
@@ -5004,4 +5006,197 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
   window.__er = load;
   const btn = document.getElementById('erRefresh');
   if (btn) btn.onclick = load;
+
+/* ==================== 交流（公告板）+ 个人中心 ==================== */
+(function () {
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+  const fmt = (s) => String(s || '').replace('T', ' ').slice(0, 16);
+  let POSTS = [], bound = false;
+
+  function dlg(title, html, onOk, okText) {
+    const w = document.createElement('div');
+    w.className = 'dlgwrap';
+    w.innerHTML = '<div class="dlg"><div class="dlgh">' + esc(title) + '</div>' +
+      '<div class="dlgb">' + html + '</div>' +
+      '<div class="dlgf"><button class="btn ghost" data-cancel="1">取消</button>' +
+      '<button class="btn" data-ok="1">' + esc(okText || '确定') + '</button></div></div>';
+    document.body.appendChild(w);
+    const close = () => w.remove();
+    w.addEventListener('click', (e) => {
+      if (e.target === w || e.target.dataset.cancel) return close();
+      if (e.target.dataset.ok) {
+        Promise.resolve(onOk && onOk(w)).then((r) => { if (r !== false) close(); });
+      }
+    });
+    return { w, close };
+  }
+
+  function setBadge(n) {
+    const b = $('#postBadge');
+    if (!b) return;
+    b.textContent = n > 99 ? '99+' : String(n);
+    b.classList.toggle('hide', !n);
+  }
+
+  async function loadUnread() {
+    try { const r = await api('/api/posts/unread'); setBadge(r.count || 0); } catch (e) {}
+  }
+
+  function paintNotice(list) {
+    const box = $('#notice'), txt = $('#noticeTxt');
+    if (!box || !txt) return;
+    const pin = (list || []).find((p) => p && p.pinned);
+    if (!pin) { box.classList.add('hide'); box.dataset.pid = ''; return; }
+    box.dataset.pid = pin.id;
+    txt.textContent = pin.title + (pin.replies ? '（' + pin.replies + ' 条回复）' : '');
+    box.classList.remove('hide');
+  }
+  async function loadNotice() {
+    const box = $('#notice');
+    if (!box) return;
+    try { const r = await api('/api/posts?limit=20'); paintNotice(r.posts || []); }
+    catch (e) { box.classList.add('hide'); }
+  }
+
+  function itemHtml(p) {
+    return '<div class="postitem' + (p.unread ? ' unread' : '') + '" data-id="' + p.id + '">' +
+      (p.pinned ? '<span class="pin">置顶</span>' : '') +
+      '<div class="ptitle">' + esc(p.title) + '</div>' +
+      '<div class="pmeta">' + esc(p.username || '') + ' · ' + esc(fmt(p.created_at)) +
+      ' · 回复 ' + (p.replies || 0) + '</div>' +
+      '<div class="pexcerpt">' + esc(p.excerpt || '') + '</div></div>';
+  }
+
+  async function loadList() {
+    const box = $('#postList');
+    if (!box) return;
+    box.innerHTML = '<div class="pempty">加载中…</div>';
+    try {
+      const r = await api('/api/posts?limit=50');
+      POSTS = r.posts || [];
+      $('#postCnt').textContent = '共 ' + (r.total || 0) + ' 条';
+      box.innerHTML = POSTS.length ? POSTS.map(itemHtml).join('') : '<div class="pempty">还没有公告。管理员可以在右上角发布。</div>';
+      const nb = $('#postNew');
+      if (nb) nb.classList.toggle('hide', !can('people_edit'));
+      paintNotice(POSTS);
+    } catch (e) {
+      box.innerHTML = '<div class="pempty">加载失败：' + esc(e.message || e) + '</div>';
+    }
+    loadUnread();
+  }
+
+  async function openDetail(id) {
+    let d;
+    try { d = await api('/api/posts/' + id); }
+    catch (e) { return toast('打不开：' + (e.message || e), 'bad'); }
+    const p = d.post, rs = d.replies || [];
+    const html =
+      '<div class="pbody">' + esc(p.body || '').replace(/\n/g, '<br>') + '</div>' +
+      '<div class="preplylist">' + (rs.length ? rs.map((r) =>
+        '<div class="preply"><b>' + esc(r.username || '') + '</b>' +
+        '<span class="pt">' + esc(fmt(r.created_at)) + '</span>' +
+        '<div>' + esc(r.body || '').replace(/\n/g, '<br>') + '</div></div>').join('')
+        : '<div class="pempty">还没有回复</div>') + '</div>' +
+      '<div class="pform"><textarea id="replyBody" rows="3" placeholder="写回复…（Ctrl+Enter 提交）"></textarea></div>' +
+      (d.can_pin || d.can_del ? '<div class="pops">' +
+        (d.can_pin ? '<button class="btn ghost sm" data-act="pin">' + (p.pinned ? '取消置顶' : '置顶') + '</button>' : '') +
+        (d.can_del ? '<button class="btn del sm" data-act="del">删除这条</button>' : '') + '</div>' : '');
+    const { w, close } = dlg(p.title, html, async (root) => {
+      const ta = $('#replyBody', root);
+      const body = (ta && ta.value || '').trim();
+      if (!body) return false;
+      try { await api('/api/posts/' + id + '/reply', { method: 'POST', body: { body } }); }
+      catch (e) { toast('回复失败：' + (e.message || e), 'bad'); return false; }
+      close(); loadList(); openDetail(id); return false;
+    }, '回复');
+    const ta = $('#replyBody', w);
+    if (ta) ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('[data-ok]', w).click(); }
+    });
+    w.addEventListener('click', async (e) => {
+      const act = e.target.dataset.act;
+      if (!act) return;
+      e.stopPropagation();
+      if (act === 'pin') {
+        try { await api('/api/posts/' + id + '/pin', { method: 'POST', body: { pinned: p.pinned ? 0 : 1 } }); }
+        catch (err) { return toast('操作失败：' + (err.message || err), 'bad'); }
+        close(); loadList(); openDetail(id); return;
+      }
+      if (act === 'del') {
+        if (!confirm('删除这条公告？')) return;
+        try { await api('/api/posts/' + id + '/delete', { method: 'POST', body: {} }); }
+        catch (err) { return toast('删除失败：' + (err.message || err), 'bad'); }
+        close(); loadList(); return;
+      }
+    });
+  }
+
+  function newPost() {
+    const html = '<div class="pform"><input id="npTitle" maxlength="60" placeholder="标题（≤60 字）">' +
+      '<textarea id="npBody" rows="6" placeholder="正文…"></textarea></div>';
+    dlg('发布公告', html, async (root) => {
+      const title = ($('#npTitle', root).value || '').trim();
+      const body = ($('#npBody', root).value || '').trim();
+      if (!title) { toast('标题不能为空', 'bad'); return false; }
+      try { await api('/api/posts', { method: 'POST', body: { title, body } }); }
+      catch (e) { toast('发布失败：' + (e.message || e), 'bad'); return false; }
+      toast('已发布', 'ok'); loadList(); return true;
+    }, '发布');
+  }
+
+  async function openMe() {
+    let d;
+    try { d = await api('/api/me/profile'); }
+    catch (e) { return toast('打不开个人资料：' + (e.message || e), 'bad'); }
+    const u = d.user || {};
+    const perms = (d.perms || []).map((x) => '<span class="tag">' + esc(x.t) + '</span>').join('') || '<span class="tag">无</span>';
+    const sess = (d.sessions || []).map((s) =>
+      '<div class="lerow">' + (s.current ? '<b>当前设备</b>' : '其它设备') +
+      ' · 剩余 ' + s.left_h + ' 小时</div>').join('') || '<div class="lerow">无</div>';
+    const aud = (d.audit || []).map((a) =>
+      '<div class="lerow">' + esc(fmt(a.ts)) + ' · ' + esc(a.action || '') +
+      (a.target ? ' · ' + esc(a.target) : '') + '</div>').join('') || '<div class="lerow">暂无</div>';
+    dlg('我的资料', '<div class="merow"><b>' + esc(u.name || u.username || '') + '</b>' +
+      '<span class="tag">' + esc(u.username || '') + '</span>' +
+      '<span class="tag">' + esc(u.role_cn || u.role || '') + '</span>' +
+      '<span class="tag">范围：' + esc(d.scope_cn || '') + '</span></div>' +
+      '<div class="mtit">我的权限</div><div class="mtags">' + perms + '</div>' +
+      '<div class="mtit">登录设备</div>' + sess +
+      '<div class="mtit">我的最近操作</div>' + aud, null, '关闭');
+  }
+
+  document.addEventListener('click', function (e) {
+    const w = e.target && e.target.closest ? e.target.closest('#who') : null;
+    if (!w) return;
+    e.preventDefault(); openMe();
+  });
+
+  window.__posts = function () {
+    loadList();
+    if (bound) return;
+    bound = true;
+    const r = $('#postRefresh'); if (r) r.onclick = loadList;
+    const n = $('#postNew'); if (n) n.onclick = newPost;
+    const list = $('#postList');
+    if (list) list.addEventListener('click', (e) => {
+      const it = e.target.closest('.postitem');
+      if (it) openDetail(it.dataset.id);
+    });
+    const who = $('#who');
+    if (who) { who.style.cursor = 'pointer'; who.title = '点击查看我的资料'; who.addEventListener('click', openMe); }
+    const bar = $('#notice');
+    if (bar) bar.onclick = (e) => {
+      if (e.target && e.target.id === 'noticeMore') e.stopPropagation();
+      const id = bar.dataset.pid; if (id) openDetail(id);
+    };
+    loadUnread();
+    loadNotice();
+  };
+  setTimeout(() => { try { if (S.user) { loadUnread(); loadNotice(); } } catch (e) {} }, 1500);
+  setInterval(() => { try { if (S.user) loadNotice(); } catch (e) {} }, 60000);
+
+  window.__me = openMe;
+})();
 })();

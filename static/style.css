@@ -466,3 +466,43 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .rccode{font-family:Consolas,ui-monospace,monospace;letter-spacing:1px;background:#0d151f;
  border:1px solid var(--line);border-radius:8px;padding:8px 10px;text-align:center;cursor:pointer}
 .rccode:hover{border-color:var(--hl);color:var(--hl)}
+
+/* 交流（公告板）+ 个人中心 */
+.badge{margin-left:5px;background:#e0364a;color:#fff;border-radius:9px;padding:0 5px;font-size:10px;line-height:15px;display:inline-block;vertical-align:top}
+.postlist{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.postitem{border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer;background:var(--panel2)}
+.postitem:hover{border-color:var(--hl)}
+.postitem.unread{border-left:3px solid var(--hl)}
+.postitem .ptitle{font-size:14px;font-weight:700;color:#e9eef7}
+.postitem .pmeta{font-size:11px;color:var(--dim);margin-top:3px}
+.postitem .pexcerpt{font-size:12px;color:#aab4c4;margin-top:4px}
+.pin{float:right;font-size:11px;color:#ff9f43;border:1px solid #ff9f43;border-radius:8px;padding:0 6px}
+.pempty{color:var(--dim);font-size:12px;padding:14px 2px;text-align:center}
+.dlgwrap{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}
+.dlg{background:var(--panel);border:1px solid var(--line);border-radius:10px;width:min(720px,100%);max-height:86vh;display:flex;flex-direction:column}
+.dlgh{padding:12px 14px;border-bottom:1px solid var(--line);font-weight:700;font-size:14px}
+.dlgb{padding:12px 14px;overflow:auto;font-size:13px;line-height:1.7}
+.dlgf{padding:10px 14px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.pbody{white-space:normal;color:#dbe4f0}
+.preplylist{margin-top:12px;border-top:1px dashed var(--line);padding-top:8px}
+.preply{padding:6px 0;border-bottom:1px dashed var(--line)}
+.preply .pt{color:var(--dim);font-size:11px;margin-left:8px}
+.pform{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.pform input,.pform textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:#dfe7f3;padding:8px 10px;font-size:13px}
+.pops{margin-top:10px;display:flex;gap:8px}
+.merow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.mtit{margin:14px 0 6px;font-size:12px;color:var(--hl);font-weight:700}
+.mtags{display:flex;gap:6px;flex-wrap:wrap}
+.lerow{font-size:12px;color:#b9c4d4;padding:3px 0;border-bottom:1px dashed var(--line)}
+.sebar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sebar-t{font-size:15px}
+.sebar-gap{flex:1}
+
+/* 顶部常驻通告条（置顶公告） */
+.notice{display:flex;align-items:center;gap:10px;margin:6px 12px 0;padding:8px 12px;
+  border:1px solid var(--line);border-left:4px solid var(--hl);border-radius:8px;
+  background:var(--panel2);font-size:13px;cursor:pointer}
+.notice:hover{background:var(--panel)}
+.notice .npin{flex:0 0 auto;font-size:11px;color:#fff;background:var(--hl);
+  border-radius:4px;padding:2px 6px}
+#noticeTxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

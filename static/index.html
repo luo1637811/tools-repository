@@ -19,11 +19,17 @@
 <div id="offline" class="hide">
   <span id="offlineMsg">实时同步已断开，正在重连……</span>
 </div>
+<div id="notice" class="notice hide">
+  <span class="npin">通告</span>
+  <span id="noticeTxt"></span>
+  <button class="btn ghost sm" id="noticeMore">查看</button>
+</div>
 
 <nav>
   <button data-tab="sim" data-perm="sim_view" class="on">舰船数据</button>
   <button data-tab="battle" data-perm="battle_view">战报分析</button>
           <button data-tab="season" data-perm="season_view">星域编制</button>
+ <button data-tab="posts">交流<span class="badge hide" id="postBadge">0</span></button>
   <button data-tab="data" data-perm="data_view">数据管理</button>
   <button data-tab="roster" data-perm="roster_view">人员查询</button>
   <button data-tab="rosterM" data-perm="roster_view">人员档案</button>
@@ -432,7 +438,19 @@
             <div id="seRoot" style="margin-top:10px"><div class="dim">加载中…</div></div>
           </div>
         </section>
-      </main>
+      <section id="tab-posts" class="hide">
+  <div class="card">
+    <div class="sebar">
+      <b class="sebar-t">交流 · 公告板</b>
+      <span class="tag" id="postCnt">共 0 条</span>
+      <span class="sebar-gap"></span>
+      <button class="btn ghost sm" id="postRefresh">刷新</button>
+      <button class="btn sm hide" id="postNew">＋ 发布公告</button>
+    </div>
+    <div class="postlist" id="postList"></div>
+  </div>
+</section>
+</main>
 
 <dialog id="entDlg"><form class="dlg" method="dialog" id="entForm">
   <h3 id="entTitle">编辑</h3>
