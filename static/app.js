@@ -212,6 +212,7 @@ function renderEditor() {
   /* 自愈：本地记住的舰船如果已经被删掉/改名，自动退回第一艘，
      否则整页会停在「没有找到这条蓝图」的空状态。 */
   if (sl.ship && !shipOf(sl.ship) && (S.bp.ships || []).length) {
+    try { toast('原来选的舰船已不存在（' + sl.ship + '），已切到第一艘', 'warn'); } catch (e) {}
     sl.ship = S.bp.ships[0].id;
     S.sys[S.cur] = ((shipOf(sl.ship) || {}).systems || [])[0] ? shipOf(sl.ship).systems[0].id : '';
   }
@@ -4139,6 +4140,7 @@ $('#resetAlloc').onclick = () => {
 $('#saveBuild').onclick = async () => {
   if (!S.user) return toast('先登录再保存方案', 'bad');
   const sl = S.slots[S.cur];
+  if (!sl.ship || !shipOf(sl.ship)) return toast('当前方案还没有选中真实存在的舰船，先选一艘再保存', 'bad');
   const name = prompt('方案名称', '方案 ' + S.cur); if (!name) return;
   try { await api('/api/builds', {method: 'POST', body: {ship: sl.ship, name,
     modules: sl.modules, alloc: sl.alloc, planes: sl.planes}}); toast('已保存', 'good'); }
@@ -4512,7 +4514,9 @@ async function refreshBuilds() {
       return;
     }
     S.builds.forEach(b => {
-      const o = el('option', '', b.name + ' · ' + (b.ship || '')); o.value = String(b.id);
+      const bs = b.ship ? shipOf(b.ship) : null;
+      const bt = bs ? bs.name : (b.ship ? ('⚠ ' + b.ship + '（该舰船已不存在）') : '（未记录舰船）');
+      const o = el('option', '', b.name + ' · ' + bt); o.value = String(b.id);
       sel.appendChild(o);
     });
     if (keep) sel.value = keep;
@@ -4527,15 +4531,35 @@ function applyBuild(b) {
     if (typeof v !== 'string') return v;
     try { return JSON.parse(v); } catch (e) { return null; }
   };
-  sl.ship = b.ship || sl.ship;
-  sl.modules = P(b.modules) || {};
-  sl.alloc = P(b.alloc) || {};
-  sl.planes = P(b.planes) || [];
-  S.sys[S.cur] = '';
+  /* 舰船解析：先按 id，再按船名；两者都找不到就保留当前舰船并提示，
+     否则 renderEditor 的“自愈”会把整页跳到第一艘船。 */
+  const want = String(b.ship || '').trim();
+  let target = want && shipOf(want) ? want : '';
+  if (!target && want) {
+    const byName = (S.bp.ships || []).find(x => String(x.name || '').trim() === want);
+    if (byName) target = byName.id;
+  }
+  let sameShip = true;
+  if (target) {
+    sameShip = (target === sl.ship);
+    sl.ship = target;
+    if (!sameShip) {
+      sl.modules = {}; sl.alloc = {}; sl.planes = [];
+      sl.carrierMods = undefined; sl.noCarrier = false;
+    }
+  }
+  sl.modules = P(b.modules) || sl.modules || {};
+  sl.alloc = P(b.alloc) || sl.alloc || {};
+  sl.planes = P(b.planes) || sl.planes || [];
+  if (target) S.sys[S.cur] = ((shipOf(sl.ship) || {}).systems || [{}])[0].id || '';
   S.undo = [];
   markBase();
   repaintAll();
-  toast('已载入方案「' + b.name + '」到当前这一套', 'good');
+  if (target) syncUrl();
+  toast(target
+    ? ('已载入方案「' + b.name + '」：舰船 ' + ((shipOf(target) || {}).name || target))
+    : ('已载入方案「' + b.name + '」，但它记录的舰船已不存在（' + (want || '未填写') + '），已保留当前舰船'),
+    target ? 'good' : 'warn');
 }
 
 $('#loadBuild').onclick = () => {
@@ -4809,7 +4833,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.5';
+window.__APP_VER = '2026-11-16.6';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
