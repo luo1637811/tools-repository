@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS effect_requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT,
   name TEXT, unit TEXT, note TEXT, status TEXT DEFAULT '待处理',
   created_at TEXT, handled_by TEXT, handled_at TEXT);
+CREATE TABLE IF NOT EXISTS posts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT,
+  title TEXT NOT NULL, body TEXT, pinned INTEGER DEFAULT 0,
+  created_at TEXT, updated_at TEXT, deleted INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS post_replies(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL,
+  user_id INTEGER, username TEXT, body TEXT, created_at TEXT, deleted INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS post_reads(
+  user_id INTEGER NOT NULL, post_id INTEGER NOT NULL, read_at TEXT,
+  PRIMARY KEY(user_id, post_id));
 
 """
 

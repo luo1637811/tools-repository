@@ -1329,6 +1329,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self.err(400, "bad json")
         try:
+            if path == "/api/posts":
+                return self.post_create(data)
+            if path.startswith("/api/posts/") and path.endswith("/reply"):
+                return self.post_reply(path.split("/")[3], data)
+            if path.startswith("/api/posts/") and path.endswith("/pin"):
+                return self.post_pin(path.split("/")[3], data)
+            if path.startswith("/api/posts/") and path.endswith("/delete"):
+                return self.post_delete(path.split("/")[3], data)
             if path == "/api/season/op":
                 return self.season_op(data)
             if path == "/api/effreq/create":
@@ -2513,8 +2521,185 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True})
         return self.err(400, "未知操作：%s" % op)
 
+    # ---------------- 个人中心 ----------------
+    def me_profile(self):
+        u = self.need_auth()
+        if not u:
+            return
+        tok = (self.headers.get("Authorization") or "").replace("Bearer", "").strip()
+        now_ts = int(time.time())
+        with conn() as c:
+            ses = [dict(r) for r in c.execute(
+                "SELECT token, expire FROM sessions WHERE user=? ORDER BY expire DESC",
+                (u.get("id"),))]
+            aud = [dict(r) for r in c.execute(
+                "SELECT ts, action, target, detail FROM audit WHERE actor=? "
+                "ORDER BY ts DESC, id DESC LIMIT 20", (u.get("username"),))]
+            unread = c.execute(
+                "SELECT COUNT(*) FROM posts p WHERE COALESCE(p.deleted,0)=0 AND NOT EXISTS "
+                "(SELECT 1 FROM post_reads r WHERE r.post_id=p.id AND r.user_id=?)",
+                (u.get("id"),)).fetchone()[0]
+        perms = [{"k": k, "t": PERM_LABEL.get(k, k)} for k in ALL_PERMS if k in perms_of(u)]
+        sess = [{"current": (x["token"] == tok), "expire": x["expire"],
+                 "left_h": max(0, int((x["expire"] - now_ts) // 3600))} for x in ses]
+        return self.send_json({"ok": True, "user": safe_user(u), "perms": perms,
+                               "scope_cn": SCOPE_CN.get(scope_of(u), scope_of(u)),
+                               "sessions": sess, "audit": aud, "unread": unread})
+
+    # ---------------- 信息交流（公告 + 回复） ----------------
+    def posts_list(self, q):
+        u = self.need_auth()
+        if not u:
+            return
+        try:
+            limit = max(1, min(100, int((q.get("limit") or ["30"])[0])))
+        except Exception:
+            limit = 30
+        try:
+            off = max(0, int((q.get("offset") or ["0"])[0]))
+        except Exception:
+            off = 0
+        with conn() as c:
+            total = c.execute("SELECT COUNT(*) FROM posts WHERE COALESCE(deleted,0)=0").fetchone()[0]
+            rows = [dict(r) for r in c.execute(
+                "SELECT p.id, p.title, p.username, p.created_at, p.pinned, p.body,"
+                " (SELECT COUNT(*) FROM post_replies r WHERE r.post_id=p.id AND COALESCE(r.deleted,0)=0) AS replies,"
+                " (SELECT MAX(r.created_at) FROM post_replies r WHERE r.post_id=p.id) AS last_at,"
+                " (SELECT COUNT(*) FROM post_reads pr WHERE pr.post_id=p.id AND pr.user_id=?) AS read_by_me"
+                " FROM posts p WHERE COALESCE(p.deleted,0)=0"
+                " ORDER BY COALESCE(p.pinned,0) DESC, COALESCE(p.created_at,'') DESC, p.id DESC"
+                " LIMIT ? OFFSET ?", (u.get("id"), limit, off))]
+        for r in rows:
+            body = (r.pop("body", "") or "").strip().replace("\n", " ")
+            r["excerpt"] = body[:80]
+            r["unread"] = 0 if r.pop("read_by_me", 0) else 1
+        return self.send_json({"ok": True, "total": total, "posts": rows})
+
+    def posts_unread(self):
+        u = self.need_auth()
+        if not u:
+            return
+        with conn() as c:
+            n = c.execute(
+                "SELECT COUNT(*) FROM posts p WHERE COALESCE(p.deleted,0)=0 AND NOT EXISTS "
+                "(SELECT 1 FROM post_reads r WHERE r.post_id=p.id AND r.user_id=?)",
+                (u.get("id"),)).fetchone()[0]
+        return self.send_json({"ok": True, "count": n})
+
+    def post_detail(self, pid):
+        u = self.need_auth()
+        if not u:
+            return
+        try:
+            pid = int(pid)
+        except Exception:
+            return self.err(400, "参数不对")
+        with conn() as c:
+            p = c.execute("SELECT * FROM posts WHERE id=? AND COALESCE(deleted,0)=0", (pid,)).fetchone()
+            if not p:
+                return self.err(404, "公告不存在或已删除")
+            rs = [dict(r) for r in c.execute(
+                "SELECT id, username, body, created_at FROM post_replies"
+                " WHERE post_id=? AND COALESCE(deleted,0)=0 ORDER BY id", (pid,))]
+            c.execute("INSERT OR REPLACE INTO post_reads(user_id, post_id, read_at) VALUES(?,?,?)",
+                      (u.get("id"), pid, now()))
+        role = u.get("role")
+        return self.send_json({"ok": True, "post": dict(p), "replies": rs,
+                               "can_pin": role in ("admin", SUPER_ROLE),
+                               "can_del": role == SUPER_ROLE or p["user_id"] == u.get("id")})
+
+    def post_create(self, data):
+        u = self.need_perm(("people_edit",))
+        if not u:
+            return
+        title = (data.get("title") or "").strip()
+        body = (data.get("body") or "").strip()
+        if not title:
+            return self.err(400, "标题不能为空")
+        if len(title) > 60:
+            return self.err(400, "标题最多 60 字")
+        if len(body) > 4000:
+            return self.err(400, "正文最多 4000 字")
+        with conn() as c:
+            cur = c.execute(
+                "INSERT INTO posts(user_id, username, title, body, pinned, created_at, updated_at)"
+                " VALUES(?,?,?,?,0,?,?)",
+                (u.get("id"), u.get("username"), title, body, now(), now()))
+            pid = cur.lastrowid
+        log("发布公告", u.get("username"), title[:40], body[:60])
+        return self.send_json({"ok": True, "id": pid})
+
+    def post_reply(self, pid, data):
+        u = self.need_auth()
+        if not u:
+            return
+        body = (data.get("body") or "").strip()
+        if not body:
+            return self.err(400, "回复不能为空")
+        if len(body) > 2000:
+            return self.err(400, "回复最多 2000 字")
+        try:
+            pid = int(pid)
+        except Exception:
+            return self.err(400, "参数不对")
+        with conn() as c:
+            p = c.execute("SELECT title FROM posts WHERE id=? AND COALESCE(deleted,0)=0", (pid,)).fetchone()
+            if not p:
+                return self.err(404, "公告不存在或已删除")
+            c.execute("INSERT INTO post_replies(post_id, user_id, username, body, created_at)"
+                      " VALUES(?,?,?,?,?)", (pid, u.get("id"), u.get("username"), body, now()))
+            c.execute("INSERT OR REPLACE INTO post_reads(user_id, post_id, read_at) VALUES(?,?,?)",
+                      (u.get("id"), pid, now()))
+        log("回复公告", u.get("username"), (p["title"] or "")[:40], body[:60])
+        return self.send_json({"ok": True})
+
+    def post_pin(self, pid, data):
+        u = self.need_auth()
+        if not u:
+            return
+        if u.get("role") not in ("admin", SUPER_ROLE):
+            return self.err(403, "只有管理员能置顶")
+        try:
+            pid = int(pid)
+        except Exception:
+            return self.err(400, "参数不对")
+        pin = 1 if data.get("pinned") else 0
+        with conn() as c:
+            n = c.execute("UPDATE posts SET pinned=? WHERE id=?", (pin, pid)).rowcount
+        if not n:
+            return self.err(404, "公告不存在")
+        log("置顶公告" if pin else "取消置顶", u.get("username"), str(pid))
+        return self.send_json({"ok": True, "pinned": pin})
+
+    def post_delete(self, pid, data):
+        u = self.need_auth()
+        if not u:
+            return
+        try:
+            pid = int(pid)
+        except Exception:
+            return self.err(400, "参数不对")
+        with conn() as c:
+            p = c.execute("SELECT user_id, title FROM posts WHERE id=? AND COALESCE(deleted,0)=0",
+                          (pid,)).fetchone()
+            if not p:
+                return self.err(404, "公告不存在")
+            if u.get("role") != SUPER_ROLE and p["user_id"] != u.get("id"):
+                return self.err(403, "只能删除自己发布的公告")
+            c.execute("UPDATE posts SET deleted=1 WHERE id=?", (pid,))
+        log("删除公告", u.get("username"), (p["title"] or "")[:40])
+        return self.send_json({"ok": True})
+
     def api_get(self, path):
         q = parse_qs(urlparse(self.path).query)
+        if path == "/api/me/profile":
+            return self.me_profile()
+        if path == "/api/posts/unread":
+            return self.posts_unread()
+        if path == "/api/posts":
+            return self.posts_list(q)
+        if path.startswith("/api/posts/"):
+            return self.post_detail(path.rsplit("/", 1)[-1])
         if path == "/api/season/tree":
             return self.season_tree(q)
         if path == "/api/stream":
