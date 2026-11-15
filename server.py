@@ -1340,6 +1340,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.post_delete(path.split("/")[3], data)
             if path == "/api/season/op":
                 return self.season_op(data)
+            if path == "/api/season/assign":
+                return self.season_assign(data)
             if path == "/api/effreq/create":
                 return self.effreq_create(data)
             if path.startswith("/api/effreq/") and path.endswith("/handle"):
@@ -2422,6 +2424,52 @@ class Handler(BaseHTTPRequestHandler):
             out["galaxies"] = gs
             out["people"] = {"known": matched > 0, "total": matched}
         return self.send_json(out)
+
+    def season_assign(self, data):
+        """把成员挂到某小队 / 从某小队移出（只改 members.squad 与 members.alliance）。"""
+        u = self.need_perm(("season_edit",))
+        if not u:
+            return
+        if self.need_auth() is None:
+            return
+        sid = str(data.get("squad_id") or "").strip()
+        add = [str(x).strip() for x in (data.get("add") or []) if str(x).strip()]
+        rem = [str(x).strip() for x in (data.get("remove") or []) if str(x).strip()]
+        if not sid:
+            return self.err(400, "缺少小队 id")
+        if not add and not rem:
+            return self.err(400, "没有要调整的成员")
+        if len(add) + len(rem) > 500:
+            return self.err(400, "一次最多调整 500 人")
+        sc = scope_of(u)
+        with conn() as c:
+            sq = c.execute(
+                "SELECT s.name AS sname, a.name AS aname FROM squads s "
+                "LEFT JOIN alliances a ON a.id=s.alliance WHERE s.id=?",
+                (sid,)).fetchone()
+            if not sq:
+                return self.err(404, "小队不存在")
+            sname = sq["sname"] or ""
+            aname = sq["aname"] or ""
+            if sc == "alliance" and aname != str(u.get("alliance") or ""):
+                return self.err(403, "你只能维护本联合体的小队")
+            touched, skipped = 0, 0
+            for ids, sqv, alv in ((add, sname, aname), (rem, "", "")):
+                for mid in ids:
+                    old = c.execute("SELECT * FROM members WHERE id=?", (mid,)).fetchone()
+                    if not old:
+                        skipped += 1
+                        continue
+                    if sc == "org" and (old["org"] or "") != str(u.get("org") or ""):
+                        skipped += 1
+                        continue
+                    if (old["squad"] or "") == sqv and (old["alliance"] or "") == alv:
+                        continue
+                    c.execute("UPDATE members SET squad=?, alliance=?, updated_at=? WHERE id=?",
+                              (sqv, alv, now(), mid))
+                    touched += 1
+        log("调整小队人数", sname, "加 %d 人 / 移 %d 人" % (len(add), len(rem)))
+        return self.send_json({"ok": True, "changed": touched, "skipped": skipped})
 
     def season_op(self, data):
         u = self.need_perm(("season_edit",))

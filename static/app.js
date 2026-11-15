@@ -4805,8 +4805,10 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
           || String(x.leader || '').toLowerCase().indexOf(kw) >= 0);
         h += '<div class="seq' + (hit ? ' hit' : '') + '">'
           + '<div class="seqn">' + esc(x.name) + '</div>'
-          + '<div class="seqm">' + (x.leader ? esc(x.leader) : '—')
-          + (pplKnown() ? ' · ' + n0(x.n) + ' 人' : '') + '</div>';
+          + '<div class="seqm memhit" data-mem="' + x.id + '" data-mname="' + esc(x.name)
+          + '" data-mall="' + esc(a.name) + '" title="点这里调整本队成员">'
+          + (x.leader ? esc(x.leader) : '—')
+          + (pplKnown() ? ' · <b>' + n0(x.n) + '</b> 人' : '') + '</div>';
         if (edit) {
           h += '<div class="seqo">'
             + '<button class="mini edit" data-se="ren" data-lv="squad" data-id="' + x.id
@@ -4907,11 +4909,147 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     }
   }
 
+  /* ---------- 小队成员调整弹窗 ---------- */
+  var MD = { sid: null, name: '', all: '', rows: [], base: {}, chk: {}, timer: null };
+
+  function memMask() {
+    var m = document.getElementById('seMask');
+    if (m) return m;
+    m = document.createElement('div');
+    m.id = 'seMask';
+    m.className = 'semask hide';
+    m.innerHTML = '<div class="sedlg">'
+      + '<div class="sedgh"><b id="seMemTitle">小队成员</b>'
+      + '<span class="tagf">勾上=在本队，取消=移出本队</span><span class="grow"></span>'
+      + '<button class="btn ghost sm" id="seMemClose">关闭</button></div>'
+      + '<input class="inp sefind" id="seMemQ" placeholder="搜 名称 / ID / 组织（边打边搜）">'
+      + '<div class="semlist" id="seMemList"></div>'
+      + '<div class="sedgf"><span class="tagf" id="seMemCnt"></span><span class="grow"></span>'
+      + '<button class="btn sm" id="seMemSave">保存</button></div></div>';
+    document.body.appendChild(m);
+    m.addEventListener('click', function (ev) { if (ev.target === m) closeMem(); });
+    document.getElementById('seMemClose').onclick = closeMem;
+    document.getElementById('seMemSave').onclick = saveMem;
+    var q = document.getElementById('seMemQ');
+    q.addEventListener('input', function () {
+      clearTimeout(MD.timer);
+      MD.timer = setTimeout(fetchMem, 280);
+    });
+    document.getElementById('seMemList').addEventListener('change', function (ev) {
+      var cb = ev.target.closest('input[data-mid]');
+      if (!cb) return;
+      MD.chk[cb.getAttribute('data-mid')] = cb.checked;
+      paintMemCnt();
+    });
+    return m;
+  }
+
+  function openMem(sid, name) {
+    MD.sid = sid; MD.name = name || '';
+    MD.rows = []; MD.base = {}; MD.chk = {};
+    var m = memMask();
+    m.classList.remove('hide');
+    document.getElementById('seMemTitle').textContent = '小队成员 · ' + MD.name;
+    document.getElementById('seMemQ').value = '';
+    document.getElementById('seMemList').innerHTML = '<div class="empty" style="padding:16px">加载中…</div>';
+    fetchMem();
+    setTimeout(function () { try { document.getElementById('seMemQ').focus(); } catch (e) {} }, 30);
+  }
+  function closeMem() {
+    var m = document.getElementById('seMask');
+    if (m) m.classList.add('hide');
+  }
+
+  function fetchMem() {
+    var q = (document.getElementById('seMemQ') || {}).value || '';
+    api('/api/members?limit=500&q=' + encodeURIComponent(q)).then(function (r) {
+      MD.rows = r.rows || [];
+      MD.rows.forEach(function (x) {
+        var id = String(x.id);
+        if (!(id in MD.base)) {
+          MD.base[id] = String(x.squad || '');
+          MD.chk[id] = String(x.squad || '') === MD.name;
+        }
+      });
+      renderMem();
+    }).catch(function (e) {
+      var box = document.getElementById('seMemList');
+      if (box) box.innerHTML = '<div class="empty" style="padding:14px">加载失败：'
+        + esc((e && e.message) || e) + '（需要「人员档案·看」权限）</div>';
+    });
+  }
+
+  function renderMem() {
+    var box = document.getElementById('seMemList');
+    if (!box) return;
+    if (!MD.rows.length) {
+      box.innerHTML = '<div class="empty" style="padding:16px">没有匹配的成员</div>';
+      paintMemCnt();
+      return;
+    }
+    var h = '';
+    MD.rows.forEach(function (x) {
+      var id = String(x.id);
+      var on = !!MD.chk[id];
+      var sq = String(x.squad || '');
+      var tagTxt = sq === MD.name ? '本队' : (sq ? sq : '未分组');
+      h += '<label class="semrow' + (on ? ' on' : '') + '">'
+        + '<input type="checkbox" data-mid="' + id + '"' + (on ? ' checked' : '') + '>'
+        + '<span class="semname">' + esc(x.name || '') + '</span>'
+        + '<span class="semid">' + esc(id) + '</span>'
+        + '<span class="semsq' + (sq === MD.name ? ' me' : '') + '">' + esc(tagTxt) + '</span>'
+        + '</label>';
+    });
+    box.innerHTML = h;
+    paintMemCnt();
+  }
+
+  function paintMemCnt() {
+    var add = 0, rem = 0;
+    Object.keys(MD.base).forEach(function (id) {
+      var was = MD.base[id] === MD.name;
+      var now = !!MD.chk[id];
+      if (!was && now) add++;
+      if (was && !now) rem++;
+    });
+    var el = document.getElementById('seMemCnt');
+    if (el) el.textContent = '将加入 ' + add + ' 人，移出 ' + rem + ' 人';
+  }
+
+  function saveMem() {
+    var add = [], rem = [];
+    Object.keys(MD.base).forEach(function (id) {
+      var was = MD.base[id] === MD.name;
+      var now = !!MD.chk[id];
+      if (!was && now) add.push(id);
+      if (was && !now) rem.push(id);
+    });
+    if (!add.length && !rem.length) { closeMem(); return; }
+    var btn = document.getElementById('seMemSave');
+    btn.disabled = true;
+    api('/api/season/assign', {
+      method: 'POST',
+      body: { squad_id: MD.sid, add: add, remove: rem }
+    }).then(function (r) {
+      toast('已调整 ' + (r.changed || 0) + ' 人', 'ok');
+      closeMem();
+      load();
+    }).catch(function (e) {
+      toast('保存失败：' + ((e && e.message) || e), 'bad');
+      btn.disabled = false;
+    });
+  }
+
   function bindOnce() {
     var d = root();
     if (!d || d.__seBound) return;
     d.__seBound = true;
     d.addEventListener('click', function (ev) {
+      var mm = ev.target.closest('[data-mem]');
+      if (mm) {
+        openMem(mm.getAttribute('data-mem'), mm.getAttribute('data-mname') || '');
+        return;
+      }
       var pk = ev.target.closest('[data-pick]');
       if (pk) {
         SE.sel = pk.getAttribute('data-pick');
@@ -4997,7 +5135,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.5';
+window.__APP_VER = '2026-11-17.6';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
