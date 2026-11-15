@@ -184,7 +184,7 @@ function fillShipSelect(sl, kind) {
     sl.ship = sel.value; sl.noCarrier = false; sl.modules = {}; sl.alloc = {};
     sl.carrierMods = undefined; sl.planes = [];
     S.sys[S.cur] = ((shipOf(sl.ship) || {}).systems || [{}])[0].id;
-    renderEditor(); recalc(S.cur);
+    renderEditor(); recalc(S.cur); syncUrl();
   };
 }
 
@@ -199,6 +199,11 @@ function syncUrl() {
     /* 用状态而不是 nav.on：boot 期间 nav 还没切到目标页签 */
     p.set('tab', S.tab || 'sim');
     history.replaceState(null, '', location.pathname + '?' + p.toString());
+    try {
+      localStorage.setItem('ft_lastSel', JSON.stringify({
+        slot: S.cur, ship: (sl && sl.ship) || '', sys: (S.sys && S.sys[S.cur]) || ''
+      }));
+    } catch (e2) {}
   } catch (e) {}
 }
 
@@ -4410,6 +4415,18 @@ $('#pwdReqBtn').onclick = loadPwdReqs;
     const p = new URLSearchParams(location.search);
     const ss = (p.get('slot') || '').trim().toUpperCase();
     if (SLOTS.indexOf(ss) >= 0) S.cur = ss;
+    /* 地址栏没带 ship（例如直接打开根地址）时，用上次记住的方案/舰船/系统 */
+    if (!p.get('ship')) {
+      try {
+        const last = JSON.parse(localStorage.getItem('ft_lastSel') || 'null');
+        if (last && last.ship && shipOf(last.ship) &&
+            SLOTS.indexOf(String(last.slot || '').toUpperCase()) >= 0) {
+          S.cur = String(last.slot).toUpperCase();
+          p.set('slot', S.cur); p.set('ship', last.ship);
+          if (last.sys) p.set('sys', last.sys);
+        }
+      } catch (e2) {}
+    }
     const sShip = p.get('ship');
     const sl = S.slots[S.cur];
     if (sShip && sl && shipOf(sShip)) {
@@ -4792,7 +4809,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.4';
+window.__APP_VER = '2026-11-16.5';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
