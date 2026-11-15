@@ -567,15 +567,25 @@ function renderBaseAttrs() {
   };
   const _hasCand = {};
   (ship.modules || []).forEach(m => { const L = (m.slot || '').charAt(0).toUpperCase(); if (L) _hasCand[L] = 1; });
+  /* 该槽位「自己」是否装了模块：必须模块的 slot 与本行 slot 完全一致（M1 ≠ M2） */
+  const _slotLoaded = (sl) => {
+    const u = String(sl || '').toUpperCase();
+    const L = u.charAt(0);
+    if (!u || !L || !_chosen[L]) return false;
+    const mid = _chosen[L];
+    const m = (ship.modules || []).find(x => String(x.id) === String(mid));
+    return !!(m && String(m.slot || '').toUpperCase() === u);
+  };
   const _slotShown = (sl) => {
     if (!_isSuper) return true;
     const u = String(sl || '').toUpperCase();
     const L = u.charAt(0);
     if (!L || !_hasCand[L]) return true;      // 不是可替换槽位（装甲/动力/能源/指挥）
-    if (_keepSlot(u)) return true;            // A1 / M1 永远保留
-    return !!_chosen[L];                      // 其它槽位：装了才显示
+    if (_keepSlot(u)) return true;            // A1 / M1 作为基础槽永远保留
+    return _slotLoaded(u);                    // 其它槽位：它自己装了才显示
   };
-  const hasBay = sys.some(x => _slotShown(x.sy.slot) && sysBays(x.sy).length > 0);
+  const hasBay = sys.some(x => _slotShown(x.sy.slot)
+    && sysBays(x.sy).some(b => (b.kind || '') === '无人机' || _slotLoaded(x.sy.slot)));
   const rows = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
     .sort((a, b2) => (b2.w - a.w) || String(a.sy.slot || '').localeCompare(String(b2.sy.slot || '')));
 
@@ -607,9 +617,9 @@ function renderBaseAttrs() {
     if (c.k === 'name') return '<td>' + mhEsc(x.sy.name) + '</td>';
     if (c.k === 'kind') return '<td>' + (x.w ? '<span class="tagw">武器</span>' : '<span class="tagf">功能</span>') + '</td>';
     if (c.k === 'bay') {
-      /* 没装模块时，模块提供的战机/护航艇舱位不显示；系统自带的（无人机）照常显示 */
+      /* 该槽位没装模块 → 模块提供的战机/护航艇舱位不显示；系统自带的（无人机）照常显示 */
       let bs = sysBays(x.sy);
-      if (!hasMod) bs = bs.filter(b => (b.kind || '') === '无人机');
+      if (!_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
       if (!bs.length) return '<td class="dim">—</td>';
       return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap).join(' · ') + '</td>';
     }
@@ -4883,7 +4893,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-16.12';
+window.__APP_VER = '2026-11-16.14';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 
