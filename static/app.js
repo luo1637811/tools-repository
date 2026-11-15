@@ -4700,7 +4700,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 (function () {
   var REL = ['友好', '中立', '敌对'];
   var CLS = { '友好': 'relf', '中立': 'reln', '敌对': 'relh' };
-  var SE = { mode: 'current', season: null, data: null };
+  var SE = { mode: 'current', season: null, data: null, sel: null, kw: '', rel: '' };
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -4723,6 +4723,105 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       });
   }
 
+  function n0(n) { return (n == null ? 0 : n); }
+  function pplKnown() { return !!(SE.data && SE.data.people && SE.data.people.known); }
+  function pplTxt(n) { return pplKnown() ? (' · ' + n0(n) + ' 人') : ''; }
+
+  function alliSorted() {
+    var g = (SE.data && (SE.data.galaxies || [])[0]) || null;
+    var alls = (g && g.alliances) || [];
+    return alls.slice().sort(function (a, b) {
+      var d1 = REL.indexOf(relOf(a.relation)) - REL.indexOf(relOf(b.relation));
+      return d1 !== 0 ? d1 : ((a.ord || 0) - (b.ord || 0));
+    });
+  }
+  function findAlli(id) {
+    var hit = null;
+    alliSorted().forEach(function (a) { if (String(a.id) === String(id)) hit = a; });
+    return hit;
+  }
+
+  function renderList() {
+    var box = document.getElementById('seList');
+    if (!box) return;
+    var kw = String(SE.kw || '').trim().toLowerCase();
+    var rows = alliSorted().filter(function (a) {
+      if (SE.rel && relOf(a.relation) !== SE.rel) return false;
+      if (!kw) return true;
+      if (String(a.name || '').toLowerCase().indexOf(kw) >= 0) return true;
+      return (a.squads || []).some(function (x) {
+        return String(x.name || '').toLowerCase().indexOf(kw) >= 0
+          || String(x.leader || '').toLowerCase().indexOf(kw) >= 0;
+      });
+    });
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty" style="padding:14px">没有匹配的联合体</div>';
+      return;
+    }
+    var h = '';
+    rows.forEach(function (a) {
+      var on = String(SE.sel) === String(a.id);
+      h += '<div class="serow' + (on ? ' on' : '') + '" data-pick="' + a.id + '">'
+        + '<i class="bar ' + CLS[relOf(a.relation)] + '"></i>'
+        + '<div class="seitem"><b>' + esc(a.name) + '</b>'
+        + '<span class="meta">' + relOf(a.relation) + ' · ' + (a.squads || []).length + ' 队'
+        + pplTxt(a.n) + '</span></div></div>';
+    });
+    box.innerHTML = h;
+  }
+
+  function renderDetail() {
+    var box = document.getElementById('seDetail');
+    if (!box) return;
+    var edit = can('season_edit');
+    var a = SE.sel ? findAlli(SE.sel) : null;
+    if (!a) {
+      box.innerHTML = '<div class="empty" style="padding:28px">左边选一个联合体</div>';
+      return;
+    }
+    var kw = String(SE.kw || '').trim().toLowerCase();
+    var sqs = (a.squads || []).slice().sort(function (x, y) { return (x.ord || 0) - (y.ord || 0); });
+    var h = '<div class="sedh"><b>' + esc(a.name) + '</b>' + tag(a.relation)
+      + '<span class="tag">' + sqs.length + ' 队' + pplTxt(a.n) + '</span>'
+      + (a.note ? '<span class="tagf">' + esc(a.note) + '</span>' : '')
+      + '<span class="grow"></span>';
+    if (edit) {
+      h += '<button class="btn ghost sm" data-se="add_squad" data-id="' + a.id + '">＋小队</button>'
+        + '<button class="btn ghost sm" data-se="set_rel" data-id="' + a.id
+        + '" data-rel="' + relOf(a.relation) + '" data-name="' + esc(a.name) + '">改关系</button>'
+        + '<button class="btn ghost sm" data-se="ren" data-lv="alliance" data-id="' + a.id
+        + '" data-name="' + esc(a.name) + '">改名</button>'
+        + '<button class="btn ghost sm danger" data-se="del" data-lv="alliance" data-id="' + a.id
+        + '" data-name="' + esc(a.name) + '">删除</button>';
+    }
+    h += '</div>';
+    if (!sqs.length) {
+      h += '<div class="empty" style="padding:18px">还没有小队'
+        + (edit ? '，点「＋小队」添加。' : '') + '</div>';
+    } else {
+      h += '<div class="seqgrid">';
+      sqs.forEach(function (x) {
+        var hit = kw && (String(x.name || '').toLowerCase().indexOf(kw) >= 0
+          || String(x.leader || '').toLowerCase().indexOf(kw) >= 0);
+        h += '<div class="seq' + (hit ? ' hit' : '') + '">'
+          + '<div class="seqn">' + esc(x.name) + '</div>'
+          + '<div class="seqm">' + (x.leader ? esc(x.leader) : '—')
+          + (pplKnown() ? ' · ' + n0(x.n) + ' 人' : '') + '</div>';
+        if (edit) {
+          h += '<div class="seqo">'
+            + '<button class="mini" data-se="ren" data-lv="squad" data-id="' + x.id
+            + '" data-name="' + esc(x.name) + '" title="改名">改</button>'
+            + '<button class="mini" data-se="del" data-lv="squad" data-id="' + x.id
+            + '" data-name="' + esc(x.name) + '" title="删除">×</button>'
+            + '</div>';
+        }
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+    box.innerHTML = h;
+  }
+
   function paint(r) {
     var d = root();
     if (!d) return;
@@ -4734,23 +4833,32 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       ? (seasons.filter(function (x) { return String(x.id) === String(SE.season); })[0] || r.target)
       : r.current;
     var cnt = { '友好': 0, '中立': 0, '敌对': 0 };
-    var sqn = 0;
-    alls.forEach(function (a) { cnt[relOf(a.relation)]++; sqn += (a.squads || []).length; });
+    var sqn = 0, ppl = 0;
+    alls.forEach(function (a) {
+      cnt[relOf(a.relation)]++;
+      sqn += (a.squads || []).length;
+      ppl += (a.n || 0);
+    });
+    SE.data = r;
+    if (!SE.sel || !findAlli(SE.sel)) SE.sel = alls.length ? alls[0].id : null;
 
     var h = '<div class="sebar">';
     h += '<span class="tag">赛季 <b>' + esc(seas ? seas.label : '（无）') + '</b></span>';
     h += '<select id="seSel" class="selsm"><option value="">当前赛季</option>';
-    seasons.forEach(function (s) {
-      if (s.is_current) return;
-      h += '<option value="' + s.id + '"' + (String(SE.season) === String(s.id) ? ' selected' : '')
-        + '>归纳：' + esc(s.label) + '</option>';
+    seasons.forEach(function (x) {
+      if (x.is_current) return;
+      h += '<option value="' + x.id + '"' + (String(SE.season) === String(x.id) ? ' selected' : '')
+        + '>归纳：' + esc(x.label) + '</option>';
     });
     h += '</select>';
-    h += '<span class="chips" style="margin:0">'
-      + '<span class="chip">友好 ' + cnt['友好'] + '</span>'
-      + '<span class="chip">中立 ' + cnt['中立'] + '</span>'
-      + '<span class="chip">敌对 ' + cnt['敌对'] + '</span>'
-      + '<span class="chip">小队 ' + sqn + '</span></span>';
+    h += '<span class="chips seChips">';
+    ['友好', '中立', '敌对'].forEach(function (k) {
+      h += '<span class="chip sef' + (SE.rel === k ? ' sel' : '') + '" data-sefilter="' + k + '">'
+        + k + ' ' + cnt[k] + '</span>';
+    });
+    h += '<span class="chip">小队 ' + sqn + '</span>';
+    if (pplKnown()) h += '<span class="chip">人数 ' + ppl + '</span>';
+    h += '</span>';
     h += '<span class="grow"></span>';
     if (edit) {
       if (g) h += '<button class="btn sm" data-se="add_alli">＋联合体</button>';
@@ -4766,7 +4874,8 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     }
 
     h += '<div class="seG"><div class="segh"><b>' + esc(g.name) + '</b>'
-      + '<span class="tag">联合体 ' + alls.length + ' · 小队 ' + sqn + '</span>'
+      + '<span class="tag">联合体 ' + alls.length + ' · 小队 ' + sqn
+      + (pplKnown() ? ' · 人数 ' + ppl : '') + '</span>'
       + (g.note ? '<span class="tagf">' + esc(g.note) + '</span>' : '')
       + '<span class="grow"></span>';
     if (edit) {
@@ -4784,47 +4893,18 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       return;
     }
 
-    var sorted = alls.slice().sort(function (a, b) {
-      var d1 = REL.indexOf(relOf(a.relation)) - REL.indexOf(relOf(b.relation));
-      return d1 !== 0 ? d1 : ((a.ord || 0) - (b.ord || 0));
-    });
-
-    h += '<table class="seT"><thead><tr>'
-      + '<th style="width:30%">联合体</th><th style="width:12%">关系</th>'
-      + '<th style="width:10%">小队</th><th>操作</th></tr></thead><tbody>';
-
-    sorted.forEach(function (a) {
-      var sqs = (a.squads || []).slice().sort(function (x, y) { return (x.ord || 0) - (y.ord || 0); });
-      h += '<tr><td><b>' + esc(a.name) + '</b>'
-        + (a.note ? '<div class="tagf">' + esc(a.note) + '</div>' : '') + '</td>'
-        + '<td>' + tag(a.relation) + '</td>'
-        + '<td>' + sqs.length + '</td><td class="seOps">';
-      if (edit) {
-        h += '<button class="btn ghost sm" data-se="add_squad" data-id="' + a.id + '">＋小队</button>';
-        h += '<button class="btn ghost sm" data-se="set_rel" data-id="' + a.id
-          + '" data-rel="' + relOf(a.relation) + '" data-name="' + esc(a.name) + '">改关系</button>';
-        h += '<button class="btn ghost sm" data-se="ren" data-lv="alliance" data-id="' + a.id
-          + '" data-name="' + esc(a.name) + '">改名</button>';
-        h += '<button class="btn ghost sm danger" data-se="del" data-lv="alliance" data-id="' + a.id
-          + '" data-name="' + esc(a.name) + '">删除</button>';
-      }
-      h += '</td></tr><tr class="seSub"><td colspan="4">';
-      if (!sqs.length) h += '<span class="tagf">还没有小队</span>';
-      sqs.forEach(function (s) {
-        h += '<span class="seSq"><b>' + esc(s.name) + '</b>'
-          + (s.leader ? '<span class="tagf">· ' + esc(s.leader) + '</span>' : '');
-        if (edit) {
-          h += '<button class="mini" data-se="ren" data-lv="squad" data-id="' + s.id
-            + '" data-name="' + esc(s.name) + '" title="改名">改</button>';
-          h += '<button class="mini" data-se="del" data-lv="squad" data-id="' + s.id
-            + '" data-name="' + esc(s.name) + '" title="删除">×</button>';
-        }
-        h += '</span>';
-      });
-      h += '</td></tr>';
-    });
-    h += '</tbody></table></div>';
+    h += '<div class="sewrap">'
+      + '<div class="selist"><input id="seFind" class="inp sefind" placeholder="搜 联合体 / 小队 / 队长" value="'
+      + esc(SE.kw || '') + '"><div id="seList"></div></div>'
+      + '<div class="sedetail" id="seDetail"></div>'
+      + '</div></div>';
     d.innerHTML = h;
+    renderList();
+    renderDetail();
+    if (SE.kw) {
+      var fi = document.getElementById('seFind');
+      if (fi) { fi.focus(); try { fi.setSelectionRange(fi.value.length, fi.value.length); } catch (e) {} }
+    }
   }
 
   function bindOnce() {
@@ -4832,6 +4912,19 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     if (!d || d.__seBound) return;
     d.__seBound = true;
     d.addEventListener('click', function (ev) {
+      var pk = ev.target.closest('[data-pick]');
+      if (pk) {
+        SE.sel = pk.getAttribute('data-pick');
+        renderList(); renderDetail();
+        return;
+      }
+      var ft = ev.target.closest('[data-sefilter]');
+      if (ft) {
+        var kk = ft.getAttribute('data-sefilter');
+        SE.rel = (SE.rel === kk) ? '' : kk;
+        paint(SE.data);
+        return;
+      }
       var t = ev.target.closest('[data-se]');
       if (!t) return;
       var act = t.getAttribute('data-se');
@@ -4880,6 +4973,12 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
         done(op({ op: 'delete', level: lv, id: t.getAttribute('data-id') }));
       }
     });
+    d.addEventListener('input', function (ev) {
+      if (ev.target && ev.target.id === 'seFind') {
+        SE.kw = ev.target.value;
+        renderList(); renderDetail();
+      }
+    });
     d.addEventListener('change', function (ev) {
       if (ev.target && ev.target.id === 'seSel') {
         var v = ev.target.value;
@@ -4898,7 +4997,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.3';
+window.__APP_VER = '2026-11-17.4';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 

@@ -2399,6 +2399,12 @@ class Handler(BaseHTTPRequestHandler):
                    "seasons": seasons, "target": target, "galaxies": []}
             if target is None:
                 return self.send_json(out)
+            # 人数：members.squad 存的是小队名，按名字聚合一次，再回填到小队/联合体
+            ppl = {}
+            for pr in c.execute("SELECT squad, COUNT(*) n FROM members "
+                                "WHERE COALESCE(squad,'')<>'' GROUP BY squad"):
+                ppl[pr["squad"]] = pr["n"]
+            matched = sum(ppl.values())
             gs = []
             for r in c.execute("SELECT * FROM galaxies WHERE season=? ORDER BY ord, id", (target,)):
                 g = dict(r)
@@ -2407,9 +2413,14 @@ class Handler(BaseHTTPRequestHandler):
                     a = dict(ar)
                     a["squads"] = [dict(x) for x in c.execute(
                         "SELECT * FROM squads WHERE alliance=? ORDER BY ord, id", (a["id"],))]
+                    for sq in a["squads"]:
+                        sq["n"] = ppl.get(sq.get("name") or "", 0)
+                    a["n"] = sum(sq["n"] for sq in a["squads"])
                     g["alliances"].append(a)
+                g["n"] = sum(x["n"] for x in g["alliances"])
                 gs.append(g)
             out["galaxies"] = gs
+            out["people"] = {"known": matched > 0, "total": matched}
         return self.send_json(out)
 
     def season_op(self, data):
