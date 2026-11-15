@@ -29,7 +29,7 @@
   <button data-tab="posts">交流<span class="badge hide" id="postBadge">0</span></button>
   <button data-tab="sim" data-perm="sim_view" class="on">舰船数据</button>
   <button data-tab="battle" data-perm="battle_view">战报分析</button>
-          <button data-tab="season" data-perm="season_view">星域编制</button>
+          <button data-tab="season" data-perm="season_view">赛季历程</button>
   <button data-tab="data" data-perm="data_view">数据管理</button>
   <button data-tab="roster" data-perm="roster_view">人员查询</button>
   <button data-tab="rosterM" data-perm="roster_view">人员档案</button>
@@ -115,22 +115,6 @@
     </div>
 
     <div class="card">
-      <h2>计算明细（当前方案）</h2>
-      <div class="toolbar">
-        <span class="muted">基础值从哪来、加了什么、最后是多少。</span>
-        <button class="btn sm ghost" id="calcRefresh">刷新</button>
-      </div>
-      <div class="tablewrap">
-        <table class="tbl">
-          <thead><tr><th style="width:140px">属性</th><th style="width:120px">基础值</th>
-            <th>加成明细</th><th style="width:120px">结果</th></tr></thead>
-          <tbody id="calcBody"></tbody>
-        </table>
-      </div>
-      <div class="muted" id="calcNote" style="margin-top:6px"></div>
-    </div>
-
-    <div class="card">
       <h2>舰载机组合（A / B 各自一套）</h2>
     <div class="muted">
       先在左上角选好母舰、勾上搭载系统，这里给它配舰载机。一行一个蓝图，
@@ -167,10 +151,12 @@
       <button class="btn ghost" id="expJson">导出 JSON</button>
       <span class="muted" id="dataNote"></span>
     </div>
-    <table>
-      <thead><tr id="entHead"></tr></thead>
-      <tbody id="entBody"></tbody>
-    </table>
+    <div class="datascroll" id="entScroll">
+      <table>
+        <thead><tr id="entHead"></tr></thead>
+        <tbody id="entBody"></tbody>
+      </table>
+    </div>
   </div>
 
   
@@ -188,10 +174,12 @@
       <button class="btn ghost" id="auCsv">导出 CSV</button>
       <span class="muted" id="auNote"></span>
     </div>
-    <table>
-      <thead><tr id="auHead"></tr></thead>
-      <tbody id="auBody"></tbody>
-    </table>
+    <div class="datascroll" id="auScroll">
+      <table>
+        <thead><tr id="auHead"></tr></thead>
+        <tbody id="auBody"></tbody>
+      </table>
+    </div>
     <div class="muted" style="margin-top:10px">
       每级值、逐级消耗、总级数都能直接改；「逐级消耗」用逗号分隔（如 <code>2,2,3,3,4</code>），留空就按「每级消耗 × 级数」算。
       点「保存改动」写库，全站实时刷新。
@@ -450,7 +438,7 @@
 </section>
         <section id="tab-season" data-perm="season_view" class="hide">
           <div class="card">
-            <div class="cardh"><b>星域编制</b>
+            <div class="cardh"><b>赛季历程</b>
               <span class="dim" style="margin-left:10px">星系（每赛季一个）→ 联合体 → 小队</span>
             </div>
             <div id="seRoot" style="margin-top:10px"><div class="dim">加载中…</div></div>

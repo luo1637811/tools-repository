@@ -435,12 +435,11 @@ function fmtNum(v) {
   return (Math.round(n * 100) / 100).toString();
 }
 
-
 const PERM_LABEL = {
   sim_view: '舰船数据·看', sim_edit: '舰船数据·改',
   battle_view: '战报分析·看', battle_edit: '战报分析·改',
   data_view: '数据管理·看', data_edit: '数据管理·改',
-  season_view: '星域编制·看', season_edit: '星域编制·改', effects_edit: '效果库·改',
+  season_view: '赛季历程·看', season_edit: '赛季历程·改', effects_edit: '效果库·改',
   roster_view: '人员档案·看', roster_edit: '人员档案·改', 
   people_view: '人员管理·看', people_edit: '人员管理·改',
   audit_view: '操作日志·看全部', audit_self: '操作日志·只看自己', export: '导出',
@@ -449,7 +448,7 @@ const PERM_GROUPS = [
   {mod: '舰船数据', view: 'sim_view', edit: 'sim_edit'},
   {mod: '战报分析', view: 'battle_view', edit: 'battle_edit'},
   {mod: '数据管理', view: 'data_view', edit: 'data_edit', extra: [['effects_edit', '效果库']]},
-  {mod: '星域编制', view: 'season_view', edit: 'season_edit'},
+  {mod: '赛季历程', view: 'season_view', edit: 'season_edit'},
   {mod: '人员档案', view: 'roster_view', edit: 'roster_edit'},
   {mod: '人员管理', view: 'people_view', edit: 'people_edit'},
   {mod: '操作日志', view: 'audit_view', extra: [['audit_self', '只看自己']]},
@@ -808,7 +807,6 @@ function renderTree() {
     if (keepTop) lane.scrollTop = keepTop;
   }
 
-
   const used = ship.systems.reduce((a, x) => a + sysUsed(x), 0);
   $('#techUsed').textContent = used;
   const capEl = $('#techCap');
@@ -994,23 +992,55 @@ const CMP_ROWS = [
 /* 对舰/对空/攻城 = 该系统展示的基础值 ×（1 + 该系统的伤害加成%）
    要点：只对「基础值」与「加成」做计算，不引入周期/冷却等换算；
    伤害节点挂在哪个系统上，就只抬哪个系统的三行（装甲系统的伤害节点不会串到武器上）。 */
+/* 暴击期望倍率 = 1 + 概率 × 暴伤
+   概率 = 所有暴击节点的 crit_rate 之和，暴伤 = 所有暴击节点的 crit 之和
+   （同一个系统里「30% 概率造成 50% 额外伤害」+「暴伤 +40%」= 30% × 90%）。
+   两者缺一就不乘；不做多系统连乘。 */
+function critTotals(ship, alloc) {
+  let rate = 0, dmg = 0;
+  ((ship && ship.systems) || []).forEach(sy => (sy.nodes || []).forEach(nd => {
+    const lv = Number((alloc || {})[nd.id] || 0);
+    if (!lv) return;
+    let e = nd.effect;
+    if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
+    e = e || {};
+    rate += (Number(e.crit_rate) || 0) * lv;
+    dmg += (Number(e.crit) || 0) * lv;
+  }));
+  return { rate: rate, dmg: dmg };
+}
+function critMulOf(ship, alloc) {
+  const t = critTotals(ship, alloc);
+  return (t.rate > 0 && t.dmg > 0) ? 1 + (t.rate / 100) * (t.dmg / 100) : 1;
+}
+
 function sysDmgSum(ship, alloc) {
   const out = { dmg_atk: 0, dmg_air: 0, dmg_siege: 0 };
   ((ship && ship.systems) || []).forEach(sy => {
     let n = {};
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
     if (n.dmg_atk === undefined && n.dmg_air === undefined && n.dmg_siege === undefined) return;
-    let pct = 0;
+    let pct = 0, pAtk = 0, pAir = 0, pSiege = 0;
     (sy.nodes || []).forEach(nd => {
       const lv = Number((alloc || {})[nd.id] || 0);
       if (!lv) return;
       let e = nd.effect;
       if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
-      pct += (Number((e || {}).dmg) || 0) * lv;
+      e = e || {};
+      pct += (Number(e.dmg) || 0) * lv;
+      pAtk += (Number(e.dmg_atk_pct) || 0) * lv;
+      pAir += (Number(e.dmg_air_pct) || 0) * lv;
+      pSiege += (Number(e.dmg_siege_pct) || 0) * lv;
     });
-    const mul = 1 + pct / 100;
-    ['dmg_atk', 'dmg_air', 'dmg_siege'].forEach(k => { out[k] += (Number(n[k]) || 0) * mul; });
+    const m = 1 + pct / 100;
+    out.dmg_atk += (Number(n.dmg_atk) || 0) * m * (1 + pAtk / 100);
+    out.dmg_air += (Number(n.dmg_air) || 0) * m * (1 + pAir / 100);
+    out.dmg_siege += (Number(n.dmg_siege) || 0) * m * (1 + pSiege / 100);
   });
+  const cm = critMulOf(ship, alloc);
+  if (cm > 1) {
+    out.dmg_atk *= cm; out.dmg_air *= cm; out.dmg_siege *= cm;
+  }
   return out;
 }
 
@@ -1091,9 +1121,10 @@ function slotPresence(slotKey) {
 
 /* 效果键 → 中文名（新加的效果若不在表里，直接显示键名，保证看得见） */
 const EFF_CN = {
-  dmg: '伤害', cd: '冷却缩减', freq: '频率', dur: '持续缩短', cast: '持续缩短',
+  dmg: '伤害', dmg_atk_pct: '对舰伤害', dmg_air_pct: '防空伤害', dmg_siege_pct: '攻城伤害',
+  cd: '冷却缩减', freq: '频率', dur: '持续缩短', cast: '持续缩短',
   acc: '通用命中', acc_plane: '舰载机命中', acc_small: '小型命中', acc_large: '大型命中',
-  crit: '暴击', critres: '抗暴', lock: '锁定', lockeff_pct: '锁敌效率',
+  crit: '暴击伤害', crit_rate: '暴击率', critres: '抗暴', lock: '锁定', lockeff_pct: '锁敌效率',
   eva: '通用闪避', eva_missile: '导弹闪避', intc: '拦截率', focus: '锁定优先',
   range: '目标范围', selfheal: '自维修', syshull: '系统结构', shield: '护盾', armor: '护甲',
   hull: '结构', repair: '维修', speed: '巡航', warp: '曲率', move: '突防', spd: '突防',
@@ -1102,130 +1133,11 @@ const EFF_CN = {
 const CMP_SRC = {
   hull: ['hull'], armor: ['armor'], shield: ['shield'], eva: ['eva'],
   cruise: ['cruise', 'speed'], warp: ['warp'], spd: ['spd', 'move'], repair: ['repair'],
-  dmg_atk: ['dmg_atk', 'dmg'], dmg_air: ['dmg_air', 'dmg'], dmg_siege: ['dmg_siege', 'dmg']
+  dmg_atk: ['dmg_atk', 'dmg', 'dmg_atk_pct'], dmg_air: ['dmg_air', 'dmg', 'dmg_air_pct'],
+  dmg_siege: ['dmg_siege', 'dmg', 'dmg_siege_pct']
 };
 const CMP_USED = {};
 Object.keys(CMP_SRC).forEach(k => CMP_SRC[k].forEach(s => { CMP_USED[s] = 1; }));
-
-/* ---------- 计算明细：基础值 / 加成来源 / 结果 ---------- */
-function calcRows(slotKey) {
-  const sl = S.slots[slotKey];
-  const ship = sl && shipOf(sl.ship);
-  if (!ship) return [];
-  const alloc = sl.alloc || {};
-  const base = ship.base || {};
-  const st = sysTotals(ship);
-  const nz = v => Number(v) || 0;
-  const sysSum = k => ((ship.systems || []).reduce((a, sy) => {
-    let n = {};
-    try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
-    return a + (Number(n[k]) || 0);
-  }, 0));
-
-  /* 每条加成的来源（用于「加成明细」） */
-  const items = {};
-  const addItem = (k, from, label, val) => { (items[k] = items[k] || []).push({ from: from, label: label, val: val }); };
-  (ship.systems || []).forEach(sy => (sy.nodes || []).forEach(nd => {
-    const lv = Number(alloc[nd.id] || 0);
-    if (!lv) return;
-    let e = nd.effect;
-    if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
-    Object.keys(e || {}).forEach(k => {
-      const v = (Number(e[k]) || 0) * lv;
-      if (v) addItem(k, sy.name || '', nd.label || '', v);
-    });
-  }));
-  const detailOf = keys => {
-    const arr = [];
-    keys.forEach(k => (items[k] || []).forEach(it => arr.push(it)));
-    if (!arr.length) return '';
-    const shown = arr.slice(0, 4).map(it => (it.from ? it.from + '·' : '') + it.label + ' +' + fmtNum(it.val) + '%');
-    return shown.join('；') + (arr.length > 4 ? '；等 ' + arr.length + ' 条' : '');
-  };
-  const sumOf = keys => keys.reduce((a, k) => a + (items[k] || []).reduce((b, x) => b + Number(x.val || 0), 0), 0);
-
-  const rows = [];
-  const push = (name, baseTxt, detail, result, unit) =>
-    rows.push({ name: name, baseTxt: baseTxt, detail: detail,
-      result: (typeof result === 'number' ? fmtNum(result) : result), unit: unit });
-
-  /* 结构值 = 基础 ×（1 + 加成%） */
-  {
-    const b = st.has.hull ? Number(st.sum.hull) : nz(base.hull);
-    const ownPct = nz(base.hull_bonus_pct);
-    const pct = sumOf(['hull']);
-    if (b || pct || ownPct) {
-      const d = [];
-      if (ownPct) d.push('舰船自带·结构加成 +' + fmtNum(ownPct) + '%');
-      const t = detailOf(['hull']);
-      if (t) d.push(t);
-      push('结构值', fmtNum(b), d.join('；') || '', b * (1 + (pct + ownPct) / 100), '点');
-    }
-  }
-  /* 加法：基础 + 加成 */
-  [['armor', '抵抗伤害', '点'], ['shield', '护盾值', '%'], ['eva', '通用闪避', '%']].forEach(function (it) {
-    const k = it[0], t = it[1], u = it[2];
-    const b = nz(base[k]), plus = sumOf([k]);
-    if (!b && !plus) return;
-    push(t, fmtNum(b), detailOf([k]), b + plus, u);
-  });
-  /* 乘法：基础 ×（1+加成%） */
-  [['cruise', '巡航速度', ['speed'], 'jm'], ['warp', '曲率速度', ['warp'], 'jm'],
-   ['repair', '维修量', ['repair'], '点']].forEach(function (it) {
-    const k = it[0], t = it[1], keys = it[2], u = it[3];
-    const b = nz(base[k]), pct = sumOf(keys);
-    if (!b && !pct) return;
-    push(t, fmtNum(b), detailOf(keys), b * (1 + pct / 100), u);
-  });
-  /* 减免：基础 ×（1−加成%） */
-  [['spd', '突防速度', ['move', 'spd'], 's'], ['cd', '冷却（频率）', ['freq', 'cd'], 's'],
-   ['dur', '持续时间', ['dur', 'cast'], 's']].forEach(function (it) {
-    const k = it[0], t = it[1], keys = it[2], u = it[3];
-    const b = nz(base[k]), pct = sumOf(keys);
-    if (!b && !pct) return;
-    push(t, fmtNum(b), detailOf(keys), b * (1 - pct / 100), u);
-  });
-  /* 对舰 / 对空 / 攻城 = 基础 ×（1 + 伤害加成%） */
-  const dmgPct = sumOf(['dmg']);
-  [['对舰', sysSum('dmg_atk')], ['对空', sysSum('dmg_air')], ['攻城', sysSum('dmg_siege')]].forEach(function (it) {
-    const t = it[0], b = it[1];
-    if (!b && !dmgPct) return;
-    push(t, fmtNum(b), detailOf(['dmg']), b * (1 + dmgPct / 100), '/分');
-  });
-  /* 其余只有加成的项 */
-  const USED = { hull: 1, hull_bonus: 1, armor: 1, shield: 1, eva: 1, speed: 1, warp: 1,
-    move: 1, spd: 1, repair: 1, cd: 1, freq: 1, dur: 1, cast: 1, dmg: 1 };
-  Object.keys(items).sort().forEach(k => {
-    if (USED[k]) return;
-    const v = sumOf([k]);
-    if (!v) return;
-    push('加成 · ' + (EFF_CN[k] || k), '', detailOf([k]), '+' + fmtNum(v), '%');
-  });
-  return rows;
-}
-
-function renderCalc() {
-  const body = $('#calcBody');
-  if (!body) return;
-  let rows = [];
-  try { rows = calcRows(S.cur); } catch (e) {
-    body.innerHTML = '<tr><td colspan="4" class="dim">计算明细渲染失败：' + mhEsc(e.message) + '</td></tr>';
-    return;
-  }
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="4" class="dim">这艘船还没有可显示的基础值 / 加成</td></tr>';
-  } else {
-    body.innerHTML = rows.map(r => '<tr><td>' + mhEsc(r.name) + '</td>'
-      + '<td class="num">' + (r.baseTxt === '' ? '' : mhEsc(r.baseTxt) + (r.unit ? ' ' + r.unit : '')) + '</td>'
-      + '<td class="bcell">' + mhEsc(r.detail || '') + '</td>'
-      + '<td class="num"><b>' + mhEsc(r.result) + '</b>' + (r.unit && String(r.result).indexOf('%') < 0 ? ' ' + r.unit : '') + '</td></tr>').join('');
-  }
-  const note = $('#calcNote');
-  if (note) note.textContent = '当前方案 ' + S.cur + '：共 ' + rows.length + ' 项。'
-    + '基础值与加成只在这艘船确实拥有时显示；没有基础也没有加成的项不列。';
-  const btn = $('#calcRefresh');
-  if (btn && !btn.dataset.bound) { btn.dataset.bound = '1'; btn.onclick = renderCalc; }
-}
 
 function renderResults() {
   renderSlotTabs();
@@ -1272,7 +1184,6 @@ function renderResults() {
   $('#cmpNote').textContent = '对比这两套方案在同一艘船上的基础值与加成合计。'
     + (onlyDiff ? '（只看有差异：A、B 相同的行已隐藏）' : '（绿色是两者中较高的一侧）');
 
-  try { renderCalc(); } catch (e) { /* 明细失败不影响主表 */ }
 }
 
 /* ---------- A / B 工具：复制、交换 ---------- */
@@ -1333,7 +1244,6 @@ function planeBP() {
   });
   return out;
 }
-
 
 function renderPlanes() {
   const host = $('#planeSlots'); if (!host) return;
@@ -1657,13 +1567,15 @@ function renderData() {
   const body = $('#entBody'); body.innerHTML = '';
   const canEdit = canEditRow;
   const q = (S.entQ || '').trim().toLowerCase();
-  rowsOf(ent).filter(row => {
+  const allRows = rowsOf(ent);
+  const shownRows = allRows.filter(row => {
     if (!q) return true;
     return cols.some(c => {
       const v = row[c];
       return v !== undefined && v !== null && String(v).toLowerCase().includes(q);
     });
-  }).forEach(row => {
+  });
+  shownRows.forEach(row => {
     const tr = el('tr');
     cols.forEach(c => {
       let v = row[c];
@@ -1706,7 +1618,10 @@ function renderData() {
     ? '模块的 bonus/stats 已清空，点「改」按 {"dmg":15,"cd":20} 这类写法填；空着就只算舱位。'
     : '';
   $('#dataNote').textContent = canEdit
-    ? '共 ' + rowsOf(ent).length + ' 条；' + hint + '改完立即生效，所有在线页面自动刷新。'
+    ? '共 ' + allRows.length + ' 条'
+      + (q ? '，筛出 ' + shownRows.length + ' 条' : '')
+      + (shownRows.length === 0 && q ? '（换个关键字试试）' : '')
+      + '；' + hint + '改完立即生效，所有在线页面自动刷新。'
     : '只读：用 admin 登录后才能改数据。';
 }
 
@@ -2579,6 +2494,8 @@ function wizRender() {
     head.innerHTML = '舰船本身没有基础属性：<b>结构值 / 抵抗伤害 / 护盾 / 速度</b> 都由系统提供；'
       + '<b>对舰 / 对空 / 攻城</b> 只有「武器」类系统才有。这里填的是<b>系统基础值</b>，加点收益在第 4 步。';
     b.appendChild(head);
+    const sysgrid = el('div', 'wiz-sysgrid');
+    b.appendChild(sysgrid);
 
     if (!WIZ.systems.length) {
       const tip = el('div', 'card2');
@@ -2649,7 +2566,7 @@ function wizRender() {
 
       // 模块名（可选，只对「一系统一模块」的写法有意义）
       wIn(card, '模块名（可选）', sy, 'module', 'text');
-      b.appendChild(card);
+      sysgrid.appendChild(card);
     });
 
     const tail = el('div', 'muted');
@@ -3419,7 +3336,6 @@ if (!window.__netBound) {
   window.addEventListener('online', () => { healthOk().then(ok => { if (ok) streamUp(); }); });
   window.addEventListener('offline', () => showOffline(true, '网络已断开，恢复后会自动重连。'));
 }
-
 
 /* ---------- 人员档案（查询 / 详情管理） ---------- */
 const MEM_KEYS = ['id', 'name', 'org', 'faction', 'alliance', 'squad', 'phone', 'wechat', 'qq',
@@ -4381,7 +4297,6 @@ async function applyBrowPaste() {
         bad ? 'warn' : 'good');
 }
 
-
 /* ---------- 绑定 ---------- */
 function showTab(tab) {
   const cur = document.querySelector('nav button.on');
@@ -4616,7 +4531,6 @@ $('#pwdReqBtn').onclick = loadPwdReqs;
     t = setTimeout(() => { S.auditQ = q.value; loadAudit(); }, 220);
   };
 })();
-
 
 /* ---- 舰船搜索：过滤 + 清空 + 回车跳到第一条匹配 + 「/」聚焦 ---- */
 (function bindShipFilter() {
@@ -4924,7 +4838,6 @@ window.addEventListener('beforeunload', e => {
 $('#saveBuild').addEventListener('click', () => { setTimeout(() => { markBase(); refreshBuilds(); }, 300); });
 $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600); });
 
-
 /* 版本发布弹窗（幂等绑定） */
 (function bindVerDlg() {
   const d = $('#verDlg'); if (!d) return;
@@ -4949,9 +4862,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
   }
 })();
 
-
-
-/* ================= 星域编制：星系 → 联合体 → 小队 ================= */
+/* ================= 赛季历程：星系 → 联合体 → 小队 ================= */
 (function () {
   var REL = ['友好', '中立', '敌对'];
   var CLS = { '友好': 'relf', '中立': 'reln', '敌对': 'relh' };
@@ -5265,9 +5176,8 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.14';
+window.__APP_VER = '2026-11-17.21';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
-
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
 (function () {
@@ -5320,7 +5230,6 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
   const r = document.getElementById('rcRefresh');
   if (r) r.onclick = load;
 })();
-
 
 /* ---------- 效果申请（超管审批管理员提交的新效果） ---------- */
 (function () {

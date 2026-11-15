@@ -88,6 +88,9 @@ EFFECTS_SEED = [
 EFFECTS_CANON = [
     # 节点效果统一口径（顺序即下拉顺序）：id, 名称, 单位
     ("dmg", "伤害", "%"),
+    ("dmg_atk_pct", "对舰伤害", "%"),
+    ("dmg_air_pct", "防空伤害", "%"),
+    ("dmg_siege_pct", "攻城伤害", "%"),
     ("freq", "频率", "%"),
     ("acc", "通用命中", "%"),
     ("acc_small", "小型命中", "%"),

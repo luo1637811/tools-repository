@@ -917,7 +917,7 @@ PERM_LABEL = {
     "sim_view": "舰船数据·看", "sim_edit": "舰船数据·改",
     "battle_view": "战报·看", "battle_edit": "战报·改（增删）",
     "data_view": "数据管理·看", "data_edit": "数据管理·改",
-    "season_view": "星域编制·看", "season_edit": "星域编制·改",
+    "season_view": "赛季历程·看", "season_edit": "赛季历程·改",
     "effects_edit": "效果库·改（影响全站计算）",
     "roster_view": "人员档案·看", "roster_edit": "人员档案·改",
     "people_view": "人员管理·看", "people_edit": "人员管理·改（账号/审批）",
@@ -930,7 +930,7 @@ PERM_GROUPS = [
     {"mod": "舰船数据", "view": "sim_view", "edit": "sim_edit"},
     {"mod": "战报分析", "view": "battle_view", "edit": "battle_edit"},
     {"mod": "数据管理", "view": "data_view", "edit": "data_edit", "extra": [("effects_edit", "效果库")]},
-    {"mod": "星域编制", "view": "season_view", "edit": "season_edit"},
+    {"mod": "赛季历程", "view": "season_view", "edit": "season_edit"},
     {"mod": "人员档案", "view": "roster_view", "edit": "roster_edit"},
     {"mod": "人员管理", "view": "people_view", "edit": "people_edit"},
     {"mod": "操作日志", "view": "audit_view", "edit": None, "extra": [("audit_self", "只看自己")]},
@@ -948,7 +948,7 @@ LEGACY_PERMS = {
 
 TEMPLATE_SEED = [
     ("admin_full", "管理员（全权限）", ALL_PERMS, "all"),
-    ("season_editor", "星域编制（看/改）", ("season_view", "season_edit"), "all"),
+    ("season_editor", "赛季历程（看/改）", ("season_view", "season_edit"), "all"),
     ("editor", "编辑（数据 + 战报）",
      ("sim_view", "sim_edit", "battle_view", "battle_edit", "data_view", "data_edit", "export"), "all"),
     ("viewer", "只读（看船看战报）", ("sim_view", "battle_view"), "all"),
