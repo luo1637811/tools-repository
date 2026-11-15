@@ -189,6 +189,7 @@ def init_db():
             ("members", "alliance", "TEXT"), ("members", "squad", "TEXT"),
             ("sessions", "csrf", "TEXT"),
             ("alliances", "relation", "TEXT DEFAULT '中立'"),
+            ("squads", "headcount", "INTEGER DEFAULT 0"),
         ]:
             try:
                 c.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_ddl}")
@@ -1340,8 +1341,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.post_delete(path.split("/")[3], data)
             if path == "/api/season/op":
                 return self.season_op(data)
-            if path == "/api/season/assign":
-                return self.season_assign(data)
             if path == "/api/effreq/create":
                 return self.effreq_create(data)
             if path.startswith("/api/effreq/") and path.endswith("/handle"):
@@ -2401,12 +2400,7 @@ class Handler(BaseHTTPRequestHandler):
                    "seasons": seasons, "target": target, "galaxies": []}
             if target is None:
                 return self.send_json(out)
-            # 人数：members.squad 存的是小队名，按名字聚合一次，再回填到小队/联合体
-            ppl = {}
-            for pr in c.execute("SELECT squad, COUNT(*) n FROM members "
-                                "WHERE COALESCE(squad,'')<>'' GROUP BY squad"):
-                ppl[pr["squad"]] = pr["n"]
-            matched = sum(ppl.values())
+            # 人数：直接读 squads.headcount（手动维护），联合体/星系为小队之和
             gs = []
             for r in c.execute("SELECT * FROM galaxies WHERE season=? ORDER BY ord, id", (target,)):
                 g = dict(r)
@@ -2416,60 +2410,18 @@ class Handler(BaseHTTPRequestHandler):
                     a["squads"] = [dict(x) for x in c.execute(
                         "SELECT * FROM squads WHERE alliance=? ORDER BY ord, id", (a["id"],))]
                     for sq in a["squads"]:
-                        sq["n"] = ppl.get(sq.get("name") or "", 0)
+                        try:
+                            sq["n"] = int(sq.get("headcount") or 0)
+                        except Exception:
+                            sq["n"] = 0
                     a["n"] = sum(sq["n"] for sq in a["squads"])
                     g["alliances"].append(a)
                 g["n"] = sum(x["n"] for x in g["alliances"])
                 gs.append(g)
             out["galaxies"] = gs
-            out["people"] = {"known": matched > 0, "total": matched}
+            out["people"] = {"known": True,
+                             "total": sum(x.get("n") or 0 for x in gs)}
         return self.send_json(out)
-
-    def season_assign(self, data):
-        """把成员挂到某小队 / 从某小队移出（只改 members.squad 与 members.alliance）。"""
-        u = self.need_perm(("season_edit",))
-        if not u:
-            return
-        if self.need_auth() is None:
-            return
-        sid = str(data.get("squad_id") or "").strip()
-        add = [str(x).strip() for x in (data.get("add") or []) if str(x).strip()]
-        rem = [str(x).strip() for x in (data.get("remove") or []) if str(x).strip()]
-        if not sid:
-            return self.err(400, "缺少小队 id")
-        if not add and not rem:
-            return self.err(400, "没有要调整的成员")
-        if len(add) + len(rem) > 500:
-            return self.err(400, "一次最多调整 500 人")
-        sc = scope_of(u)
-        with conn() as c:
-            sq = c.execute(
-                "SELECT s.name AS sname, a.name AS aname FROM squads s "
-                "LEFT JOIN alliances a ON a.id=s.alliance WHERE s.id=?",
-                (sid,)).fetchone()
-            if not sq:
-                return self.err(404, "小队不存在")
-            sname = sq["sname"] or ""
-            aname = sq["aname"] or ""
-            if sc == "alliance" and aname != str(u.get("alliance") or ""):
-                return self.err(403, "你只能维护本联合体的小队")
-            touched, skipped = 0, 0
-            for ids, sqv, alv in ((add, sname, aname), (rem, "", "")):
-                for mid in ids:
-                    old = c.execute("SELECT * FROM members WHERE id=?", (mid,)).fetchone()
-                    if not old:
-                        skipped += 1
-                        continue
-                    if sc == "org" and (old["org"] or "") != str(u.get("org") or ""):
-                        skipped += 1
-                        continue
-                    if (old["squad"] or "") == sqv and (old["alliance"] or "") == alv:
-                        continue
-                    c.execute("UPDATE members SET squad=?, alliance=?, updated_at=? WHERE id=?",
-                              (sqv, alv, now(), mid))
-                    touched += 1
-        log("调整小队人数", sname, "加 %d 人 / 移 %d 人" % (len(add), len(rem)))
-        return self.send_json({"ok": True, "changed": touched, "skipped": skipped})
 
     def season_op(self, data):
         u = self.need_perm(("season_edit",))
@@ -2554,6 +2506,21 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute("UPDATE alliances SET relation=? WHERE id=?", (relation, rid2))
                 log("修改关系", u["username"], "alliance#%d" % rid2, relation)
                 return self.send_json({"ok": True})
+            if op == "headcount":
+                if lv != "squad":
+                    return self.err(400, "人数只能按小队填")
+                rid2 = _int(rid)
+                if not rid2:
+                    return self.err(400, "缺少 id")
+                try:
+                    hn = int(data.get("n"))
+                except Exception:
+                    return self.err(400, "人数要填整数")
+                if hn < 0 or hn > 100000:
+                    return self.err(400, "人数超出范围（0 ~ 100000）")
+                c.execute("UPDATE squads SET headcount=? WHERE id=?", (hn, rid2))
+                log("修改人数", u["username"], "squad#%d" % rid2, str(hn))
+                return self.send_json({"ok": True, "n": hn})
             if op in ("rename", "note"):
                 rid2 = _int(rid)
                 if not rid2:

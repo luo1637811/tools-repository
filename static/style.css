@@ -568,3 +568,7 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .sedgf{display:flex;align-items:center;gap:10px;padding-top:10px}
 .memhit{cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.20);display:inline-block}
 .memhit:hover{color:#93c5fd;border-color:#93c5fd}
+
+.seqm .hc{cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.28);
+  font-variant-numeric:tabular-nums}
+.seqm .hc:hover{color:#93c5fd;border-color:#93c5fd}
