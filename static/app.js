@@ -26,6 +26,13 @@ const S = {
 };
 /* 模块/舱位准入：按需求收紧为「只有超主力舰」。
    服务端 engine 的 mod_ok 用同一口径，两边必须一致。 */
+function hasBaySys(ship) {
+  return ((ship && ship.systems) || []).some(sy =>
+    ((sy.bays || []).length) ||
+    (+((sy.norm || {}).bay_plane) || 0) || (+((sy.norm || {}).bay_boat) || 0) ||
+    (+((sy.norm || {}).bay_drone) || 0));
+}
+
 function canMod(ship) {
   if (!ship) return false;
   if (typeof ship.mod_ok === 'boolean') return ship.mod_ok;
@@ -338,7 +345,7 @@ function renderEditor() {
         box.appendChild(el('div', 'muted', '舰载机没有可切换的模块位。'));
       }
     } else {
-      box.appendChild(el('div', 'muted', '本舰是「' + (ship.cls || ship.kind || ship.size) + '」，没有模块/舱位系统（只有超主力舰与巡洋舰、驱逐舰有）'));
+      box.appendChild(el('div', 'muted', '本舰是「' + (ship.cls || ship.kind || ship.size) + '」，没有模块槽位（模块槽只给超主力舰；舱位由系统提供，与舰种无关）'));
     }
   } else {
     // 同一「系列」（M / A / B …，取槽位首字母）只能选一个模块
@@ -634,8 +641,7 @@ function renderBaseAttrs() {
     if (_keepSlot(u)) return true;            // A1 / M1 作为基础槽永远保留
     return _slotLoaded(u);                    // 其它槽位：它自己装了才显示
   };
-  const hasBay = sys.some(x => _slotShown(x.sy.slot)
-    && sysBays(x.sy).some(b => (b.kind || '') === '无人机' || _slotLoaded(x.sy.slot)));
+  const hasBay = sys.some(x => _slotShown(x.sy.slot) && sysBays(x.sy).length);
   const rows = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
     .sort((a, b2) => (b2.w - a.w) || String(a.sy.slot || '').localeCompare(String(b2.sy.slot || '')));
 
@@ -683,7 +689,9 @@ function renderBaseAttrs() {
     if (c.k === 'bay') {
       /* 该槽位没装模块 → 模块提供的战机/护航艇舱位不显示；系统自带的（无人机）照常显示 */
       let bs = sysBays(x.sy);
-      if (!_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
+      /* 只有「超主力舰的可替换槽位」才按装没装模块过滤；
+         主力舰/护卫舰的舱位来自系统本身，照常显示 */
+      if (_isSuper && !_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
       if (!bs.length) return '<td class="dim">—</td>';
       return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap).join(' · ') + '</td>';
     }
@@ -1325,7 +1333,7 @@ function renderPlanesInner(host) {
 
     const ship = sl.noCarrier ? null : shipOf(sl.ship);
     if (ship && !canMod(ship)) {
-      card.appendChild(el('div', 'muted', '▲ ' + (ship.cls || ship.kind) + '：只有超主力舰与巡洋舰、驱逐舰有模块/舱位，这条船不显示搭载系统。'));
+      card.appendChild(el('div', 'muted', '▲ ' + (ship.cls || ship.kind) + '：没有模块槽位（只给超主力舰）；若它的系统自带舱位，会在上方「舱位」里显示。'));
     } else if (ship) {
       const lm = (ship.modules || []).filter(m => m.mkind);
       if (!lm.length) card.appendChild(el('div', 'muted', '这条船没有搭载类模块（去数据管理里加）。'));
@@ -1889,7 +1897,17 @@ async function submitEnt(ev) {
 }
 
 async function delEnt(id) {
-  if (!askConfirm(id, '删除 ' + S.ent + ' / ' + id)) return;
+  let extra = '';
+  if (S.ent === 'ships') {
+    const sh = (S.bp.ships || []).find(x => x.id === id);
+    if (sh) {
+      const sys = sh.systems || [];
+      const nd = sys.reduce((a, x) => a + (x.nodes || []).length, 0);
+      const md = (sh.modules || []).length;
+      extra = '\n\n这条船下还有 ' + sys.length + ' 个系统、' + nd + ' 条加点、' + md + ' 个模块，会一起删掉。';
+    }
+  }
+  if (!askConfirm(id, '删除 ' + S.ent + ' / ' + id + extra)) return;
   try { await api('/api/data/' + S.ent + '/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
     toast('已删除', 'good'); await loadBlueprints(true); renderData(); }
   catch (e) { toast('删除失败：' + e.message, 'bad'); }
@@ -2376,7 +2394,21 @@ function wizRender() {
 
   if (st === 0) {
     const c = el('div');
-    wIn(c, '名称', WIZ.ship, 'name', 'text');
+    const nameInp = wIn(c, '名称', WIZ.ship, 'name', 'text');
+    const dupTip = el('div', 'muted');
+    dupTip.id = 'wizNameDup';
+    dupTip.style.color = '#e06a6a';
+    dupTip.style.margin = '-4px 0 8px';
+    c.appendChild(dupTip);
+    const checkDup = () => {
+      const v = (nameInp.value || '').trim();
+      nameInp.value = v; WIZ.ship.name = v;
+      const d = v ? (S.bp.ships || []).find(x => (x.name || '').trim() === v && x.id !== (WIZ.ship.id || '')) : null;
+      dupTip.textContent = d ? '已有同名舰船「' + d.name + '」（' + d.id + '），保存时会再确认一次' : '';
+    };
+    nameInp.oninput = checkDup;
+    nameInp.onblur = checkDup;
+    if (!WIZ.ship.name) setTimeout(() => { try { nameInp.focus(); } catch (e) {} }, 40);
     const kindSel = wIn(c, '舰种', WIZ.ship, 'kind', 'select',
       [['主力舰', '主力舰（巡洋舰 / 驱逐舰 / 护卫舰）'],
        ['超主力舰', '超主力舰（航空母舰 / 战列巡洋舰）'],
@@ -2437,7 +2469,7 @@ function wizRender() {
     wIn(c, '变形技术值', WIZ.ship, 'tech_total', 'number');
     b.appendChild(c);
     b.appendChild(el('div', 'muted',
-      '模块/舱位：超主力舰全都有；主力舰里只有巡洋舰、驱逐舰能带舱位，护卫舰没有，第 5 步会自动跳过。'
+      '模块槽位：只有超主力舰有；舱位：由系统提供，任何舰种都可以有（第 3 步里填），第 5 步会自动跳过没有的。'
       + ' ID 由系统按名称自动生成，不用你填。'));
   } else if (st === 1) {
     const list = el('div', 'card2');
@@ -2476,14 +2508,16 @@ function wizRender() {
     wIn(f, '系统名', WIZ.dSys, 'name', 'text');
     if (canMod(WIZ.ship)) {
       wIn(f, '槽位（M1/A1/B4/B1，可空）', WIZ.dSys, 'slot', 'text');
-      f.appendChild(el('div', 'muted', '这个槽位提供舱位吗？（模块就是系统，加成在上面「加点」里填，这里只管能装几架）'));
-      wIn(f, '战机舱能装几架（0=没有）', WIZ.dSys, 'bayF', 'number');
-      wIn(f, '护航艇舱能装几架（0=没有）', WIZ.dSys, 'bayC', 'number');
-      wIn(f, '编组限制', WIZ.dSys, 'bayG', 'select',
-        [['', '不限'], ['中编组', '仅中编组'], ['大编组', '仅大编组']]);
-    } else {
-      f.appendChild(el('div', 'muted', '本舰不带舱位，系统没有槽位（槽位只给超主力舰与巡洋舰、驱逐舰用）。'));
     }
+    /* 舱位跟舰种无关：任何舰种的系统都可以带舰载机/无人机舱 */
+    f.appendChild(el('div', 'muted',
+      canMod(WIZ.ship)
+        ? '这个系统提供舱位吗？（模块就是系统，加成在上面「加点」里填，这里只管能装几架）'
+        : '这个系统提供舱位吗？舱位由系统提供，与舰种无关 —— 主力舰、护卫舰的系统也可以带机库。'));
+    wIn(f, '战机舱能装几架（0=没有）', WIZ.dSys, 'bayF', 'number');
+    wIn(f, '护航艇舱能装几架（0=没有）', WIZ.dSys, 'bayC', 'number');
+    wIn(f, '编组限制', WIZ.dSys, 'bayG', 'select',
+      [['', '不限'], ['中编组', '仅中编组'], ['大编组', '仅大编组']]);
     wIn(f, '该系统节点上限（能点几个节点）', WIZ.dSys, 'tech_cap', 'number');
     const add = el('button', 'btn', WIZ.editSys >= 0 ? '保存修改' : '加进列表'); add.type = 'button';
     add.onclick = () => {
@@ -2821,9 +2855,19 @@ function wizRender() {
       b.appendChild(treeCard);
     }
   } else if (st === 4) {
-    if (!canMod(WIZ.ship)) {
+    const _bayOnly = WIZ.systems.filter(x => (x.bays || []).length);
+    if (!canMod(WIZ.ship) && !_bayOnly.length) {
       b.appendChild(el('div', 'muted',
-        '「' + (WIZ.ship.kind || '未选舰种') + '」没有模块槽位，这一步跳过 —— 点「下一步」直接进确认页。'));
+        '「' + (WIZ.ship.kind || '未选舰种') + '」没有模块槽位，系统里也没有舱位，这一步跳过 —— 点「下一步」直接进确认页。'));
+    } else if (!canMod(WIZ.ship)) {
+      b.appendChild(el('div', 'muted',
+        '「' + (WIZ.ship.kind || '') + '」没有模块槽位（模块槽只给超主力舰），但下面这些系统自带舱位 —— 舱位已经在第 3 步填过，这里只做确认。'));
+      _bayOnly.forEach(sy => {
+        b.appendChild(el('div', 'muted',
+          '· ' + sy.name + '：' + (sy.bays || []).map(x => x.kind + ' ' + x.cap + ' 舱').join(' + ')));
+      });
+      b.appendChild(el('div', 'muted',
+        '要改舱位：点「上一步」回第 2 步，选中该系统点「改」，填「战机舱 / 护航艇舱」。'));
     } else {
       const slots = WIZ.systems.map((sy, i) => ({sy, i})).filter(x => x.sy.slot);
       b.appendChild(el('div', 'muted',
@@ -3118,6 +3162,21 @@ function wizEditOpen(sh) {
 }
 async function wizSave() {
   const p = wizPayload();
+  /* 统一校验：允许 0 系统 / 0 加点 / 0 模块，但基本信息必须齐 */
+  p.ship.name = (p.ship.name || '').trim();
+  WIZ.ship.name = p.ship.name;
+  const errs = [];
+  if (!p.ship.name) errs.push('① 名称没填');
+  if (!p.ship.kind) errs.push('② 舰种没选');
+  if (!p.ship.cls) errs.push('③ 舰型没选（主力舰选巡洋/驱逐/护卫，超主力舰选航母/战巡）');
+  if (errs.length) {
+    alert('还不能保存：\n\n' + errs.join('\n') + '\n\n（系统、加点、模块都可以是 0 条）');
+    return;
+  }
+  if (!WIZ.edit) {
+    const dup = (S.bp.ships || []).find(x => (x.name || '').trim() === (p.ship.name || '').trim());
+    if (dup && !confirm('已经有同名舰船「' + dup.name + '」（' + dup.id + '）。\n\n继续会新增一条同名记录，确定要加吗？')) return;
+  }
   const btn = $('#wizNext'); btn.disabled = true;
   try {
     await api('/api/data/ships', {method: 'PUT', body: p.ship});
@@ -3136,11 +3195,14 @@ async function wizSave() {
       if (withMod) for (const id of WIZ.orig.modules) if (!keepM.has(id)) await api('/api/data/modules/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
       for (const id of WIZ.orig.systems) if (!keepS.has(id)) await api('/api/data/systems/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
     }
-    toast((WIZ.edit ? '已保存：' : '已载入：') + '1 条舰船 / ' + p.systems.length + ' 个系统 / '
+    toast((WIZ.edit ? '已保存：' : '已新建：') + '1 条舰船 / ' + p.systems.length + ' 个系统 / '
       + p.nodes.length + ' 条加点 / ' + p.modules.length + ' 个模块', 'good');
     $('#wizDlg').close();
+    S.slots[S.cur].ship = p.ship.id; S.sys[S.cur] = '';   /* 存完自动切到这条船 */
     await loadBlueprints(true); renderData(); renderEditor();
-  } catch (e) { toast('保存失败：' + e.message, 'bad'); }
+  } catch (e) {
+    alert('保存失败：\n\n' + (e && e.message ? e.message : e) + '\n\n（这次没有写入任何数据，可以改完再存）');
+  }
   finally { btn.disabled = false; }
 }
 
@@ -5188,7 +5250,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.23';
+window.__APP_VER = '2026-11-17.25';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
