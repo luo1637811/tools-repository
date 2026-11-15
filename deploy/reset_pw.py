@@ -140,7 +140,7 @@ def main():
         print("  （重置成功后令牌自动作废，并踢掉该账号的全部登录）")
         return
 
-    if not rest or rest == ["--list"]:
+    if (not rest and not delete) or rest == ["--list"]:
         show(c)
         return
 
