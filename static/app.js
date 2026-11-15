@@ -2552,9 +2552,7 @@ function wizRender() {
 
       const fields = sy.is_weapon ? WEP_FIELDS : funcFieldsFor(sy);
       if (!sy.is_weapon && !fields.length) {
-        card.appendChild(el('div', 'muted',
-          '这个系统不提供船体基础数值：结构值 / 抵抗伤害 / 护盾值来自「装甲系统」，巡航 / 曲率 / 突防 / 闪避来自「动力系统」。'
-          + '能源系统的能量输出、储能同样不计入船体基础值，所以这里也不填。只填下面的模块名即可。'));
+        card.appendChild(el('div', 'muted', '该类型不提供船体数值，只填模块名即可。'));
       } else {
         const grid = el('div', 'wiz-grid2');
         fields.forEach(([k, label, unit]) => {
@@ -5176,7 +5174,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.21';
+window.__APP_VER = '2026-11-17.22';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

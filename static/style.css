@@ -225,7 +225,7 @@ table.tbl-edit{table-layout:fixed;width:100%}
 .tbl-edit td.kcell{color:#93a4b8}
 
 /* 问卷第 4 步：横向节点结构（一层一列，卡片就地编辑） */
-.wiz-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.wiz-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px;margin-bottom:6px}
 .wiz-sysname{font-weight:600;font-size:13px}
 .wiz-lane{display:flex;gap:10px;overflow-x:auto;padding:6px 2px 10px;align-items:flex-start;
   scrollbar-width:thin}
@@ -342,7 +342,8 @@ table.base-tbl{table-layout:auto;min-width:100%}
 }
 .wiz-grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
 .wiz-grid2 label.row > input { width: 100%; box-sizing: border-box; }
-.wiz-head > b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wiz-head > b { white-space: normal; overflow: visible; text-overflow: clip; flex: 1 1 100%; line-height: 1.35; }
+.wiz-head > select { flex: 1 1 100%; max-width: none; }
 .wiz-head > select { max-width: 260px; }
 @media (max-width: 900px) { .wiz-grid2 { grid-template-columns: 1fr; } }
 
@@ -579,6 +580,14 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .wiz-sysgrid > .card2{margin-bottom:0}
 .wiz-sysgrid .wiz-grid2{grid-template-columns:1fr 1fr}
 @media (max-width:980px){.wiz-sysgrid{grid-template-columns:1fr}}
+
+/* 第 3 步：两列卡片里每个字段改为「标签在上、输入框占满」，避免 96px 标签把输入框挤没 */
+.wiz-sysgrid .wiz-grid2 .row{display:flex;flex-direction:column;align-items:stretch;gap:2px;margin:0}
+.wiz-sysgrid .wiz-grid2 .row>span{flex:none;font-size:11px;color:var(--dim);white-space:normal;line-height:1.3}
+.wiz-sysgrid .wiz-grid2 .row>input,
+.wiz-sysgrid .wiz-grid2 .row>select{width:100%;box-sizing:border-box}
+.wiz-sysgrid .card2>.row>span{flex:0 0 96px}
+
 /* 加点卡片更紧凑，三层尽量一屏看全 */
 .wiz-col .wiz-node{padding:7px 9px}
 .wiz-col .wiz-node .t{font-size:12px}
@@ -592,3 +601,22 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .datascroll tbody tr:hover{background:rgba(255,255,255,.03)}
 .datascroll::-webkit-scrollbar{width:10px;height:10px}
 .datascroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:6px}
+
+
+/* ==== 第3步卡片布局（追加覆盖，不改原规则）==== */
+.wiz-sysgrid .wiz-head{flex-wrap:wrap!important;gap:6px 10px!important}
+.wiz-sysgrid .wiz-head>b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;flex:1 1 100%!important;line-height:1.35!important}
+.wiz-sysgrid .wiz-head>select{flex:1 1 100%!important;max-width:none!important;width:100%!important}
+.wiz-sysgrid .wiz-grid2 .row{display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:2px!important;margin:0!important}
+.wiz-sysgrid .wiz-grid2 .row>span{flex:none!important;font-size:11px!important;color:var(--dim)!important;white-space:normal!important;line-height:1.3!important}
+.wiz-sysgrid .wiz-grid2 .row>input,
+.wiz-sysgrid .wiz-grid2 .row>select{width:100%!important;box-sizing:border-box!important}
+
+
+/* ==== 第3步卡片布局 v2（卡片自适高 + 模块名不溢出）==== */
+.wiz-sysgrid{align-items:start!important;align-content:start!important}
+.wiz-sysgrid .card2>.row{display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:2px!important;margin:0!important}
+.wiz-sysgrid .card2>.row>span{flex:none!important;font-size:11px!important;color:var(--dim)!important;white-space:normal!important;line-height:1.3!important}
+.wiz-sysgrid .card2>.row>input,
+.wiz-sysgrid .card2>.row>select{width:100%!important;min-width:0!important;max-width:100%!important;box-sizing:border-box!important}
+.wiz-sysgrid .card2>.muted{font-size:11px!important;line-height:1.5!important;margin:2px 0 6px!important}

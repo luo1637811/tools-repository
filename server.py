@@ -251,11 +251,14 @@ def init_db():
             c.execute("INSERT OR IGNORE INTO settings(k,v) VALUES(?,?)", (_k, _v))
         c.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
 
-        # 节点效果统一口径：补齐缺的、纠正中英文名（其它老效果留在库里，不再出现在下拉里）
-        c.executemany("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
-                      [(i, n, u, "") for i, n, u in EFFECTS_CANON])
-        c.executemany("UPDATE effects SET name=?, unit=? WHERE id=?",
-                      [(n, u, i) for i, n, u in EFFECTS_CANON])
+        # 节点效果：只在首次初始化时播种一次（写 settings.effects_seeded 标记）。
+        # 之后不再自动补齐、也不再纠正名字——用户在界面上删掉的效果不会在重启后复活。
+        if not c.execute("SELECT 1 FROM settings WHERE k='effects_seeded'").fetchone():
+            c.executemany("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                          [(i, n, u, "") for i, n, u in EFFECTS_CANON])
+            c.executemany("UPDATE effects SET name=?, unit=? WHERE id=?",
+                          [(n, u, i) for i, n, u in EFFECTS_CANON])
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('effects_seeded','1')")
         if c.execute("SELECT COUNT(*) FROM effects").fetchone()[0] == 0:
             c.executemany("INSERT OR REPLACE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
                           [(i, n, u, note) for i, n, u, note in EFFECTS_SEED])
