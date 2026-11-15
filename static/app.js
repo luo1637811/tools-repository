@@ -2305,7 +2305,8 @@ function wizStart(editId) {
     return toast('当前账号没有修改舰船的权限，找管理员开「数据管理·改」或「舰船数据·改」', 'bad');
   /* 只接受「字符串 id」，其它（事件对象、undefined）一律当作新建 */
   if (typeof editId === 'string' && editId) return wizEdit(editId);
-  WIZ = {step: 0, ship: {id: '', name: '', cls: '主力舰', kind: '主力舰', size: '大型舰船', cmd_type: '', tech_total: 100, base: {}},
+  WIZ = {step: 0, laneLeft: 0, scrollToEnd: false, scrollToSys: '', laneMap: {},
+  ship: {id: '', name: '', cls: '主力舰', kind: '主力舰', size: '大型舰船', cmd_type: '', tech_total: 100, base: {}},
     systems: [], nodes: [], modules: [], editIdx: -1,
     dSys: {name: '', slot: '', tech_cap: 5, bayF: '', bayC: '', bayG: ''},
   editSys: -1,
@@ -2368,6 +2369,8 @@ function wizSaveNode(si, x, isDraft) {
   /* 改已有节点时保留 _id/_note/_eff，否则会被当成新节点、老行还留在库里 */
   else WIZ.nodes[WIZ.editIdx] = Object.assign({}, WIZ.nodes[WIZ.editIdx], base);
   WIZ.editIdx = -1; WIZ.nodeDraft = null; WIZ.dNode.label = '';
+  WIZ.scrollToEnd = true;                                    /* 新节点通常在更右边一列 */
+  WIZ.scrollToSys = (WIZ.systems[si] || {}).id || ('s' + si); /* 只滚这一个系统 */
   wizRender();
 }
 function wizDelNode(si, x) {
@@ -2386,7 +2389,13 @@ function wizRender() {
   $('#wizTitle').textContent = (WIZ.edit ? '修改舰船 · ' + (WIZ.ship.name || '') + ' · ' : '问卷式录入 · ') + W_STEPS[st];
   $('#wizStep').textContent = '第 ' + (st + 1) + ' 步 / 共 ' + W_STEPS.length + ' 步' +
     (WIZ.edit ? '　（改完在第 6 步点「保存修改」，只动这一艘船）' : '　（系统会逐条问，答完就载入数据库）');
-  const b = $('#wizBody'); b.innerHTML = '';
+  const b = $('#wizBody');
+  /* 加点树有 4~5 层时，点「+ 子节点」会整块重绘；按系统分别记住横向位置，否则会被甩回第 1 层 */
+  WIZ.laneMap = WIZ.laneMap || {};
+  b.querySelectorAll('.wiz-lane').forEach(l => {
+    if (l.dataset.sys) WIZ.laneMap[l.dataset.sys] = l.scrollLeft;
+  });
+  b.innerHTML = '';
   $('#wizPrev').classList.toggle('hide', st === 0);
   $('#wizSkip').classList.toggle('hide', st === 0 || st >= 5);
   $('#wizNext').textContent = st === 5 ? (WIZ.edit ? '保存修改' : '载入数据库') : '下一步';
@@ -2841,6 +2850,7 @@ function wizRender() {
         const maxD = Math.max(-1, ...depths, draftDepth);
         if (maxD >= 0) {
           const lane = el('div', 'wiz-lane');
+          lane.dataset.sys = sys.id || ('s' + si);   /* 每个系统各记各的横向位置 */
           for (let d = 0; d <= maxD; d++) {
             const col = el('div', 'wiz-col');
             col.appendChild(el('div', 'wiz-colhead', '第 ' + (d + 1) + ' 层'));
@@ -2885,6 +2895,7 @@ function wizRender() {
       const sumLine = el('div', 'muted', summary());
 
       const lane = el('div', 'wiz-lane');
+      lane.dataset.sys = 'mod';
       slots.forEach(({sy}) => {
         const box = el('div', 'wiz-col');
         box.appendChild(el('div', 'wiz-colhead', sy.name));
@@ -2975,6 +2986,24 @@ function wizRender() {
       + 'padding:10px;max-height:320px;overflow:auto;font:12px/1.45 Consolas,monospace;color:#cfe3ff';
     p.textContent = JSON.stringify(wizPayload(), null, 2);
     b.appendChild(p);
+  }
+  /* 恢复横向滚动：新增节点时滚到最右（让新加的那一列可见），其余情况回到原位 */
+  const _lanes = b.querySelectorAll('.wiz-lane');
+  const _endSys = WIZ.scrollToEnd ? (WIZ.scrollToSys || '') : '';
+  _lanes.forEach(l => {
+    const keep = (WIZ.laneMap || {})[l.dataset.sys] || 0;
+    const toEnd = !!_endSys && l.dataset.sys === _endSys;
+    try { l.scrollLeft = toEnd ? l.scrollWidth : keep; } catch (e) {}
+  });
+  if (_endSys) {
+    WIZ.scrollToEnd = false; WIZ.scrollToSys = '';
+    /* 新列刚插进 DOM 时 scrollWidth 可能还没算完，下一帧再补一次（只补这一个系统） */
+    setTimeout(() => {
+      b.querySelectorAll('.wiz-lane').forEach(l => {
+        if (l.dataset.sys !== _endSys) return;
+        try { l.scrollLeft = l.scrollWidth; } catch (e) {}
+      });
+    }, 30);
   }
 }
 function wizTree(sysIdx) {
@@ -3102,7 +3131,7 @@ function wizEdit(id) {
   }).catch(e => toast('载入蓝图失败：' + e.message, 'bad'));
 }
 function wizEditOpen(sh) {
-  WIZ = {step: 0, edit: true, editIdx: -1,
+  WIZ = {step: 0, edit: true, editIdx: -1, laneLeft: 0, scrollToEnd: false, scrollToSys: '', laneMap: {},
     ship: {id: sh.id, name: sh.name, kind: sh.kind, cls: sh.cls, size: sh.size,
       pgroup: sh.pgroup || '', cmd_type: sh.cmd_type || '', tech_total: +sh.tech_total || 0,
       base: Object.assign({}, sh.base || {}), note: sh.note || ''},
@@ -5250,7 +5279,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.25';
+window.__APP_VER = '2026-11-17.26';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
