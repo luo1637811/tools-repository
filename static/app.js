@@ -411,7 +411,7 @@ const PERM_LABEL = {
   battle_view: '战报分析·看', battle_edit: '战报分析·改',
   data_view: '数据管理·看', data_edit: '数据管理·改',
   season_view: '星域编制·看', season_edit: '星域编制·改', effects_edit: '效果库·改',
-  roster_view: '人员档案·看', roster_edit: '人员档案·改', roster_pii: '人员档案·看明文',
+  roster_view: '人员档案·看', roster_edit: '人员档案·改', 
   people_view: '人员管理·看', people_edit: '人员管理·改',
   audit_view: '操作日志·看全部', audit_self: '操作日志·只看自己', export: '导出',
 };
@@ -4144,7 +4144,7 @@ function showTab(tab) {
   if (tab === 'data') { renderData(); renderAudit(); if (window.__er) window.__er(); }
   if (tab === 'roster') loadRosterQuery();
   if (tab === 'rosterM') loadRosterAdmin();
-  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); }
+  if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); if (window.__tpl) window.__tpl(); }
   if (tab === 'audit') loadAudit();
   if (tab === 'season' && window.renderSeason) renderSeason();
   if (tab === 'posts' && window.__posts) window.__posts();
@@ -5199,4 +5199,107 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
   window.__me = openMe;
 })();
+/* ---------- 权限模板（人员管理） ---------- */
+(function () {
+  const SCOPE_CN = { all: '全部', org: '本组织', alliance: '本联合体', self: '只看自己' };
+  let TPL = [];
+  const cardEl = () => document.getElementById('tplCard');
+  const bodyEl = () => document.getElementById('tplBody');
+
+  async function load() {
+    const c = cardEl(); if (!c) return;
+    if (!can('people_view')) { c.classList.add('hide'); return; }
+    c.classList.remove('hide');
+    try {
+      const r = await api('/api/perm_templates');
+      TPL = r.templates || [];
+      paint();
+    } catch (e) {
+      const b = bodyEl(); if (b) b.innerHTML = '<div class="pempty">读取失败：' + (e.message || e) + '</div>';
+    }
+  }
+
+  function paint() {
+    const b = bodyEl(); if (!b) return;
+    if (!TPL.length) { b.innerHTML = '<div class="pempty">还没有模板</div>'; return; }
+    const tbl = el('table', 'tbl');
+    const thead = el('thead');
+    const htr = el('tr');
+    ['模板', '权限数', '数据范围', '操作'].forEach((t, i) => {
+      const th = el('th', '', t);
+      if (i === 3) th.style.width = '170px';
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr); tbl.appendChild(thead);
+    const tb = el('tbody');
+    TPL.forEach((t) => {
+      const tr = el('tr');
+      const td1 = el('td');
+      td1.appendChild(document.createTextNode(t.cn || t.name));
+      if (t.builtin) {
+        const g = el('span', 'tag', '内置'); g.style.marginLeft = '6px';
+        td1.appendChild(g);
+      }
+      const td2 = el('td', '', String((t.perms || []).length));
+      const td3 = el('td', '', SCOPE_CN[t.scope] || t.scope || '全部');
+      const td4 = el('td');
+      const b1 = el('button', 'btn ghost sm', '套用');
+      b1.onclick = () => applyTpl(t);
+      td4.appendChild(b1);
+      if (!t.builtin) {
+        const b2 = el('button', 'btn ghost sm', '删除');
+        b2.style.marginLeft = '6px';
+        b2.onclick = async () => {
+          if (!confirm('删除模板「' + (t.cn || t.name) + '」？')) return;
+          try { await api('/api/perm_templates/' + t.id, { method: 'DELETE' }); toast('已删除模板', 'ok'); load(); }
+          catch (e) { toast('删除失败：' + (e.message || e), 'bad'); }
+        };
+        td4.appendChild(b2);
+      }
+      tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4);
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    b.innerHTML = ''; b.appendChild(tbl);
+  }
+
+  function applyTpl(t) {
+    openUserDlg(null);
+    const keys = t.perms || [];
+    document.querySelectorAll('#permBox input').forEach((cb) => {
+      if (!cb.disabled) cb.checked = keys.indexOf(cb.value) >= 0;
+    });
+    const rd = [...document.querySelectorAll('#scopeBox input[name=scope]')].find((r) => r.value === (t.scope || 'all'));
+    if (rd) { rd.checked = true; rd.dispatchEvent(new Event('change', { bubbles: true })); }
+    toast('已套用「' + (t.cn || t.name) + '」：权限与范围已填好，补上登录名/密码再点保存', 'ok');
+  }
+
+  function ensureSaveAs() {
+    const hint = document.getElementById('permHintBox');
+    if (!hint || document.getElementById('permSaveAs')) return;
+    const b = el('button', 'btn ghost sm', '把当前勾选另存为模板…');
+    b.id = 'permSaveAs'; b.type = 'button'; b.style.marginTop = '8px';
+    b.onclick = async () => {
+      const nm = prompt('模板名称（例如：星域维护员）');
+      if (!nm || !nm.trim()) return;
+      const perms = boxPerms();
+      if (!perms) { toast('至少勾选一项权限', 'bad'); return; }
+      const f = document.getElementById('userForm');
+      const scope = (f && f.scope && f.scope.value) || 'all';
+      try {
+        await api('/api/perm_templates', { method: 'POST', body: { name: nm.trim(), cn: nm.trim(), perms: perms, scope: scope } });
+        toast('已保存模板「' + nm.trim() + '」', 'ok');
+        load();
+      } catch (e) { toast('保存失败：' + (e.message || e), 'bad'); }
+    };
+    hint.parentNode.insertBefore(b, hint.nextSibling);
+  }
+
+  const refresh = document.getElementById('tplRefresh');
+  if (refresh) refresh.onclick = load;
+  const _origOpenUserDlg = window.__tplOpenHooked ? null : true;
+  document.addEventListener('click', () => setTimeout(ensureSaveAs, 0));
+  window.__tpl = load;
+})();
+
 })();
