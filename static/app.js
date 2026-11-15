@@ -401,6 +401,13 @@ function effName(k) {
   const e = ((S.bp && S.bp.effects) || []).find(x => x.id === k);
   return e ? (e.name + (e.unit ? '（' + e.unit + '）' : '')) : k;
 }
+/* 效果名称：先查效果库（自定义效果也在库里），再回退内置中文名，最后原样显示键 */
+function effMeta(k) {
+  const e = ((S.bp && S.bp.effects) || []).find(x => x.id === k);
+  return { name: (e && e.name) || EFF_CN[k] || k, unit: (e && e.unit) || '' };
+}
+function effLabel(k) { return effMeta(k).name; }
+function effUnit(k) { return effMeta(k).unit; }
 function costOf(nd, lv) {
   // 逐级消耗：nodes.costs = [第1级, 第2级, ...]；没填就回退到统一 cost
   const arr = Array.isArray(nd.costs) ? nd.costs : null;
@@ -698,7 +705,7 @@ function renderBaseAttrs() {
     if (c.k === '__extra') {
       const ks = extraOf(x);
       if (!ks.length) return '<td class="dim">—</td>';
-      return '<td class="bcell">' + ks.map(k => (EFF_CN[k] || k) + ' +' + fmtNum(x.a[k]) + '%').join(' · ') + '</td>';
+      return '<td class="bcell">' + ks.map(k => effLabel(k) + ' +' + fmtNum(x.a[k]) + (effUnit(k) || '%')).join(' · ') + '</td>';
     }
     if (c.k === 'speed') {
       const cr = n.cruise === undefined ? undefined : effVal('speed', n.cruise, x.a);
@@ -738,7 +745,7 @@ function renderBaseAttrs() {
         bHull ? (bPct ? fmtNum(bHull) + ' ×（1+' + (Math.round(bPct * 100) / 100) + '%）' : '来自系统') : '缺装甲系统数值'),
       tile('抵抗伤害 / 护盾', fmtNum(armor) + ' / ' + ((st.has.shield || base.shield !== undefined) ? fmtNum(shield) + '%' : '—'), '物理减伤 / 能量减伤'),
       tile('巡航 / 曲率',
-        fmtNum(effVal('speed', base.cruise, agg)) + ' / ' + fmtNum(effVal('warp', base.warp, agg)),
+        fmtNum(effVal('speed', pick('cruise', base.cruise), agg)) + ' / ' + fmtNum(effVal('warp', pick('warp', base.warp), agg)),
         (Number(agg.speed) || Number(agg.warp)) ? '已含加点加成' : 'jm'),
       tile('武器系统', ws.length + ' 个', ws.length ? ('对舰 ' + fmtNum(sum('dmg_atk')) + ' · 对空 ' + fmtNum(sum('dmg_air')) + ' · 攻城 ' + fmtNum(sum('dmg_siege'))) : '没有武器系统')
     ].join('');
@@ -982,12 +989,14 @@ function slotAgg(slotKey) {
 
 /* 结构值 / 抵抗伤害 / 护盾 以「系统数值」为准：ships.base 只是旧副本，可能没跟着系统更新 */
 function sysTotals(ship) {
-  const sum = { hull: 0, armor: 0, shield: 0 };
-  const has = { hull: 0, armor: 0, shield: 0 };
+  /* 舰船自身没有基础属性，下面 8 项全部来自系统数值（含「加力引擎」这类提供闪避的系统） */
+  const KEYS = ['hull', 'armor', 'shield', 'eva', 'cruise', 'warp', 'spd', 'repair'];
+  const sum = {}, has = {};
+  KEYS.forEach(k => { sum[k] = 0; has[k] = 0; });
   ((ship && ship.systems) || []).forEach(sy => {
     let n = {};
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
-    Object.keys(sum).forEach(k => {
+    KEYS.forEach(k => {
       if (n[k] === undefined || n[k] === null || n[k] === '') return;
       sum[k] += Number(n[k]) || 0;
       has[k] = 1;
@@ -1080,11 +1089,11 @@ function slotBaseVals(slotKey) {
     hull: pick('hull', base.hull) * (1 + ((Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0)) / 100),
     armor: effVal('armor', pick('armor', base.armor), agg),
     shield: effVal('shield', pick('shield', base.shield), agg),
-    eva: effVal('eva', base.eva, agg),
-    cruise: effVal('speed', base.cruise, agg),
-    warp: effVal('warp', base.warp, agg),
-    spd: effVal('spd', base.spd, { spd: Number(agg.move) || 0 }),
-    repair: effVal('repair', base.repair, agg),
+    eva: effVal('eva', pick('eva', base.eva), agg),
+    cruise: effVal('speed', pick('cruise', base.cruise), agg),
+    warp: effVal('warp', pick('warp', base.warp), agg),
+    spd: effVal('spd', pick('spd', base.spd), { spd: Number(agg.move) || 0 }),
+    repair: effVal('repair', pick('repair', base.repair), agg),
     dmg_atk: sum.dmg_atk,
     dmg_air: sum.dmg_air,
     dmg_siege: sum.dmg_siege
@@ -1194,7 +1203,7 @@ function renderResults() {
     if (!v.some(x => x)) return;
     if (onlyDiff && Math.abs(v[0] - v[1]) < 1e-9) return;
     const tr = el('tr', 'xrow');
-    tr.appendChild(el('td', '', '加成 · ' + (EFF_CN[k] || k) + '（%）'));
+    tr.appendChild(el('td', '', '加成 · ' + effLabel(k) + '（' + (effUnit(k) || '%') + '）'));
     const best = Math.max.apply(null, v);
     v.forEach(x => tr.appendChild(el('td', (x === best && x) ? 'best' : '', '+' + fmt(x, 1))));
     const d = v[1] - v[0];
@@ -5279,7 +5288,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.26';
+window.__APP_VER = '2026-11-17.28';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
