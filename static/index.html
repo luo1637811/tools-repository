@@ -133,7 +133,7 @@
   </div>
 </section>
 
-<!-- ============ 数据管理（含批量数值维护） ============ -->
+<!-- ============ 数据管理 ============ -->
 <section id="tab-data" data-perm="data_view" class="hide">
   <div class="card">
     <h2>数据管理</h2>
@@ -161,32 +161,6 @@
     </div>
   </div>
 
-  
-
-  <div class="card" style="margin-top:16px">
-    <h2>批量数值维护 · 加点</h2>
-    <div class="toolbar">
-      <select id="auShip" style="width:220px"></select>
-      <input type="text" id="auQ" placeholder="搜 系统/节点" style="width:180px">
-      <label class="muted" style="display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="auPending" checked> 只看待核
-        <label class="muted" style="display:flex;align-items:center;gap:4px;margin-left:8px"><input type="checkbox" id="auShowChecked"> 显示已核</label>
-      </label>
-      <button class="btn" id="auSave">保存改动</button>
-      <button class="btn ghost" id="auCsv">导出 CSV</button>
-      <span class="muted" id="auNote"></span>
-    </div>
-    <div class="datascroll" id="auScroll">
-      <table>
-        <thead><tr id="auHead"></tr></thead>
-        <tbody id="auBody"></tbody>
-      </table>
-    </div>
-    <div class="muted" style="margin-top:10px">
-      每级值、逐级消耗、总级数都能直接改；「逐级消耗」用逗号分隔（如 <code>2,2,3,3,4</code>），留空就按「每级消耗 × 级数」算。
-      点「保存改动」写库，全站实时刷新。
-    </div>
-  </div>
   <div class="card hide" id="erCard">
           <div class="sebar"><b>效果申请</b><span class="muted">管理员申请新增的节点效果；批准后会进入效果库</span>
             <button class="btn ghost sm" id="erRefresh">刷新</button></div>

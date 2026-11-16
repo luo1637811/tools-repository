@@ -1264,7 +1264,15 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def client_ip(self):
-        return (self.client_address[0] if self.client_address else "") or "?"
+        """取真实客户端 IP：只有在 TCP 对端是本机反向代理（nginx 反代 8787）时，
+        才信任它转发的 X-Forwarded-For 第一段；其余情况一律用对端地址，
+        这样直连部署时谁也没法伪造一个头把「同 IP 限流」打散。"""
+        peer = (self.client_address[0] if self.client_address else "") or ""
+        if peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if xff:
+                return xff[:64]
+        return peer or "?"
 
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -1562,7 +1570,7 @@ class Handler(BaseHTTPRequestHandler):
         reason = (data.get("reason") or "").strip()[:200]
         if not un or not contact:
             return self.err(400, "请填用户名和联系方式")
-        ip = (self.client_address[0] if self.client_address else "") or "?"
+        ip = self.client_ip()
         if not pwd_req_allowed(ip):
             return self.err(429, "提交太频繁（同一网络每小时最多 5 条），稍后再试")
         with conn() as c:
@@ -3001,7 +3009,7 @@ class Handler(BaseHTTPRequestHandler):
     def login(self, data):
         name = (data.get("username") or "").strip()
         pwd = data.get("password") or ""
-        ip = (self.client_address[0] if self.client_address else "") or "?"
+        ip = self.client_ip()
         wait = login_wait(ip, name)
         if wait:
             log("登录失败", name, ip, "锁定中，还需 %d 秒" % wait)

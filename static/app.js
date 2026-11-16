@@ -3552,134 +3552,6 @@ async function wizSave() {
   finally { btn.disabled = false; }
 }
 
-/* ---------- 批量数值维护 ---------- */
-S.auShip = ''; S.auQ = '';
-function auRows(all) {
-  const out = [];
-  for (const s of S.bp.ships) {
-    if (S.auShip && s.id !== S.auShip) continue;
-    for (const sy of s.systems) for (const nd of sy.nodes)
-      out.push({ship: s, sys: sy, nd});
-  }
-  let rows = out;
-  const sc = $('#auShowChecked');
-  if (!(sc && sc.checked)) rows = rows.filter(r => !r.nd.checked_at);
-  if (all) return rows;
-  const q = (S.auQ || '').trim();
-  if (q) rows = rows.filter(r => (r.ship.name + r.sys.name + r.nd.label + (r.nd.note || '')).indexOf(q) >= 0);
-  if ($('#auPending').checked) rows = rows.filter(r => /待核|折算/.test(r.nd.note || ''));
-  return rows;
-}
-function renderAudit() {
-  if (!can('audit_view')) return;
-  if (!S.bp) return;
-  const sel = $('#auShip');
-  if (sel.options.length !== S.bp.ships.length + 1) {
-    sel.innerHTML = '';
-    sel.appendChild(new Option('全部舰船（' + S.bp.ships.length + '）', ''));
-    S.bp.ships.forEach(s => sel.appendChild(new Option(s.name + '（' + (s.size || '') + '）', s.id)));
-  }
-  sel.value = S.auShip || '';
-  const rows = auRows(false);
-  const head = $('#auHead'); head.innerHTML = '';
-  ['舰船', '系统', '节点', '效果键', '最大级', '消耗/级', '逐级消耗（逗号分隔，可空）', '每级值', '备注', '已核']
-    .forEach(t => head.appendChild(el('th', '', t)));
-  const body = $('#auBody'); body.innerHTML = '';
-  const tdOf = x => { const d = el('td'); d.appendChild(x); return d; };
-  const numIn = (id, k, v, step) => {
-    const i = el('input'); i.type = 'number'; i.min = '0'; i.step = step || '1';
-    i.value = (v === undefined || v === null) ? '' : v; i.style.width = '68px';
-    i.dataset.id = id; i.dataset.k = k; return i;
-  };
-  rows.forEach(r => {
-    const tr = el('tr');
-    tr.appendChild(el('td', '', r.ship.name));
-    tr.appendChild(el('td', '', r.sys.name));
-    tr.appendChild(el('td', '', r.nd.label));
-    const keys = Object.keys(r.nd.effect || {});
-    tr.appendChild(el('td', 'muted', keys.join(' / ') || '(无)'));
-    tr.appendChild(tdOf(numIn(r.nd.id, 'max_lv', r.nd.max_lv)));
-    tr.appendChild(tdOf(numIn(r.nd.id, 'cost', r.nd.cost)));
-    const ci = el('input'); ci.type = 'text'; ci.style.width = '150px';
-    ci.placeholder = '如 2,3,4,5,6';
-    ci.value = Array.isArray(r.nd.costs) ? r.nd.costs.join(',') : (r.nd.costs || '');
-    ci.dataset.id = r.nd.id; ci.dataset.k = 'costs';
-    tr.appendChild(tdOf(ci));
-    const tdV = el('td');
-    if (!keys.length) tdV.appendChild(document.createTextNode('—'));
-    keys.forEach(k => { tdV.appendChild(numIn(r.nd.id, 'eff:' + k, r.nd.effect[k], '0.1')); tdV.appendChild(document.createTextNode(' ')); });
-    tr.appendChild(tdV);
-    tr.appendChild(el('td', 'muted', (r.nd.note || '').slice(0, 60)));
-    tr.appendChild(el('td', 'muted', r.nd.checked_at
-      ? (r.nd.checked_at.slice(5, 16) + ' · ' + (r.nd.checked_by || ''))
-      : '—'));
-    body.appendChild(tr);
-  });
-  const allN = auRows(true).length;
-  const doneN = (S.bp.ships || []).reduce((a, s2) => a + s2.systems.reduce(
-    (b, sy2) => b + sy2.nodes.filter(nd2 => nd2.checked_at).length, 0), 0);
-  $('#auNote').textContent = '显示 ' + rows.length + ' 条 / 共 ' + allN + ' 条'
-    + (doneN ? ' · 已核 ' + doneN + ' 条（勾「显示已核」可查看时间与操作人）' : '')
-    + ' · 保存后该行自动归档，不再出现在待核列表';
-}
-function stamp() {   /* 本地时间 yyyy-mm-dd hh:mm:ss，与库里 ts 同格式 */
-  const d = new Date(), p2 = x => String(x).padStart(2, '0');
-  return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
-    + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
-}
-async function saveAudit() {
-  if (!(S.user && (S.user.role === 'admin' || S.user.role === 'superadmin'))) return toast('用管理员账号登录才能改', 'bad');
-  const edits = {};
-  document.querySelectorAll('#auBody input').forEach(inp => {
-    if (inp.type === 'checkbox') return;
-    if (inp.dataset.k === 'costs') {
-      const arr = inp.value.split(/[,，\s]+/).filter(x => x !== '').map(Number);
-      (edits[inp.dataset.id] = edits[inp.dataset.id] || {})[inp.dataset.k] = arr;
-      return;
-    }
-    (edits[inp.dataset.id] = edits[inp.dataset.id] || {})[inp.dataset.k] = inp.value === '' ? null : +inp.value;
-  });
-  const byId = {};
-  S.bp.ships.forEach(s => s.systems.forEach(sy => sy.nodes.forEach(nd => { byId[nd.id] = nd; })));
-  let n = 0;
-  try {
-    for (const id of Object.keys(edits)) {
-      const nd = byId[id]; if (!nd) continue;
-      const eff = Object.assign({}, nd.effect || {});
-      const body = {id: nd.id, sys: nd.sys, parent: nd.parent || '', label: nd.label,
-        note: nd.note || '', max_lv: nd.max_lv, cost: nd.cost, effect: eff,
-        checked_at: stamp(), checked_by: (S.user && S.user.username) || ''};
-      let changed = false;
-      for (const k of Object.keys(edits[id])) {
-        const v = edits[id][k]; if (v === null) continue;
-        if (k === 'max_lv' && v !== nd.max_lv) { body.max_lv = v; changed = true; }
-        else if (k === 'cost' && v !== nd.cost) { body.cost = v; changed = true; }
-        else if (k === 'costs') { body.costs = v; changed = true; }
-        else if (k.indexOf('eff:') === 0 && v !== nd.effect[k.slice(4)]) { eff[k.slice(4)] = v; changed = true; }
-      }
-      if (!changed) continue;
-      await api('/api/data/nodes/' + nd.id, {method: 'PUT', body});
-      n++;
-    }
-    toast(n ? '已保存 ' + n + ' 条，已归档（不再出现在待核列表）' : '没有改动', n ? 'good' : '');
-    if (n) { await loadBlueprints(true); renderAudit(); }
-  } catch (e) { toast('保存失败：' + e.message, 'bad'); }
-}
-function exportNodeCsv() {
-  const rows = auRows(true);
-  const lines = ['舰船,系统,节点,效果键,每级值,最大级,消耗,备注'];
-  rows.forEach(r => {
-    const keys = Object.keys(r.nd.effect || {});
-    const k = keys[0] || '';
-    const v = keys.length ? r.nd.effect[k] : '';
-    lines.push([r.ship.name, r.sys.name, r.nd.label, k, v, r.nd.max_lv, r.nd.cost,
-      (r.nd.note || '').replace(/[,\r\n]/g, ' ')].join(','));
-  });
-  const blob = new Blob(['\ufeff' + lines.join('\r\n')], {type: 'text/csv;charset=utf-8'});
-  const a = el('a'); a.href = URL.createObjectURL(blob); a.download = '批量数值维护.csv';
-  document.body.appendChild(a); a.click(); a.remove();
-}
-
 /* ---------- 实时（SSE）：断线只在「确实连不上」时提示，恢复后自动消失 ---------- */
 let STREAM_RETRY = null, STREAM_ES = null, STREAM_PROBE = null, STREAM_DOWN_AT = 0;
 
@@ -4734,7 +4606,7 @@ function showTab(tab) {
   diag('click ' + tab + ' | panes=' + panes.length + ' | pane=' + (pb ? 'yes' : 'NO-EL') +
        ' | hidden=' + (pb ? pb.classList.contains('hide') : '?'));
   if (tab === 'sim') renderPlanes();
-  if (tab === 'data') { renderData(); renderAudit(); if (window.__er) window.__er(); }
+  if (tab === 'data') { renderData(); if (window.__er) window.__er(); }
   if (tab === 'roster') loadRosterQuery();
   if (tab === 'rosterM') loadRosterAdmin();
   if (tab === 'people' && S.user) { loadUsers(); loadPwdReqs(); if (window.__rc) window.__rc(); if (window.__tpl) window.__tpl(); }
@@ -4788,13 +4660,6 @@ bindBattle();
 })();
 $('#entSel').onchange = e => { S.ent = e.target.value; renderData(); };
 $('#entQ').oninput = e => { S.entQ = e.target.value; renderData(); };
-$('#auShip').onchange = e => { S.auShip = e.target.value; renderAudit(); };
-$('#auQ').oninput = e => { S.auQ = e.target.value; renderAudit(); };
-$('#auPending').onchange = () => renderAudit();
-{ const sc = $('#auShowChecked'); if (sc) sc.onchange = () => renderAudit(); }
-$('#auSave').onclick = saveAudit;
-$('#auCsv').onclick = exportNodeCsv;
-$('#auCsv').classList.toggle('hide', !can('export'));
 
 $('#newEnt').onclick = () => {
   if (S.ent === 'ships') return toast('舰船请用「问卷式录入舰船」：它会连带把系统、节点、模块一起建好', 'bad');
@@ -5606,7 +5471,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.35';
+window.__APP_VER = '2026-11-17.36';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
