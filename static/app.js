@@ -397,14 +397,38 @@ function nodeById(id) {
     for (const nd of sy.nodes) if (nd.id === id) return nd;
   return null;
 }
+/* 内置效果的「单位」以语义为准，不受效果库里手填的单位影响：
+   结构/护盾/闪避/伤害/命中… 一律 %，护甲/维修 是 点，速度类 jm、突防 s。
+   自定义效果仍用效果库里的 unit。 */
+const UNIT_OF = {
+  hull: '%', shield: '%', eva: '%', eva_missile: '%', eva_torp: '%',
+  dmg: '%', dmg_atk_pct: '%', dmg_air_pct: '%', dmg_siege_pct: '%',
+  crit: '%', crit_rate: '%', cd: '%', freq: '%', dur: '%', cast: '%',
+  acc: '%', acc_plane: '%', acc_small: '%', acc_large: '%',
+  speed: '%', warp: '%', move: '%', lock: '%', intc: '%', critres: '%',
+  armor: '点', hull_pt: '点',          /* 物理护甲/额外结构值 = 点 */
+  repair: '%', heal: '%'                /* 维修量效果 = %（加到维修量上的比例） */
+  /* 注意：cruise / warp / spd 是「系统基础值」字段（jm、s），不是节点效果键，故不在此表 */
+};
+/* 名字里若已自带「（%）/(点)」这类后缀，就拆出来当单位，避免「结构（%）（点）」 */
+function splitNameUnit(name, unit) {
+  const nm = String(name == null ? '' : name).trim();
+  const m = nm.match(/[（(]\s*([^）)]{0,10})\s*[）)]\s*$/);
+  if (m) return { base: nm.replace(/[（(]\s*[^）)]{0,10}\s*[）)]\s*$/, '').trim(), unit: m[1].trim() };
+  return { base: nm, unit: String(unit == null ? '' : unit).trim() };
+}
 function effName(k) {
   const e = ((S.bp && S.bp.effects) || []).find(x => x.id === k);
-  return e ? (e.name + (e.unit ? '（' + e.unit + '）' : '')) : k;
+  if (!e) return k;
+  const su = splitNameUnit(e.name, e.unit);
+  const unit = UNIT_OF[k] || su.unit || '';
+  return su.base + (unit ? '（' + unit + '）' : '');
 }
 /* 效果名称：先查效果库（自定义效果也在库里），再回退内置中文名，最后原样显示键 */
 function effMeta(k) {
   const e = ((S.bp && S.bp.effects) || []).find(x => x.id === k);
-  return { name: (e && e.name) || EFF_CN[k] || k, unit: (e && e.unit) || '' };
+  const su = splitNameUnit((e && e.name) || EFF_CN[k] || k, (e && e.unit) || '');
+  return { name: su.base || k, unit: UNIT_OF[k] || su.unit || '' };
 }
 function effLabel(k) { return effMeta(k).name; }
 function effUnit(k) { return effMeta(k).unit; }
@@ -1158,7 +1182,8 @@ const EFF_CN = {
   crit: '暴击伤害', crit_rate: '暴击率', critres: '抗暴', lock: '锁定', lockeff_pct: '锁敌效率',
   eva: '通用闪避', eva_missile: '导弹闪避', intc: '拦截率', focus: '锁定优先',
   range: '目标范围', selfheal: '自维修', syshull: '系统结构', shield: '护盾', armor: '护甲',
-  hull: '结构', repair: '维修', speed: '巡航', warp: '曲率', move: '突防', spd: '突防',
+  hull: '结构', repair: '维修', speed: '巡航', warp: '曲率',
+  move: '突防速度', spd: '突防速度',          /* move=加成%，spd=基础值(s)，展示层同名但单位不同 */
   cd_up: '冷却延长', heal: '维修', dmg_bonus: '伤害'
 };
 const CMP_SRC = {
@@ -5288,7 +5313,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.28';
+window.__APP_VER = '2026-11-17.31';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
