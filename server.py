@@ -1182,6 +1182,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    _head = False          # HEAD 请求：头部照发，响应体不写
+
+    def do_HEAD(self):
+        """HEAD：给 curl -I / 监控探活用。路由与 GET 一致，但只回头部。
+        SSE 是长连接，HEAD 直接拒掉，免得平白占住一个连接名额。"""
+        path = unquote(urlparse(self.path).path)
+        if path.rstrip("/") == "/api/stream":
+            self.send_response(405)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        self._head = True
+        try:
+            self.do_GET()
+        finally:
+            self._head = False
+
     def send_json(self, data, code=200):
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
         gz = False
@@ -1199,7 +1217,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
         self.end_headers()
-        self.wfile.write(raw)
+        if not self._head:
+            self.wfile.write(raw)
 
     def err(self, code, msg):
         self.send_json({"ok": False, "error": msg}, code)
@@ -1309,7 +1328,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
         self.end_headers()
-        self.wfile.write(raw)
+        if not self._head:
+            self.wfile.write(raw)
 
     CSRF_EXEMPT = ("/api/login", "/api/register/send", "/api/register/verify",
                    "/api/pwd/request", "/api/rc/reset", "/api/rescue/reset")
