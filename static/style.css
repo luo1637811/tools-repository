@@ -633,3 +633,8 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .planebase-tbl th,.planebase-tbl td{padding:4px 6px;font-size:12.5px}
 .planebase-tbl th{color:var(--dim);font-weight:500;text-align:left}
 .planebase-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+
+/* ---------- 页脚备案号（备案要求：展示备案号并能跳到工信部） ---------- */
+.icpfoot{margin:28px 0 18px;text-align:center;font-size:12px;color:var(--dim)}
+.icpfoot a{color:var(--dim);text-decoration:none;border-bottom:1px dotted var(--dim);padding-bottom:1px}
+.icpfoot a:hover{color:var(--accent);border-bottom-color:var(--accent)}

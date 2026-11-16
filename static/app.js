@@ -5471,7 +5471,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.36';
+window.__APP_VER = '2026-11-17.37';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
