@@ -68,7 +68,8 @@ function sysBays(sy) {
   if (+n.bay_drone) out.push({kind: '无人机', cap: +n.bay_drone});
   return out;
 }
-function mk() { return {ship: null, noCarrier: false, modules: {}, alloc: {}, planes: [], carrierMods: undefined}; }
+function mk() { return {ship: null, noCarrier: false, modules: {}, alloc: {}, planes: [],
+  palloc: {}, psys: {}, carrierMods: undefined}; }
 
 let _toastLast = '', _toastAt = 0;
 function toast(msg, kind = '') {
@@ -439,8 +440,9 @@ function costOf(nd, lv) {
   return +nd.cost || 0;
 }
 
-function sysUsed(sy) {
-  const sl = S.slots[S.cur] || mk();
+/* 第二参 sl：给舰载机自身的系统树复用（它有自己的 alloc），不传就是当前方案 */
+function sysUsed(sy, sl0) {
+  const sl = sl0 || S.slots[S.cur] || mk();
   return sy.nodes.reduce((a, nd) => {
     let sum = 0;
     const lv = sl.alloc[nd.id] || 0;
@@ -449,8 +451,8 @@ function sysUsed(sy) {
   }, 0);
 }
 
-function sysActive(sy) {
-  const sl = S.slots[S.cur] || mk();
+function sysActive(sy, sl0) {
+  const sl = sl0 || S.slots[S.cur] || mk();
   return sy.nodes.filter(nd => (sl.alloc[nd.id] || 0) > 0).length;
 }
 
@@ -672,7 +674,20 @@ function renderBaseAttrs() {
     if (_keepSlot(u)) return true;            // A1 / M1 作为基础槽永远保留
     return _slotLoaded(u);                    // 其它槽位：它自己装了才显示
   };
-  const hasBay = sys.some(x => _slotShown(x.sy.slot) && sysBays(x.sy).length);
+  /* 已装模块提供的舱位（模块本身就是系统，槽位名要与本行一致） */
+  const modBaysOf = (slotName) => {
+    const u = String(slotName || '').toUpperCase();
+    const L = u.charAt(0);
+    const mid = L ? _chosen[L] : '';
+    if (!mid) return [];
+    const m = (ship.modules || []).find(x => String(x.id) === String(mid));
+    if (!m || String(m.slot || '').toUpperCase() !== u) return [];
+    const bays = (m.bays && m.bays.length) ? m.bays
+      : (m.mkind ? [{ kind: (m.mkind || '').replace('搭载系统', ''), cap: m.cap, allow_group: m.allow_group }] : []);
+    return bays.map(b => ({ kind: b.kind || '', cap: +b.cap || 0, src: '模块' }));
+  };
+  const hasBay = sys.some(x => _slotShown(x.sy.slot)
+    && (sysBays(x.sy).length || modBaysOf(x.sy.slot).length));
   const rows = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
     .sort((a, b2) => (b2.w - a.w) || String(a.sy.slot || '').localeCompare(String(b2.sy.slot || '')));
 
@@ -719,12 +734,13 @@ function renderBaseAttrs() {
     if (c.k === 'kind') return '<td>' + (x.w ? '<span class="tagw">武器</span>' : '<span class="tagf">功能</span>') + '</td>';
     if (c.k === 'bay') {
       /* 该槽位没装模块 → 模块提供的战机/护航艇舱位不显示；系统自带的（无人机）照常显示 */
-      let bs = sysBays(x.sy);
+      let bs = sysBays(x.sy).concat(modBaysOf(x.sy.slot));
       /* 只有「超主力舰的可替换槽位」才按装没装模块过滤；
          主力舰/护卫舰的舱位来自系统本身，照常显示 */
       if (_isSuper && !_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
       if (!bs.length) return '<td class="dim">—</td>';
-      return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap).join(' · ') + '</td>';
+      return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap
+        + (b.src === '模块' ? '（模块）' : '')).join(' · ') + '</td>';
     }
     if (c.k === '__extra') {
       const ks = extraOf(x);
@@ -771,9 +787,23 @@ function renderBaseAttrs() {
       tile('巡航 / 曲率',
         fmtNum(effVal('speed', pick('cruise', base.cruise), agg)) + ' / ' + fmtNum(effVal('warp', pick('warp', base.warp), agg)),
         (Number(agg.speed) || Number(agg.warp)) ? '已含加点加成' : 'jm'),
-      tile('武器系统', ws.length + ' 个', ws.length ? ('对舰 ' + fmtNum(sum('dmg_atk')) + ' · 对空 ' + fmtNum(sum('dmg_air')) + ' · 攻城 ' + fmtNum(sum('dmg_siege'))) : '没有武器系统')
-    ].join('');
+      tile('武器系统', ws.length + ' 个', ws.length ? ('对舰 ' + fmtNum(sum('dmg_atk')) + ' · 对空 ' + fmtNum(sum('dmg_air')) + ' · 攻城 ' + fmtNum(sum('dmg_siege'))) : '没有武器系统'),
+    ].concat((function () {
+      /* 舰载机：只在真的有搭载时才出现；战机 / 护航艇各一块，只给加成后的结果，不写公式 */
+      const pt = planeTotals(S.cur);
+      const out = [];
+      ['战机', '护航艇'].forEach(kind => {
+        const rs = pt.rows.filter(r => r.kind === kind);
+        if (!rs.length) return;
+        const c = rs.reduce((a, r) => a + r.count, 0)
+          , d = rs.reduce((a, r) => a + r.dpm, 0)
+          , e = rs.reduce((a, r) => a + r.ehp, 0);
+        out.push(tile(kind, c + ' 架', 'DPM ' + fmtNum(d) + ' · EHP ' + fmtNum(e)));
+      });
+      return out;
+    })()).join('');
   }
+  renderBaPlanes();
   if (warn) {
     const msgs = [];
     if (base.hull === undefined) msgs.push('缺少装甲系统数值（结构值 / 抵抗伤害）');
@@ -829,6 +859,7 @@ function treeCols(nodes) {
 
 function renderTree() {
   renderBaseAttrs();
+  renderPlaneTrees();
   const sl = S.slots[S.cur];
   const ship = shipOf(sl.ship) || { id: '', name: '', systems: [], base: {}, tech_total: 0, kind: '', cls: '', size: '' };
   const sy = (ship.systems || []).find(x => x.id === S.sys[S.cur]);
@@ -980,11 +1011,11 @@ function nodeCard(nd, sl, sy, code) {
     if (cur >= nd.max_lv) return;
     const delta = costOf(nd, cur);
     // 系统上限 = 该系统「最多能点几个节点」（已激活节点数），不是技术值
-    if (cur === 0 && sy.tech_cap && sysActive(sy) >= sy.tech_cap)
-      return toast('「' + sy.name + '」可用节点 ' + sy.tech_cap + ' 个，已点亮 ' + sysActive(sy)
+    if (cur === 0 && sy.tech_cap && sysActive(sy, sl) >= sy.tech_cap)
+      return toast('「' + sy.name + '」可用节点 ' + sy.tech_cap + ' 个，已点亮 ' + sysActive(sy, sl)
         + ' 个（系统里共 ' + sy.nodes.length + ' 个）。先把不用的节点减到 0，再点新的。', 'bad');
     const ship = shipOf(sl.ship) || { id: '', name: '', systems: [], base: {}, tech_total: 0, kind: '', cls: '', size: '' };
-    const total = ship.systems.reduce((a, x) => a + sysUsed(x), 0);
+    const total = ship.systems.reduce((a, x) => a + sysUsed(x, sl), 0);
     if (ship.tech_total && total + delta > ship.tech_total)
       return toast('变形技术值不够：还要 ' + delta + '，只剩 ' + (ship.tech_total - total), 'bad');
     sl.alloc[nd.id] = cur + 1; renderTree(); recalc(S.cur);
@@ -1124,6 +1155,233 @@ function slotBaseVals(slotKey) {
   };
 }
 
+/* 舰载机合计：与 engine.simulate 同一条公式
+   DPM = 单架基础 dpm × 架次 ×（1 + 舰载机伤害加成% / 100）；EHP = 单架 ehp × 架次
+   母舰系统的基础加成（结构/护甲/闪避…）不作用到舰载机上，只有 plane 这个键生效。 */
+/* 只有「带舱位」的系统，加成才会作用到舰载机上 */
+function sysHasBayJs(sy) {
+  if (!sy) return false;
+  if ((sy.bays || []).length) return true;
+  const n = sy.norm || sy.stats_norm || {};
+  return (+n.bay_plane || 0) + (+n.bay_boat || 0) + (+n.bay_drone || 0) > 0;
+}
+/* 母舰侧：只统计「带舱位系统」的 plane / dmg / crit / crit_rate */
+function bayAggBySlot(sl) {
+  const out = {};
+  const ship = shipOf((sl || {}).ship);
+  if (!ship) return out;
+  const al = (sl || {}).alloc || {};
+  (ship.systems || []).forEach(sy => {
+    if (!sysHasBayJs(sy)) return;
+    const key = (sy.slot || '').trim();
+    const o = out[key] || (out[key] = { plane: 0, dmg: 0, crit: 0, crit_rate: 0 });
+    (sy.nodes || []).forEach(nd => {
+      const lv = Math.max(0, Math.min(+al[nd.id] || 0, +nd.max_lv || 0));
+      if (lv <= 0) return;
+      const pars = String(nd.parent || "").split(/[,，]/).map(x => x.trim()).filter(Boolean);
+      if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
+      const eff = nd.effect || {};
+      ["plane", "dmg", "crit", "crit_rate"].forEach(k => {
+        if (k in eff) o[k] += (+eff[k] || 0) * lv;
+      });
+    });
+  });
+  return out;
+}
+function bayAggFor(key) {
+  const out = { plane: 0, dmg: 0, crit: 0, crit_rate: 0 };
+  const sl = S.slots[key] || {};
+  const ship = shipOf(sl.ship);
+  if (!ship) return out;
+  const al = sl.alloc || {};
+  (ship.systems || []).forEach(sy => {
+    if (!sysHasBayJs(sy)) return;
+    (sy.nodes || []).forEach(nd => {
+      let lv = Math.max(0, Math.min(+al[nd.id] || 0, +nd.max_lv || 0));
+      if (lv <= 0) return;
+      const pars = String(nd.parent || "").split(/[,，]/).map(x => x.trim()).filter(Boolean);
+      if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
+      const eff = nd.effect || {};
+      ["plane", "dmg", "crit", "crit_rate"].forEach(k => {
+        if (k in eff) out[k] += (+eff[k] || 0) * lv;
+      });
+    });
+  });
+  return out;
+}
+/* 舰载机自身加点：同型号多架共用一套，存在 sl.palloc[机型 id] 里 */
+function pallocOf(sl, pid) {
+  sl.palloc = sl.palloc || {};
+  return sl.palloc[pid] || (sl.palloc[pid] = {});
+}
+/* 这一架机「自己的」系统节点加成：只用它自己 ships 记录里的系统节点（与 engine.simulate 同口径） */
+function planeOwnAgg(pid, sl) {
+  const out = { plane: 0, dmg: 0, crit: 0, crit_rate: 0 };
+  const ps = shipOf(pid);
+  if (!ps) return out;
+  /* 起点是这架机 base.bonus 里写死的自身加成（与 engine 的 _own 同口径） */
+  const pf = ((S.bp && S.bp.planes) || []).find(z => z.id === pid) || {};
+  let pbase = {};
+  try { pbase = typeof pf.base === 'string' ? (JSON.parse(pf.base) || {}) : (pf.base || {}); } catch (e) { pbase = {}; }
+  const bb = pbase.bonus || {};
+  ['plane', 'dmg', 'crit', 'crit_rate'].forEach(k => { if (k in bb) out[k] += +bb[k] || 0; });
+  const al = pallocOf(sl, pid);
+  (ps.systems || []).forEach(sy => (sy.nodes || []).forEach(nd => {
+    const lv = Math.max(0, Math.min(+al[nd.id] || 0, +nd.max_lv || 0));
+    if (lv <= 0) return;
+    let eff = nd.effect;
+    if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
+    const pars = String(nd.parent || '').split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
+    ['plane', 'dmg', 'crit', 'crit_rate'].forEach(k => {
+      if (k in (eff || {})) out[k] += (+eff[k] || 0) * lv;
+    });
+  }));
+  return out;
+}
+function planeTotals(key) {
+  const sl = S.slots[key] || mk();
+  const pool = (S.bp && S.bp.planes) || [];
+  const bySlot = bayAggBySlot(sl);
+  const rows = (sl.planes || []).filter(x => (Number(x.count) || 0) > 0).map(x => {
+    const pf = pool.find(z => z.id === x.id) || {};
+    let base = {};
+    try { base = typeof pf.base === 'string' ? (JSON.parse(pf.base) || {}) : (pf.base || {}); } catch (e) { base = {}; }
+    const shp = shipOf(sl.ship) || { modules: [] };
+    const mod = (shp.modules || []).find(z => z.id === x.m) || {};
+    const car = bySlot[(mod.slot || '').trim()] || { plane: 0, dmg: 0, crit: 0, crit_rate: 0 };
+    const own = planeOwnAgg(x.id, sl);
+    const ownPct = own.plane + own.dmg;
+    const carPct = (+car.plane || 0) + (+car.dmg || 0);
+    const pct = carPct + ownPct;
+    const cr = (+car.crit_rate || 0) + own.crit_rate
+             , cd = (+car.crit || 0) + own.crit;
+    const cm = (cr > 0 && cd > 0) ? (1 + cr / 100 * cd / 100) : 1;
+    const c = Number(x.count) || 0;
+    const per = (Number(base.dpm) || 0) * (1 + pct / 100) * cm;
+    return { id: x.id, name: pf.name || x.id, kind: pf.kind || '', m: x.m, bay: x.bay,
+      count: c, per: per, carPct: carPct, ownPct: ownPct, pct: pct, critMul: cm,
+      dpm: per * c, ehp: (Number(base.ehp) || 0) * c };
+  });
+  return {
+    count: rows.reduce((a, r) => a + r.count, 0),
+    dpm: rows.reduce((a, r) => a + r.dpm, 0),
+    ehp: rows.reduce((a, r) => a + r.ehp, 0),
+    bonus: rows.length ? (rows[0].pct || 0) : 0, rows: rows
+  };
+}
+/* ---------- 舰载机自身加点 / 基础加成里的战机·护航艇 ---------- */
+/* 加点区：为已搭载的舰载机渲染「它自己的系统树」，alloc 按型号存 sl.palloc（同型号多架共用一套） */
+function renderPlaneTrees() {
+  const host = $('#planeTrees');
+  if (!host) return;
+  host.innerHTML = '';
+  const sl = S.slots[S.cur];
+  if (!sl) return;
+  const models = [];
+  (sl.planes || []).forEach(x => {
+    const c = Number(x.count) || 0;
+    if (c <= 0) return;
+    let m = models.find(z => z.id === x.id);
+    if (!m) {
+      const pf = ((S.bp && S.bp.planes) || []).find(z => z.id === x.id) || {};
+      m = { id: x.id, name: pf.name || x.id, kind: pf.kind || '', count: 0 };
+      models.push(m);
+    }
+    m.count += c;
+  });
+  if (!models.length) return;
+  const head = el('div', 'planeblock-head');
+  head.appendChild(el('b', '', '舰载机自身加点'));
+  head.appendChild(el('span', 'muted', '　同型号多架共用一套；只算这架机自己的系统，母舰系统加成在「基础加成」里另算'));
+  host.appendChild(head);
+  models.forEach(m => host.appendChild(planeTreeBlock(m, sl)));
+}
+
+function planeTreeBlock(m, sl) {
+  const ps = shipOf(m.id);
+  const wrap = el('div', 'planeblock');
+  const head = el('div', 'pb-head');
+  head.appendChild(el('b', '', '舰载机：' + m.name));
+  if (m.kind) head.appendChild(el('span', 'chip', m.kind));
+  head.appendChild(el('span', 'chip', m.count + ' 架（共用这套加点）'));
+  const own = planeOwnAgg(m.id, sl);
+  const ownPct = own.plane + own.dmg;
+  head.appendChild(el('span', 'muted', '自身加成 ' + (ownPct ? '+' + fmtNum(ownPct) + '%' : '未加')));
+  wrap.appendChild(head);
+  if (!ps || !(ps.systems || []).length) {
+    wrap.appendChild(el('div', 'muted', '这架机在「数据管理」里还没有系统，先给它建系统 / 加点节点。'));
+    return wrap;
+  }
+  const syslist = (ps.systems || []).filter(sy => (sy.nodes || []).length);
+  if (!syslist.length) {
+    wrap.appendChild(el('div', 'muted', '这架机的系统还没有加点项。'));
+    return wrap;
+  }
+  sl.psys = sl.psys || {};
+  let curId = sl.psys[m.id];
+  if (!syslist.some(sy => sy.id === curId)) curId = syslist[0].id;
+  sl.psys[m.id] = curId;
+  const al = pallocOf(sl, m.id);
+  const proxy = { alloc: al, ship: m.id };
+  const tabs = el('div', 'systabs');
+  syslist.forEach(sy => {
+    const act = sy.nodes.filter(nd => (+al[nd.id] || 0) > 0).length;
+    const b = el('button', sy.id === curId ? 'on' : '', sy.name + ' ' + act + '/' + sy.nodes.length);
+    b.onclick = () => { sl.psys[m.id] = sy.id; renderPlaneTrees(); };
+    tabs.appendChild(b);
+  });
+  const sy = syslist.find(x => x.id === curId);
+  const lane = el('div', 'wiz-lane');
+  treeCols(sy.nodes).forEach((col, ci) => {
+    const box = el('div', 'wiz-col');
+    box.appendChild(el('div', 'wiz-colhead', '第 ' + (ci + 1) + ' 层'));
+    col.forEach(({ code, node }) => box.appendChild(nodeCard(node, proxy, sy, code)));
+    lane.appendChild(box);
+  });
+  wrap.appendChild(tabs);
+  wrap.appendChild(lane);
+  const used = ps.systems.reduce((a, x) => a + sysUsed(x, proxy), 0);
+  wrap.appendChild(el('div', 'muted', '这套加点消耗 ' + used + ' 技术值'
+    + (ps.tech_total ? '（整机上限 ' + ps.tech_total + '）' : '')));
+  return wrap;
+}
+
+/* 基础加成：战机 / 护航艇 两块，只显示加成后的结果 */
+function renderBaPlanes() {
+  const host = $('#baPlanes');
+  if (!host) return;
+  host.innerHTML = '';
+  const pt = planeTotals(S.cur);
+  ['战机', '护航艇'].forEach(kind => {
+    const rows = pt.rows.filter(r => r.kind === kind);
+    if (!rows.length) return;
+    const box = el('div', 'planeblock');
+    const head = el('div', 'pb-head');
+    head.appendChild(el('b', '', kind));
+    head.appendChild(el('span', 'chip', rows.reduce((a, r) => a + r.count, 0) + ' 架'));
+    box.appendChild(head);
+    const tbl = el('table', 'tbl planebase-tbl');
+    const thead = el('thead'); const htr = el('tr');
+    ['型号', '架次', '单架 DPM', '编队 DPM', '编队 EHP', '自身 / 母舰'].forEach(t => htr.appendChild(el('th', '', t)));
+    thead.appendChild(htr); tbl.appendChild(thead);
+    const tb = el('tbody');
+    rows.forEach(r => {
+      const tr = el('tr');
+      tr.appendChild(el('td', '', r.name));
+      tr.appendChild(el('td', 'num', String(r.count)));
+      tr.appendChild(el('td', 'num', fmtNum(r.per)));
+      tr.appendChild(el('td', 'num', fmtNum(r.dpm)));
+      tr.appendChild(el('td', 'num', fmtNum(r.ehp)));
+      tr.appendChild(el('td', 'muted', (r.ownPct ? '+' + fmtNum(r.ownPct) + '%' : '—')
+        + ' / ' + (r.carPct ? '+' + fmtNum(r.carPct) + '%' : '—')));
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    box.appendChild(tbl);
+    host.appendChild(box);
+  });
+}
 /* ---------- 计算 ---------- */
 let pend = {};
 function recalc(key) {
@@ -1132,9 +1390,12 @@ function recalc(key) {
   clearTimeout(pend[key]);
   pend[key] = setTimeout(async () => {
     try {
+      /* 舰载机的自身加点按型号存在 sl.palloc，提交时按型号展开到每条搭载记录（同型号多架共用一套） */
+      const planes = (sl.planes || []).map(x => Object.assign({}, x,
+        {alloc: Object.assign({}, (sl.palloc || {})[x.id] || {})}));
       const j = await api('/api/simulate', {method: 'POST',
-        body: sl.noCarrier ? {planes_only: true, planes: sl.planes, light: true}
-          : {ship: sl.ship, modules: sl.modules, alloc: sl.alloc, planes: sl.planes, light: true}});
+        body: sl.noCarrier ? {planes_only: true, planes: planes, light: true}
+          : {ship: sl.ship, modules: sl.modules, alloc: sl.alloc, planes: planes, light: true}});
       S.results = S.results || {}; S.results[key] = j.result;
       renderResults();
     } catch (e) { toast('计算失败：' + e.message, 'bad'); }
@@ -1220,6 +1481,23 @@ function renderResults() {
     body.appendChild(tr);
   });
 
+  /* 舰载机：A/B 各自搭载不同，单列 3 行，避免「换了飞机但差值 0」 */
+  const pls = SLOTS.map(k => planeTotals(k));
+  if (pls.some(p => p.count)) {
+    [['舰载机 架次', 'count', 0], ['舰载机 DPM', 'dpm', 1], ['舰载机 EHP', 'ehp', 1]].forEach(([label, k, dec]) => {
+      const v = pls.map(p => p[k] || 0);
+      if (onlyDiff && Math.abs(v[0] - v[1]) < 1e-9) return;
+      const tr = el('tr', 'prow');
+      tr.appendChild(el('td', '', label));
+      const best = Math.max.apply(null, v);
+      v.forEach(x => tr.appendChild(el('td', (x === best && x) ? 'best' : '', fmt(x, dec))));
+      const d = v[1] - v[0];
+      tr.appendChild(el('td', d === 0 ? '' : (d > 0 ? 'diff-pos' : 'diff-neg'),
+        (d > 0 ? '+' : '') + fmt(d, dec)));
+      body.appendChild(tr);
+    });
+  }
+
   /* 其余加成（伤害% / 冷却缩减 / 命中 / 暴击 / 锁定 …）：有就显示，没有就跳过 */
   const extraKeys = {};
   presBySlot.forEach(p => Object.keys(p).forEach(k => { if (!CMP_USED[k]) extraKeys[k] = 1; }));
@@ -1237,7 +1515,7 @@ function renderResults() {
     body.appendChild(tr);
   });
 
-  $('#cmpNote').textContent = '对比这两套方案在同一艘船上的基础值与加成合计。'
+  $('#cmpNote').textContent = '对比这两套方案在同一艘船上的基础值与加成合计（舰载机单列，母舰加成不作用到舰载机上）。'
     + (onlyDiff ? '（只看有差异：A、B 相同的行已隐藏）' : '（绿色是两者中较高的一侧）');
 
 }
@@ -1496,7 +1774,10 @@ function renderPlanesInner(host) {
       const save = () => {
         const pid = ps.value, c = cnt.v;
         sl.planes = (sl.planes || []).filter(x => !(x.m === h.mid && (x.bay || 0) === h.bi));
-        if (pid && c > 0) sl.planes.push({ id: pid, count: c, m: h.mid, bay: h.bi });
+        if (pid && c > 0) sl.planes.push({ id: pid, count: c, m: h.mid, bay: h.bi,
+          alloc: Object.assign({}, (sl.palloc || {})[pid] || {}) });
+        /* 当前方案：装/卸舰载机后立刻重绘它自己的加点块和「基础加成」里的战机/护航艇 */
+        if (k === S.cur) { renderPlaneTrees(); renderBaseAttrs(); }
         recalc(k); setTimeout(renderPlanes, 220);
       };
 
@@ -1518,7 +1799,7 @@ function renderPlanesInner(host) {
       tr.appendChild((() => { const td = el('td'); td.appendChild(ps); return td; })());
       tr.appendChild((() => { const td = el('td'); td.appendChild(st); return td; })());
       tr.appendChild(el('td', 'muted', h.cap ? (cnt.v + ' / ' + h.cap + ' 舱') : ''));
-      tb.appendChild(tr);
+
     });
 
     tbl.appendChild(tb);
@@ -1594,6 +1875,8 @@ function rowsOf(ent) {
   if (ent === 'planes') return S.bp.planes;
   const out = [];
   for (const s of S.bp.ships) {
+    /* 舰载机自己的加点节点只在「舰载机组合 / 加点区」里维护，不混进数据管理的节点清单 */
+    if (ent === 'nodes' && s.kind === '舰载机') continue;
     if (ent === 'systems') out.push(...s.systems.map(x => Object.assign({_ship: s.name}, x)));
     if (ent === 'modules') out.push(...s.modules.map(x => Object.assign({_ship: s.name}, x)));
     if (ent === 'nodes') {
@@ -4492,7 +4775,9 @@ $('#saveBuild').onclick = async () => {
   if (!sl.ship || !shipOf(sl.ship)) return toast('当前方案还没有选中真实存在的舰船，先选一艘再保存', 'bad');
   const name = prompt('方案名称', '方案 ' + S.cur); if (!name) return;
   try { await api('/api/builds', {method: 'POST', body: {ship: sl.ship, name,
-    modules: sl.modules, alloc: sl.alloc, planes: sl.planes}}); toast('已保存', 'good'); }
+    modules: sl.modules, alloc: sl.alloc,
+    planes: (sl.planes || []).map(x => Object.assign({}, x,
+      {alloc: Object.assign({}, (sl.palloc || {})[x.id] || {})}))}}); toast('已保存', 'good'); }
   catch (e) { toast('保存失败：' + e.message, 'bad'); }
 };
 bindRoster();
@@ -4916,12 +5201,20 @@ function applyBuild(b) {
     sl.ship = target;
     if (!sameShip) {
       sl.modules = {}; sl.alloc = {}; sl.planes = [];
+      sl.palloc = {}; sl.psys = {};
       sl.carrierMods = undefined; sl.noCarrier = false;
     }
   }
   sl.modules = P(b.modules) || sl.modules || {};
   sl.alloc = P(b.alloc) || sl.alloc || {};
   sl.planes = P(b.planes) || sl.planes || [];
+  /* 老方案里没有 palloc：从每条搭载记录的 alloc 还原（同型号多架共用一套） */
+  sl.palloc = {}; sl.psys = {};
+  (sl.planes || []).forEach(x => {
+    const a = x && x.alloc;
+    if (x && x.id && a && typeof a === 'object' && Object.keys(a).length)
+      sl.palloc[x.id] = Object.assign({}, a);
+  });
   if (target) S.sys[S.cur] = ((shipOf(sl.ship) || {}).systems || [{}])[0].id || '';
   S.undo = [];
   markBase();
@@ -5313,7 +5606,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.31';
+window.__APP_VER = '2026-11-17.35';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
@@ -5357,7 +5650,7 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
       });
       box.classList.remove('hide');
       paint(j);
-      const note = document.getElementById('rcNote');
+      const note = document.getElementById('rcCodeNote');
       if (note) note.textContent = '上面这些码只显示这一次，关掉页面就看不到了；用掉任意一个，其余 9 个一起作废。';
     } catch (e) { toast('生成失败：' + e.message, 'bad'); }
   }

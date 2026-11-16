@@ -620,3 +620,16 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .wiz-sysgrid .card2>.row>input,
 .wiz-sysgrid .card2>.row>select{width:100%!important;min-width:0!important;max-width:100%!important;box-sizing:border-box!important}
 .wiz-sysgrid .card2>.muted{font-size:11px!important;line-height:1.5!important;margin:2px 0 6px!important}
+
+/* ---------- 舰载机自身加点（左栏，母舰系统树下方） ---------- */
+#planeTrees{margin-top:14px}
+.planeblock-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin:4px 0 6px;font-size:13px}
+.planeblock{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0;background:var(--panel2)}
+.planeblock .pb-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px;font-size:13px}
+.planeblock .systabs{margin:4px 0 8px}
+.planeblock .wiz-col{flex:0 0 210px}
+#baPlanes{margin-top:12px}
+.planebase-tbl{margin-top:4px}
+.planebase-tbl th,.planebase-tbl td{padding:4px 6px;font-size:12.5px}
+.planebase-tbl th{color:var(--dim);font-weight:500;text-align:left}
+.planebase-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}

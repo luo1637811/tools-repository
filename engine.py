@@ -78,6 +78,23 @@ def _weapon_totals(ship):
     return out
 
 
+def sys_has_bay(sy):
+    """这个系统能不能搭载舰载机（自带舱位 或 模块舱位）。"""
+    try:
+        if (sy.get("bays") or []):
+            return True
+    except Exception:
+        pass
+    n = sy.get("norm") or {}
+    for k in ("bay_plane", "bay_boat", "bay_drone"):
+        try:
+            if float(n.get(k) or 0) > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     global EFF, EFF_UNIT
     with conn() as _c:
@@ -129,7 +146,10 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
 
     tech_total = 0
     sys_used = {}
+    bay_agg = {}
+    per_sys_bay = {}
     for sy in ship["systems"]:
+        _has_bay = sys_has_bay(sy)
         used, cnt, active = 0, 0, 0
         for nd in sy["nodes"]:
             lv = int(num((alloc or {}).get(nd["id"]), 0))
@@ -158,6 +178,10 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
             active += 1
             for k, v in nd["effect"].items():
                 agg[k] = agg.get(k, 0) + v * lv
+                if _has_bay:
+                    bay_agg[k] = bay_agg.get(k, 0) + v * lv
+                    _pb = per_sys_bay.setdefault((sy.get("slot") or "").strip(), {})
+                    _pb[k] = _pb.get(k, 0) + v * lv
             parts = []
             for k, v in nd["effect"].items():
                 if not v:
@@ -229,6 +253,16 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                 pb = bundle["plane"].get(p.get("id"))
                 if not pb:
                     continue
+                # 舰载机自身节点：来自它自己（ships 记录）各系统下的 nodes
+                _pship = next((x for x in (bundle.get("ships") or [])
+                               if x.get("id") == p.get("id")), None)
+                if _pship:
+                    _pnodes = []
+                    for _sy in (_pship.get("systems") or []):
+                        _pnodes.extend(_sy.get("nodes") or [])
+                    if _pnodes:
+                        pb = dict(pb)
+                        pb["nodes"] = _pnodes
                 count = max(0, int(round(num(p.get("count"), 0))))
                 if count == 0:
                     continue
@@ -243,7 +277,30 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                     continue
                 used_b += groups
                 used_slots += groups
-                d = pb["base"]["dpm"] * (1 + agg.get("plane", 0) / 100) * count
+                # 复制一份：下面的累加不能写回 bundle 里的 base.bonus（同一型号多架会重复叠加）
+                _own = dict((pb.get("base") or {}).get("bonus") or {})
+                _palloc = p.get("alloc") or {}
+                for _pn in (pb.get("nodes") or []):
+                    _lv = int(num(_palloc.get(_pn.get("id")), 0))
+                    _lv = max(0, min(_lv, int(_pn.get("max_lv") or 0)))
+                    if _lv <= 0:
+                        continue
+                    _pars = [x.strip() for x in str(_pn.get("parent") or "").replace("，", ",").split(",") if x.strip()]
+                    if _pars and not any(int(num(_palloc.get(x), 0)) > 0 for x in _pars):
+                        continue
+                    for _k, _v in (_pn.get("effect") or {}).items():
+                        if _k in ("plane", "dmg", "crit", "crit_rate"):
+                            _own[_k] = float(num(_own.get(_k), 0)) + float(_v) * _lv
+                _own_pct = float(num(_own.get("plane"), 0)) + float(num(_own.get("dmg"), 0))
+                _agg = per_sys_bay.get((lm.get("slot") or "").strip()) or {}
+                _car = float(_agg.get("plane", 0)) + float(_agg.get("dmg", 0))
+                _pct = _car + _own_pct
+                _cmul = 1.0
+                _cr = float(_agg.get("crit_rate", 0)) + float(num(_own.get("crit_rate"), 0))
+                _cd = float(_agg.get("crit", 0)) + float(num(_own.get("crit"), 0))
+                if _cr > 0 and _cd > 0:
+                    _cmul = 1 + (_cr / 100.0) * (_cd / 100.0)
+                d = pb["base"]["dpm"] * (1 + _pct / 100) * _cmul * count
                 rows.append({"name": pb["name"], "count": count, "groups": groups,
                              "per_group": 1, "module": lm["name"], "bay": bi,
                              "bay_kind": bkind, "dpm": round(d, 1),
@@ -267,7 +324,11 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
             dn = int(num(sy.get("norm", {}).get("bay_drone"), 0))
             if dn <= 0:
                 continue
-            d = drone_pl["base"]["dpm"] * (1 + agg.get("plane", 0) / 100) * dn
+            _own2 = (drone_pl.get("base") or {}).get("bonus") or {}
+            _agg2 = per_sys_bay.get((sy.get("slot") or "").strip()) or {}
+            _car2 = (float(_agg2.get("plane", 0)) + float(_agg2.get("dmg", 0))
+                     + float(num(_own2.get("plane"), 0)) + float(num(_own2.get("dmg"), 0)))
+            d = drone_pl["base"]["dpm"] * (1 + _car2 / 100) * dn
             rows.append({"name": drone_pl["name"], "count": dn, "groups": dn,
                          "per_group": 1, "module": sy["name"], "bay": -1,
                          "bay_kind": "无人机", "auto": True, "dpm": round(d, 1),

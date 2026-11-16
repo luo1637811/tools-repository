@@ -819,6 +819,15 @@ def load_bundle():
             have[s["id"]].update(rec)          # 覆盖 planes 表里的旧占位值
         else:
             planes.append(rec)
+    # 舰载机自身加点：节点表里 sys = 舰载机 id 的行挂到对应的机/船上
+    _by_sys = {}
+    for _n in nodes:
+        _by_sys.setdefault(_n.get("sys") or "", []).append(_n)
+    for _pl in list(planes):
+        _pl["nodes"] = _by_sys.get(_pl["id"], [])
+    for _sh in ships:
+        if (_sh.get("kind") or "") in ("战机", "护航艇", "舰载机"):
+            _sh["nodes"] = _by_sys.get(_sh["id"], [])
     return ships, planes, groups
 
 
@@ -2900,7 +2909,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def simulate_api(self, data):
         ships, planes, groups = load_bundle()
-        bundle = {"plane": {p["id"]: p for p in planes}}
+        bundle = {"plane": {p["id"]: p for p in planes}, "ships": ships}
         if data.get("planes_only"):
             rows = []
             for p in data.get("planes") or []:
@@ -2910,10 +2919,29 @@ class Handler(BaseHTTPRequestHandler):
                 cnt = max(0, int(round(num(p.get("count"), 0))))
                 if cnt <= 0:
                     continue
+                # 无母舰时只有舰载机自身节点生效：单架 = 基础 ×（1 + 自身%）
+                _pship = next((x for x in ships if x.get("id") == p.get("id")), None)
+                _own = dict((pb.get("base") or {}).get("bonus") or {})
+                _palloc = p.get("alloc") or {}
+                _pnodes = []
+                for _sy in ((_pship or {}).get("systems") or []):
+                    _pnodes.extend(_sy.get("nodes") or [])
+                for _pn in _pnodes:
+                    _lv = int(num(_palloc.get(_pn.get("id")), 0))
+                    _lv = max(0, min(_lv, int(_pn.get("max_lv") or 0)))
+                    if _lv <= 0:
+                        continue
+                    _pars = [x.strip() for x in str(_pn.get("parent") or "").split(",") if x.strip()]
+                    if _pars and not any(int(num(_palloc.get(x), 0)) > 0 for x in _pars):
+                        continue
+                    for _k, _v in (_pn.get("effect") or {}).items():
+                        if _k in ("plane", "dmg"):
+                            _own[_k] = float(num(_own.get(_k), 0)) + float(_v) * _lv
+                _pmul = 1 + (float(num(_own.get("plane"), 0)) + float(num(_own.get("dmg"), 0))) / 100.0
                 light = bool(data.get("light"))
                 rows.append({"name": pb["name"], "count": cnt,
                              "groups": cnt, "per_group": 1,
-                             "dpm": 0.0 if light else round(pb["base"]["dpm"] * cnt, 1),
+                             "dpm": 0.0 if light else round(pb["base"]["dpm"] * _pmul * cnt, 1),
                              "ehp": 0.0 if light else round(pb["base"]["ehp"] * cnt, 1)})
             total = sum(r["dpm"] for r in rows)
             return self.send_json({"ok": True, "result": {
