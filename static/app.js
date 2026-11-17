@@ -5458,6 +5458,16 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
   }
 
   /* 赛季信息 / 新建赛季共用一个轻量弹窗（复用 .semask .sedlg） */
+  function pickSeason() {
+    var all = (SE.data && SE.data.seasons) || [];
+    if (SE.mode === 'archive' && SE.season) {
+      var hit = null;
+      all.forEach(function (x) { if (String(x.id) === String(SE.season)) hit = x; });
+      return hit;
+    }
+    return (SE.data && SE.data.current) || null;
+  }
+
   function seasonDlg(title, fields, onOk, onDel) {
     var old = document.getElementById('seMd');
     if (old && old.parentNode) old.parentNode.removeChild(old);
@@ -5635,6 +5645,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     if (edit) {
       if (g) h += '<button class="btn sm" data-se="add_alli">＋联合体</button>';
       h += '<button class="btn ghost sm" data-se="season_meta">赛季信息</button>';
+      if (seas) h += '<button class="btn danger sm" data-se="season_del">删除赛季</button>';
       if (SE.mode === 'archive' && SE.season) {
         h += '<button class="btn sm" data-se="season_cur">设为当前赛季</button>';
       }
@@ -5651,7 +5662,11 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 
     if (!g) {
       h += '<div class="empty" style="padding:18px">这个赛季还没有星系。'
-        + (edit ? '点右上「＋新建赛季」会自动建一个。' : '请让有编辑权限的人先建。') + '</div>';
+        + (edit ? '一个赛季最多一个星系，点下面「＋新建星系」补一个。'
+                : '请让有编辑权限的人先建。')
+        + (edit ? '<div style="margin-top:10px">'
+                + '<button class="btn sm" data-se="add_galaxy">＋新建星系</button></div>' : '')
+        + '</div>';
       d.innerHTML = h;
       return;
     }
@@ -5764,13 +5779,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
         return;
       }
       if (act === 'season_meta') {
-        var all = (SE.data && SE.data.seasons) || [];
-        var cs = null;
-        if (SE.mode === 'archive' && SE.season) {
-          all.forEach(function (x) { if (String(x.id) === String(SE.season)) cs = x; });
-        } else {
-          cs = (SE.data && SE.data.current) || null;
-        }
+        var cs = pickSeason();
         if (!cs) { toast('先选一个赛季', 'bad'); return; }
         seasonDlg('赛季信息', [
           { id: 'mlabel', label: '赛季名称', value: cs.label || '', max: 40 },
@@ -5787,6 +5796,20 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
           close();
           done(op({ op: 'delete_season', id: cs.id }));
         });
+        return;
+      }
+      if (act === 'season_del') {
+        var dcs = pickSeason();
+        if (!dcs) { toast('先选一个赛季', 'bad'); return; }
+        if (!confirm('确定删除赛季「' + (dcs.label || '') + '」？\n'
+          + '它下面的星系 / 联合体 / 小队 / 事件记录会一起删掉，删了就找不回来了。')) return;
+        done(op({ op: 'delete_season', id: dcs.id }));
+        return;
+      }
+      if (act === 'add_galaxy') {
+        var gcs = pickSeason();
+        if (!gcs) { toast('先选一个赛季', 'bad'); return; }
+        done(op({ op: 'add', level: 'galaxy', parent: gcs.id, name: '主星系' }));
         return;
       }
       if (act === 'season_cur') {
