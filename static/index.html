@@ -49,7 +49,7 @@
       <label class="row"><span>类型</span><select id="kindFilter"></select></label>
       <label class="row"><span>找船</span>
         <span class="searchwrap">
-          <input type="text" id="shipFilter" placeholder="按船名找，如 太阳 / 护卫" autocomplete="off" spellcheck="false">
+          <input type="text" id="shipFilter" placeholder="按船名找，如 太阳 / 护卫" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
           <button type="button" class="clr hide" id="shipClear" title="清空（Esc）" tabindex="-1">×</button>
         </span>
         <em class="hits" id="shipHit"></em>
@@ -348,8 +348,8 @@
   <div class="card" id="loginCard">
     <h2>登录</h2>
     <div class="toolbar">
-      <input type="text" id="lu" placeholder="用户名" style="width:150px">
-      <input type="password" id="lp" placeholder="密码" style="width:150px">
+      <input type="text" id="lu" name="username" autocomplete="username" placeholder="用户名" style="width:150px">
+      <input type="password" id="lp" name="password" autocomplete="current-password" placeholder="密码" style="width:150px">
       <button class="btn" id="loginBtn">登录</button>
       <span class="muted">账号由管理员在「人员管理」里分配；忘记口令请在登录页点「申请管理员重置」。</span>
     </div>

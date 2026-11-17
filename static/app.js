@@ -38,6 +38,37 @@ function canMod(ship) {
   if (typeof ship.mod_ok === 'boolean') return ship.mod_ok;
   return ship.kind === '超主力舰';
 }
+
+/* 浏览器密码管理器会把登录页保存的账号填进页面第一个文本框（就是「找船」那一格），
+   值正好等于当前账号时按「没填」处理 —— 否则一进页面就被过滤成只剩一艘船。 */
+function isAccountFilled(v, u) {
+  const t = String(v || '').trim().toLowerCase();
+  if (!t || !u) return false;
+  return t === String(u.name || '').trim().toLowerCase()
+      || t === String(u.username || '').trim().toLowerCase();
+}
+
+/* 母舰上所有「带舱位」的模块 id：建船问卷里给系统填了战机舱/护航艇舱，存库时会生成一条 */
+function carrierModsOf(ship) {
+  return (((ship && ship.modules) || []).filter(m => m.mkind)).map(m => m.id);
+}
+
+/* 勾选状态自愈：
+   - 第一次进「舰载机组合」→ 全勾上，免得空着像「选不了」；
+   - 已经在勾了，问卷里又新加了舱位 → 只把新冒出来的自动勾上，手动取消过的保持不动。
+   返回 true 表示勾选变了（调用方要重算）。 */
+function seedCarrierMods(sl, ship) {
+  const all = carrierModsOf(ship);
+  const seen = sl._modSeen || null;
+  sl._modSeen = all.slice();
+  const before = (sl.carrierMods || []).slice();
+  let cur = before.filter(id => all.includes(id));
+  if (seen === null) cur = all.slice();
+  else all.forEach(id => { if (!seen.includes(id) && !cur.includes(id)) cur.push(id); });
+  const changed = cur.length !== before.length || cur.some((id, i) => id !== before[i]);
+  sl.carrierMods = cur;
+  return changed;
+}
 /* 统一舱位来源：系统 bay 表优先；没有就按 stats_norm 的
    bay_plane / bay_boat / bay_drone 兜底（老数据只把舱位写在 stats 文本里）。 */
 const GROUP_RANK = { '小编组': 1, '中编组': 1, '中型编组': 1, '大编组': 2, '大型编组': 2 };
@@ -230,6 +261,7 @@ function fillShipSelect(sl, kind) {
     o.value = ''; sel.appendChild(o);
   }
   const sf = $('#shipFilter');
+  if (sf && isAccountFilled(sf.value, S.user)) { sf.value = ''; S.shipQ = ''; }
   if (sf && sf.value !== (S.shipQ || '')) sf.value = S.shipQ || '';
   sel.onchange = () => {
     sl.ship = sel.value; sl.noCarrier = false; sl.modules = {}; sl.alloc = {};
@@ -1684,14 +1716,15 @@ function renderPlanesInner(host) {
   }
   const bps = planeBP();
 
-  // 首次进这一页：默认把母舰上所有搭载系统都勾上，免得空着像「选不了」
+  // 勾选状态自愈：第一次进来全勾上；问卷里后加的舱位也自动勾上（见 seedCarrierMods）
   SLOTS.forEach(k0 => {
     const sl0 = S.slots[k0];
-    if (!sl0.noCarrier && sl0.ship && !sl0.carrierMods) {
-      const sh0 = shipOf(sl0.ship);
-      const lm0 = sh0 && canMod(sh0) ? (sh0.modules || []).filter(m => m.mkind) : [];
-      sl0.carrierMods = lm0.map(m => m.id);
-      if (lm0.length) { syncLaunchSlots(lm0, k0); setTimeout(() => recalc(k0), 0); }
+    if (sl0.noCarrier || !sl0.ship) return;
+    const sh0 = shipOf(sl0.ship);
+    if (!sh0 || !canMod(sh0)) return;
+    if (seedCarrierMods(sl0, sh0)) {
+      syncLaunchSlots((sh0.modules || []).filter(m => m.mkind), k0);
+      setTimeout(() => recalc(k0), 0);
     }
   });
 
@@ -1830,9 +1863,13 @@ function renderPlanesInner(host) {
 
     if (!holds.length) {
       const tr0 = el('tr');
+      const _lmN = (ship && canMod(ship)) ? (ship.modules || []).filter(m => m.mkind).length : 0;
       const td0 = el('td', 'muted', (sl.noCarrier
         ? '当前是「不带母舰」模式，只看舰载机；切回母舰才会出现舱位。'
-        : '这条母舰还没有可用的搭载舱位 —— 去「数据管理 → 模块」给它加一条带舱位的记录（或勾选上面的搭载系统）。'));
+        : (ship && !canMod(ship)
+            ? '这条船的舱位写在系统里，但「舰载机组合」目前只给超主力舰装舱位（和引擎口径一致）。'
+            : (_lmN ? '这条母舰有 ' + _lmN + ' 个搭载系统，先把上面那个勾上，舱位就出来了。'
+                    : '这条母舰还没有可用的搭载舱位 —— 去「问卷录入」给它填「战机舱 / 护航艇舱」，或「数据管理 → 模块」加一条带舱位的记录。'))));
       td0.colSpan = 4;
       tr0.appendChild(td0); tb.appendChild(tr0);
     }
@@ -3580,7 +3617,9 @@ function wizPayload() {
       note: n._note || (n.effect ? (effName(n.effect) + ' +' + n.val + '/级') : '')};
   });
   const modules = WIZ.systems.map((sy, i) => ({sy, i}))
-    .filter(x => x.sy.slot)
+    /* 只要带舱位就生成模块记录（槽位可以空）：否则「填了舱位、没填槽位」时
+       舱位存库后会凭空消失，舰载机组合里也就勾不到。 */
+    .filter(x => x.sy.slot || (x.sy.bays || []).length)
     .map(({sy, i}, k) => {
       const bays = (sy.bays || []).map(b => ({kind: b.kind, cap: +b.cap || 0, allow_group: b.allow_group || ''}));
       const cap = bays.reduce((a, b) => a + b.cap, 0);
@@ -5645,7 +5684,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.42';
+window.__APP_VER = '2026-11-17.43';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

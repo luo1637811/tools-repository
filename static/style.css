@@ -645,3 +645,13 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 .perhint.bad{color:var(--bad)}
 input[type="date"]{color-scheme:dark}
 input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(.72);opacity:.9;cursor:pointer}
+
+/* 浏览器自动填充会给输入框刷一层亮底，深色主题里像凭空多了一个白框；这里压回面板色 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus{
+  -webkit-text-fill-color:var(--ink);
+  -webkit-box-shadow:0 0 0 1000px var(--panel2) inset;
+  caret-color:var(--ink);
+  transition:background-color 9999s ease-out 0s;
+}
