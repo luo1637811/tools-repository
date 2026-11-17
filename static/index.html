@@ -194,7 +194,7 @@
       <button class="btn sm ghost danger" id="batDel">删除这场</button>
     </div>
     <div class="metagrid">
-      <label>日期<input id="bmDate" type="date"></label>
+      <label>日期<span class="datewrap"><input id="bmDate" type="date"><span class="dph">年 / 月 / 日</span></span></label>
       <label>对手<input id="bmOpponent" placeholder="如：深空巡游者"></label>
       <label>类型<input id="bmMode" list="modeNames" placeholder="舰队战"></label>
       <label>时长(s)<input id="bmDuration" type="number" step="any" min="0"></label>
@@ -468,7 +468,7 @@
   </div>
   <label class="row"><span>所属组织</span><input type="text" name="org" placeholder="范围选「本组织」时，用它来筛人"></label>
   <label class="row"><span>所属联合体</span><input type="text" name="alliance" placeholder="范围选「本联合体」时，用它来筛人"></label>
-  <label class="row"><span>权限到期</span><input type="date" name="perm_expire_at" id="permExpire"></label>
+  <label class="row"><span>权限到期</span><span class="datewrap"><input type="date" name="perm_expire_at" id="permExpire"><span class="dph">点这里选日期（年/月/日）</span></span></label>
   <small id="permExpireHint" class="dim perhint">留空 = 长期有效，不会自动收回。</small>
   <small id="permHintBox" class="dim" style="display:block;margin:2px 0 0 92px"></small>
   <div class="toolbar" style="margin-top:12px">

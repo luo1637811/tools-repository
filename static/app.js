@@ -2493,12 +2493,25 @@ function renderUsers() {
     (canEdit ? '管理员可增删改。' : '当前角色只读。');
 }
 /* 「权限到期」的实时说明：留空 / 还剩几天 / 已到期，都在日期框下面说清 */
+/* 日期框空值时挂 dempty，CSS 把原生的「yyyy/mm/日」压掉、显示中文提示 */
+function markDateEmpty(inp) {
+  if (!inp || String(inp.type || '').toLowerCase() !== 'date') return;
+  const has = !!(inp.value || '').trim();
+  const cls = String(inp.className || '').replace(/\bdempty\b/g, '').replace(/\s+/g, ' ').trim();
+  inp.className = has ? cls : (cls ? cls + ' dempty' : 'dempty');
+}
+function bindDateHints() {
+  document.querySelectorAll('input[type="date"]').forEach(x => markDateEmpty(x));
+}
+document.addEventListener('input', e => markDateEmpty(e.target));
+document.addEventListener('change', e => markDateEmpty(e.target));
 function syncPermExpireHint() {
   const f = $('#userForm');
   const inp = f && f.perm_expire_at;
   const box = $('#permExpireHint');
   if (!inp || !box) return;
   const v = (inp.value || '').trim();
+  markDateEmpty(inp);
   box.className = 'dim perhint';
   if (!v) { box.textContent = '留空 = 长期有效，不会自动收回。'; return; }
   const t = new Date(v + 'T00:00:00');
@@ -4511,6 +4524,7 @@ function renderBattleDetail() {
 
   const setv = (id, v) => { const el = $(id); if (el) el.value = (v === null || v === undefined) ? '' : v; };
   setv('#bmDate', b && b.date);
+  markDateEmpty($('#bmDate'));   /* 程序写值不触发 input 事件，空态要手动刷一次 */
   setv('#bmOpponent', b && b.opponent);
   setv('#bmMode', b && b.mode);
   setv('#bmDuration', b && b.duration);
@@ -5118,6 +5132,7 @@ $('#pwdReqBtn').onclick = loadPwdReqs;
     return;
   }
   whoami();
+  bindDateHints();
   if (S.user && Number(S.user.must_change)) { S.booting = false; openPwdDlg(true); return; }
   renderSlotTabs();
   await loadBlueprints(true);
@@ -5677,7 +5692,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.46';
+window.__APP_VER = '2026-11-17.47';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
