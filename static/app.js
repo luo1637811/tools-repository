@@ -171,7 +171,10 @@ function renderVerTag() {
   const isTop = !!(S.user && S.user.role === 'superadmin');
   const label = p.label || ('v' + (p.version || 0));
   const pending = Math.max(0, (p.version || 0) - (p.num || 0));
-  t.textContent = '数据版本 ' + label + (isTop && pending ? ' · 未发布 ' + pending : '');
+  var fe = String(window.__APP_VER || '').replace(/^\d{4}-\d{2}-\d{2}\./, '.');
+  t.textContent = '数据版本 ' + label + (isTop && pending ? ' · 未发布 ' + pending : '')
+    + (fe ? ' · 前端 ' + fe : '');
+  t.title = '前端 app.js ' + (window.__APP_VER || '');
   t.classList.toggle('pending', !!isTop && pending > 0);
   const bits = [];
   if (p.at) bits.push('发布于 ' + p.at + (p.by ? '，操作人 ' + p.by : ''));
@@ -5867,7 +5870,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.50';
+window.__APP_VER = '2026-11-17.51';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
