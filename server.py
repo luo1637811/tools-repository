@@ -2459,6 +2459,8 @@ class Handler(BaseHTTPRequestHandler):
                 g["n"] = sum(x["n"] for x in g["alliances"])
                 gs.append(g)
             out["galaxies"] = gs
+            out["events"] = [dict(r) for r in c.execute(
+                "SELECT * FROM season_events WHERE season=? ORDER BY at DESC, id DESC", (target,))]
             out["people"] = {"known": True,
                              "total": sum(x.get("n") or 0 for x in gs)}
         return self.send_json(out)
@@ -2492,11 +2494,19 @@ class Handler(BaseHTTPRequestHandler):
             if op == "new_season":
                 n = c.execute("SELECT COUNT(*) FROM seasons").fetchone()[0]
                 label = name or ("第 %d 赛季" % (n + 1))
-                c.execute("UPDATE seasons SET is_current=0, ended_at=COALESCE(ended_at, ?) WHERE is_current=1", (now(),))
-                c.execute("INSERT INTO seasons(label, started_at, is_current) VALUES(?,?,1)", (label, now()))
+                if len(label) > 40:
+                    return self.err(400, "赛季名称太长（最多 40 字）")
+                make_cur = str(data.get("is_current", "1")) not in ("0", "False", "false", "")
+                sd = (data.get("started_at") or "").strip()
+                if sd and not re.match(r"^\d{4}-\d{2}-\d{2}$", sd):
+                    return self.err(400, "开始日期格式要是 2026-11-17")
+                if make_cur:
+                    c.execute("UPDATE seasons SET is_current=0, ended_at=COALESCE(ended_at, ?) WHERE is_current=1", (now(),))
+                c.execute("INSERT INTO seasons(label, started_at, is_current, note) VALUES(?,?,?,?)",
+                          (label, sd or now(), 1 if make_cur else 0, note or None))
                 sid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
-                c.execute("INSERT INTO galaxies(season, name, ord) VALUES(?,?,0)", (sid, note or "主星系"))
-                log("新建赛季", u["username"], label, "id=%d" % sid)
+                c.execute("INSERT INTO galaxies(season, name, ord) VALUES(?,?,0)", (sid, "主星系"))
+                log("新建赛季", u["username"], label, "id=%d%s" % (sid, "" if make_cur else "（未设为当前）"))
                 return self.send_json({"ok": True, "season": sid, "label": label})
             if op == "activate":
                 sid = _int(rid)
@@ -2505,6 +2515,58 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute("UPDATE seasons SET is_current=0 WHERE is_current=1")
                 c.execute("UPDATE seasons SET is_current=1, ended_at=NULL WHERE id=?", (sid,))
                 log("切换当前赛季", u["username"], "id=%d" % sid, "")
+                return self.send_json({"ok": True})
+
+            if op == "season_meta":
+                sid = _int(rid)
+                if not sid:
+                    return self.err(400, "缺少赛季 id")
+                if not c.execute("SELECT 1 FROM seasons WHERE id=?", (sid,)).fetchone():
+                    return self.err(404, "赛季不存在（可能已删）")
+                if not name:
+                    return self.err(400, "赛季名称不能为空")
+                if len(name) > 40:
+                    return self.err(400, "赛季名称太长（最多 40 字）")
+                sd = (data.get("started_at") or "").strip()
+                ed = (data.get("ended_at") or "").strip()
+                for v in (sd, ed):
+                    if v and not re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+                        return self.err(400, "日期格式要是 2026-11-17")
+                if sd and ed and sd > ed:
+                    return self.err(400, "开始日期不能晚于结束日期")
+                c.execute("UPDATE seasons SET label=?, started_at=?, ended_at=?, note=? WHERE id=?",
+                          (name, sd or None, ed or None, note or None, sid))
+                log("修改赛季信息", u["username"], name, "id=%d" % sid)
+                return self.send_json({"ok": True})
+            if op == "ev_add":
+                sid = _int(data.get("season")) or _int(rid)
+                if not sid:
+                    return self.err(400, "缺少赛季 id")
+                if not c.execute("SELECT 1 FROM seasons WHERE id=?", (sid,)).fetchone():
+                    return self.err(404, "赛季不存在（可能已删）")
+                title = (data.get("title") or "").strip()
+                if not title:
+                    return self.err(400, "写一句发生了什么")
+                if len(title) > 60:
+                    return self.err(400, "标题最多 60 字")
+                detail = (data.get("detail") or "").strip()
+                if len(detail) > 200:
+                    return self.err(400, "说明最多 200 字")
+                at = (data.get("at") or "").strip()
+                if at and not re.match(r"^\d{4}-\d{2}-\d{2}$", at):
+                    return self.err(400, "日期格式要是 2026-11-17")
+                c.execute("INSERT INTO season_events(season, at, title, detail, actor, created_at)"
+                          " VALUES(?,?,?,?,?,?)",
+                          (sid, at or now()[:10], title, detail or None, u["username"], now()))
+                log("记赛季事件", u["username"], title, "season=%d" % sid)
+                return self.send_json({"ok": True})
+            if op == "ev_del":
+                eid = _int(data.get("event")) or _int(rid)
+                if not eid:
+                    return self.err(400, "缺少事件 id")
+                if not c.execute("DELETE FROM season_events WHERE id=?", (eid,)).rowcount:
+                    return self.err(404, "这条事件不在了")
+                log("删除赛季事件", u["username"], "event#%d" % eid, "")
                 return self.send_json({"ok": True})
 
             TBL = {"galaxy": ("galaxies", "season"),

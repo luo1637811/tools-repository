@@ -5432,6 +5432,72 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     return hit;
   }
 
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function dayOf(v) {
+    var t = String(v == null ? '' : v).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : '—';
+  }
+
+  function evRow(e, edit) {
+    var h = '<div class="seEvr"><span class="sevT">' + esc(dayOf(e.at || e.created_at)) + '</span>'
+      + '<span class="sevB"><b>' + esc(e.title) + '</b>';
+    if (e.detail) h += '<span class="dim"> · ' + esc(e.detail) + '</span>';
+    if (e.actor) h += '<span class="sevA">' + esc(e.actor) + '</span>';
+    h += '</span>';
+    if (edit) {
+      h += '<button class="mini del" data-ev="' + e.id + '" title="删除这条" aria-label="删除">✕</button>';
+    }
+    return h + '</div>';
+  }
+
+  /* 赛季信息 / 新建赛季共用一个轻量弹窗（复用 .semask .sedlg） */
+  function seasonDlg(title, fields, onOk) {
+    var old = document.getElementById('seMd');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var h = '<div class="semask" id="seMd"><div class="sedlg"><div class="sedgh">'
+      + '<b>' + esc(title) + '</b><span class="grow"></span>'
+      + '<button class="btn ghost sm" data-md="cancel">取消</button></div><div class="seMbody">';
+    fields.forEach(function (f) {
+      h += '<label class="row"><span>' + esc(f.label) + '</span>';
+      if (f.type === 'date') {
+        h += '<span class="datewrap"><input type="date" id="' + f.id + '" value="'
+          + esc(f.value || '') + '"></span>';
+      } else if (f.type === 'check') {
+        h += '<input type="checkbox" id="' + f.id + '"' + (f.value ? ' checked' : '') + '>';
+      } else {
+        h += '<input class="inp" id="' + f.id + '" type="text" value="' + esc(f.value || '') + '"'
+          + (f.ph ? ' placeholder="' + esc(f.ph) + '"' : '')
+          + ' maxlength="' + (f.max || 60) + '">';
+      }
+      h += '</label>';
+    });
+    h += '<div class="sedgf"><span class="grow"></span>'
+      + '<button class="btn" data-md="ok">保存</button></div></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend', h);
+    var box = document.getElementById('seMd');
+    box.addEventListener('click', function (ev) {
+      var tg = ev.target;
+      if (tg === box || (tg.closest && tg.closest('[data-md="cancel"]'))) {
+        if (box.parentNode) box.parentNode.removeChild(box);
+        return;
+      }
+      if (tg.closest && tg.closest('[data-md="ok"]')) {
+        var vals = {};
+        fields.forEach(function (f) {
+          var el = document.getElementById(f.id);
+          vals[f.id] = f.type === 'check' ? !!(el && el.checked) : (el ? el.value : '');
+        });
+        onOk(vals, function () { if (box.parentNode) box.parentNode.removeChild(box); });
+      }
+    });
+    var f0 = document.querySelector('#seMd input');
+    if (f0 && f0.focus) f0.focus();
+  }
+
   function renderList() {
     var box = document.getElementById('seList');
     if (!box) return;
@@ -5554,9 +5620,20 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     h += '<span class="grow"></span>';
     if (edit) {
       if (g) h += '<button class="btn sm" data-se="add_alli">＋联合体</button>';
+      h += '<button class="btn ghost sm" data-se="season_meta">赛季信息</button>';
+      if (SE.mode === 'archive' && SE.season) {
+        h += '<button class="btn sm" data-se="season_cur">设为当前赛季</button>';
+      }
       h += '<button class="btn ghost sm" data-se="new_season">＋新建赛季</button>';
     }
     h += '</div>';
+    if (seas && (seas.started_at || seas.ended_at || seas.note)) {
+      h += '<div class="seMeta">'
+        + '<span class="tag">开始 ' + esc(dayOf(seas.started_at)) + '</span>'
+        + (seas.ended_at ? '<span class="tag">结束 ' + esc(dayOf(seas.ended_at)) + '</span>' : '')
+        + (seas.note ? '<span class="tagf">' + esc(seas.note) + '</span>' : '')
+        + '</div>';
+    }
 
     if (!g) {
       h += '<div class="empty" style="padding:18px">这个赛季还没有星系。'
@@ -5589,7 +5666,25 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       + '<div class="selist"><input id="seFind" class="inp sefind" placeholder="搜 联合体 / 小队 / 队长" value="'
       + esc(SE.kw || '') + '"><div id="seList"></div></div>'
       + '<div class="sedetail" id="seDetail"></div>'
-      + '</div></div>';
+      + '</div>';
+    h += '<div class="seEv"><div class="seEvh"><b>事件历程</b>'
+      + '<span class="dim">记一笔这个赛季发生过什么，按日期倒序</span></div>';
+    if (edit) {
+      h += '<div class="seEvF">'
+        + '<span class="datewrap"><input type="date" id="evAt" value="' + todayStr() + '"></span>'
+        + '<input class="inp" id="evTitle" placeholder="发生了什么（必填）" maxlength="60">'
+        + '<input class="inp" id="evDetail" placeholder="补充说明（可选）" maxlength="200">'
+        + '<button class="btn sm" data-se="ev_add">记一笔</button>'
+        + '</div>';
+    }
+    h += '<div class="seEvL">';
+    var evs = (r.events || []);
+    if (!evs.length) {
+      h += '<div class="empty" style="padding:10px 0">还没有事件记录'
+        + (edit ? '，在上面填一行点「记一笔」。' : '。') + '</div>';
+    }
+    evs.forEach(function (e) { h += evRow(e, edit); });
+    h += '</div></div></div>';
     d.innerHTML = h;
     renderList();
     renderDetail();
@@ -5629,16 +5724,71 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
         paint(SE.data);
         return;
       }
+      var done = function (p) { p.then(load).catch(function (e) { toast((e && e.message) || '操作失败', 'bad'); }); };
+      var evb = ev.target.closest('[data-ev]');
+      if (evb) {
+        if (!confirm('删除这条事件记录？删了就找不回来了。')) return;
+        done(op({ op: 'ev_del', id: evb.getAttribute('data-ev') }));
+        return;
+      }
       var t = ev.target.closest('[data-se]');
       if (!t) return;
       var act = t.getAttribute('data-se');
       var gid = SE.data && SE.data.galaxies && SE.data.galaxies[0] ? SE.data.galaxies[0].id : null;
-      var done = function (p) { p.then(load).catch(function (e) { toast((e && e.message) || '操作失败', 'bad'); }); };
 
       if (act === 'new_season') {
-        var lb = prompt('新赛季名称（留空自动编号）', '');
-        if (lb === null) return;
-        done(op({ op: 'new_season', name: lb }));
+        seasonDlg('新建赛季', [
+          { id: 'nlabel', label: '赛季名称', ph: '留空自动编号：第 N 赛季', max: 40 },
+          { id: 'nstart', label: '开始日期', type: 'date', value: todayStr() },
+          { id: 'nnote', label: '备注', ph: '可选，比如哪个赛区', max: 80 },
+          { id: 'ncur', label: '设为当前赛季', type: 'check', value: true }
+        ], function (v, close) {
+          close();
+          done(op({ op: 'new_season', name: v.nlabel, started_at: v.nstart,
+                    note: v.nnote, is_current: v.ncur ? 1 : 0 }));
+        });
+        return;
+      }
+      if (act === 'season_meta') {
+        var all = (SE.data && SE.data.seasons) || [];
+        var cs = null;
+        if (SE.mode === 'archive' && SE.season) {
+          all.forEach(function (x) { if (String(x.id) === String(SE.season)) cs = x; });
+        } else {
+          cs = (SE.data && SE.data.current) || null;
+        }
+        if (!cs) { toast('先选一个赛季', 'bad'); return; }
+        seasonDlg('赛季信息', [
+          { id: 'mlabel', label: '赛季名称', value: cs.label || '', max: 40 },
+          { id: 'mstart', label: '开始日期', type: 'date', value: dayOf(cs.started_at) === '—' ? '' : dayOf(cs.started_at) },
+          { id: 'mend', label: '结束日期', type: 'date', value: dayOf(cs.ended_at) === '—' ? '' : dayOf(cs.ended_at) },
+          { id: 'mnote', label: '备注', value: cs.note || '', max: 80 }
+        ], function (v, close) {
+          close();
+          done(op({ op: 'season_meta', id: cs.id, name: v.mlabel,
+                    started_at: v.mstart, ended_at: v.mend, note: v.mnote }));
+        });
+        return;
+      }
+      if (act === 'season_cur') {
+        if (!confirm('把「当前赛季」切到这一季？原来那一季会自动记上结束时间。')) return;
+        done(op({ op: 'activate', id: SE.season }));
+        return;
+      }
+      if (act === 'ev_add') {
+        var eAt = document.getElementById('evAt');
+        var eTi = document.getElementById('evTitle');
+        var eDe = document.getElementById('evDetail');
+        var sid2 = SE.data && SE.data.target;
+        if (!sid2) { toast('先选一个赛季', 'bad'); return; }
+        var ttl = eTi ? String(eTi.value || '').trim() : '';
+        if (!ttl) {
+          toast('写一句发生了什么', 'bad');
+          if (eTi) eTi.focus();
+          return;
+        }
+        done(op({ op: 'ev_add', season: sid2, at: eAt ? eAt.value : '', title: ttl,
+                  detail: eDe ? String(eDe.value || '').trim() : '' }));
         return;
       }
       if (act === 'add_alli') {
@@ -5701,7 +5851,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.48';
+window.__APP_VER = '2026-11-17.49';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

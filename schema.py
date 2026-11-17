@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS alliances(
 CREATE TABLE IF NOT EXISTS squads(
   id INTEGER PRIMARY KEY AUTOINCREMENT, alliance INTEGER NOT NULL,
   name TEXT NOT NULL, leader TEXT, note TEXT, ord INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS season_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, season INTEGER NOT NULL,
+  at TEXT, title TEXT NOT NULL, detail TEXT, actor TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS ix_season_events ON season_events(season, id);
 CREATE TABLE IF NOT EXISTS recovery_codes(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
   code_hash TEXT NOT NULL, batch TEXT, used_at TEXT, created_at TEXT);
