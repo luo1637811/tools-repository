@@ -1079,10 +1079,11 @@ const CMP_ROWS = [
    要点：只对「基础值」与「加成」做计算，不引入周期/冷却等换算；
    伤害节点挂在哪个系统上，就只抬哪个系统的三行（装甲系统的伤害节点不会串到武器上）。 */
 /* 暴击期望倍率 = 1 + [Σ(概率×暴伤) + 全局暴伤×概率之和]/10000（与 engine._crit_mul 同口径）
-   每条效果用自己的两个键配对：「30% 概率额外造成 50% 暴击伤害」= 30 与 50 成对相乘；
-   只写暴伤、没写概率的节点是全局暴伤，加在所有概率上；只写概率的节点与单边暴伤节点配对。
-   旧的 (Σ概率)×(Σ暴伤) 在两条各自带暴伤的概率效果并存时会高估：
-   0.2×0.3 + 0.1×0.8 = 0.14，旧算法 (0.2+0.1)×(0.3+0.8) = 0.33。不做多系统连乘。 */
+    录入层只支持两种格式，界面上也按这两种引导：
+    ① 成对：同一节点同时写「暴击率 + 暴击伤害」= 「30% 概率额外造成 50% 暴击伤害」→ 30 与 50 相乘；
+    ② 单独暴伤：节点只写「暴击伤害」= 全局暴伤，加在同一系统的所有概率上（没有概率时不生效）。
+    旧公式 (Σ概率)×(Σ暴伤) 在两条各自带暴伤的概率效果并存时会高估：0.2×0.3 + 0.1×0.8 = 0.14，
+    旧算法 (0.2+0.1)×(0.3+0.8) = 0.33。不做多系统连乘。 */
 function critMulOfPairs(pairs) {
   let both = 0, pAll = 0, cdOrphan = 0;
   (pairs || []).forEach(p => {
@@ -2722,12 +2723,29 @@ function wIn(parent, label, obj, key, type, opts, unit) {
   }
   l.appendChild(inp); parent.appendChild(l); return inp;
 }
+/* 暴击只支持两种录入格式：成对（同节点两种效果，概率 × 额外暴伤）与单独暴伤（全局暴伤）。
+   这里给出「当前选中的暴击键」的配对键，非暴击键返回空串。 */
+function critPairKey(k) { return k === 'crit_rate' ? 'crit' : (k === 'crit' ? 'crit_rate' : ''); }
+/* 保存节点时合并效果键：保留其它键、覆盖这次编辑的那一项、按需收/放暴击配对键 */
+function mergeNodeEff(prevEff, effect, pair) {
+  const out = {};
+  Object.keys(prevEff || {}).forEach(k => { if (k !== effect) out[k] = prevEff[k]; });
+  const pk = critPairKey(effect);
+  if (pk) {
+    const pv = +pair || 0;
+    if (pv > 0) out[pk] = pv; else delete out[pk];
+  } else {
+    /* 改成非暴击效果时，把遗留的暴击键一并清掉，免得旧值还在偷偷参与计算 */
+    delete out.crit_rate; delete out.crit;
+  }
+  return out;
+}
 /* —— 节点编辑的三个入口（横向结构里就地展开）—— */
 function wizStartNewNode(si, parentCode) {
   WIZ.editIdx = -1;
   WIZ.nodeDraft = {sysIdx: si, parent: parentCode || ''};
   Object.assign(WIZ.dNode, {sysIdx: String(si), label: '', parent: parentCode || '', parent2: '',
-    effect: WIZ.dNode.effect || 'dmg', cost: 2, costs: '', max_lv: 5, val: 3});
+    effect: WIZ.dNode.effect || 'dmg', cost: 2, costs: '', max_lv: 5, val: 3, pair: 0});
   wizRender();
 }
 function wizStartEditNode(idx) {
@@ -2736,8 +2754,10 @@ function wizStartEditNode(idx) {
   WIZ.editIdx = idx;
   WIZ.nodeDraft = null;
   const pl = parList(n.parent);
+  const pk = critPairKey(n.effect);
   Object.assign(WIZ.dNode, {sysIdx: String(n.sysIdx), label: n.label, max_lv: n.max_lv,
     cost: n.cost, costs: n.costs || '', effect: n.effect, val: n.val,
+    pair: pk ? (+((n._eff || {})[pk]) || 0) : 0,
     parent: pl[0] || '', parent2: pl[1] || ''});
   wizRender();
 }
@@ -2749,6 +2769,10 @@ function wizSaveNode(si, x, isDraft) {
     costs: (WIZ.dNode.costs || '').trim(), effect: WIZ.dNode.effect,
     val: +WIZ.dNode.val || 0,
     parent: [WIZ.dNode.parent, WIZ.dNode.parent2].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(',')};
+  /* 节点可以带多个效果键：保留其它键，只覆盖这次编辑的那一项；暴击再单独收/放配对键 */
+  const _prev = isDraft ? null : WIZ.nodes[WIZ.editIdx];
+  base._eff = mergeNodeEff(_prev && _prev._eff, WIZ.dNode.effect, WIZ.dNode.pair);
+  base._effKey = WIZ.dNode.effect;
   if (isDraft) WIZ.nodes.push(base);
   /* 改已有节点时保留 _id/_note/_eff，否则会被当成新节点、老行还留在库里 */
   else WIZ.nodes[WIZ.editIdx] = Object.assign({}, WIZ.nodes[WIZ.editIdx], base);
@@ -3081,7 +3105,10 @@ function wizRender() {
           isDraft ? '新节点' : (x.code === '?' ? '未挂到树上' : '第 ' + x.code + ' 位')));
         if (!editing) {
           card.appendChild(el('div', 'wiz-title', n.label || '（未命名）'));
-          card.appendChild(el('div', 'wiz-meta', effName(n.effect) + ' +' + n.val + '/级'));
+          const _pkN = critPairKey(n.effect);
+          const _pvN = _pkN ? (+((n._eff || {})[_pkN]) || 0) : 0;
+          card.appendChild(el('div', 'wiz-meta', effName(n.effect) + ' +' + n.val + '/级'
+            + (_pvN > 0 ? '（同节点 ' + effName(_pkN) + ' +' + _pvN + '/级）' : '')));
           card.appendChild(el('div', 'wiz-meta',
             '每级 ' + n.cost + (n.costs ? '（逐级 ' + n.costs + '）' : '') + ' · 上限 ' + n.max_lv + ' 级'));
           const acts = el('div', 'wiz-acts');
@@ -3152,7 +3179,11 @@ function wizRender() {
               toast('已改名：' + v, 'good');
               wizRender();
             } catch (err) { toast('改名失败：' + err.message, 'bad'); effSel.value = curE; }
-          } else if (effSel.value) { WIZ.dNode.effect = effSel.value; }
+          } else if (effSel.value) {
+            const wasCrit = !!critPairKey(WIZ.dNode.effect), willCrit = !!critPairKey(effSel.value);
+            WIZ.dNode.effect = effSel.value;
+            if (wasCrit !== willCrit) wizRender();   /* 进/出暴击时补出或收掉「配对」输入框 */
+          }
         };
         if (S.user && S.user.role === 'superadmin') {
           const bNew = el('button', 'btn sm ghost', '＋ 新建效果'); bNew.type = 'button';
@@ -3190,6 +3221,14 @@ function wizRender() {
             } catch (e) { toast('删除失败：' + e.message, 'bad'); }
           };
           f.appendChild(bDel);
+        }
+        /* 暴击：一个节点写「概率 + 额外暴伤」就成对相乘；只填暴伤 = 全局暴伤，加到本系统所有概率上 */
+        if (critPairKey(WIZ.dNode.effect)) {
+          const _pkIn = critPairKey(WIZ.dNode.effect);
+          wIn(f, '同节点「' + effName(_pkIn) + '」（可留空，% / 每级）', WIZ.dNode, 'pair', 'number');
+          f.appendChild(el('div', 'muted',
+            '暴击只有两种写法：① 同一节点同时填「暴击率」和「暴击伤害」= 概率 × 额外暴伤（如 30 + 50 = +15%）；'
+            + '② 只填「暴击伤害」= 全局暴伤，叠加到同一系统里所有暴击概率上；没有概率时单填暴伤不生效。'));
         }
         wIn(f, '每级数值', WIZ.dNode, 'val', 'number');
         const acts = el('div', 'wiz-acts');
@@ -5538,7 +5577,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.38';
+window.__APP_VER = '2026-11-17.39';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
