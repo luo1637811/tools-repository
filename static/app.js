@@ -102,6 +102,14 @@ function sysBays(sy) {
 }
 
 /* 舱位卡上怎么称呼「编组限制」：只有战机分大 / 中编组，护航艇、无人机没这个说法。 */
+/* 系统的舱位：新数据写在 systems.bays 上，旧数据只落在对应 modules.bays 里，两边都认 */
+function wizBaysOf(sy, mod) {
+  const pick = b => ({kind: b.kind || '', cap: +b.cap || 0, allow_group: b.allow_group || ''});
+  const own = (sy && sy.bays) || [];
+  if (own.length) return own.map(pick);
+  const mb = (mod && mod.bays) || [];
+  return Array.isArray(mb) ? mb.map(pick) : [];
+}
 function bayGroupText(kind, allow) {
   if (String(kind || '') !== '战机') return '不分编组';
   const g = String(allow || '').split(/[,，/]/).map(x => x.trim()).filter(Boolean)[0] || '';
@@ -3562,6 +3570,8 @@ function wizPayload() {
     if (s.module) stats['模块'] = s.module; else delete stats['模块'];
     return {id: sids[i], ship: sid, slot: s.slot, name: s.name,
       tech_cap: s.tech_cap, stats: stats,
+      /* 舱位也存一份在系统上：只写 modules 时，重新打开问卷的系统表单读不到舱位 */
+      bays: JSON.stringify((s.bays || []).map(b => ({kind: b.kind || '', cap: +b.cap || 0, allow_group: b.allow_group || ''}))),
       stats_norm: Object.keys(num).length ? JSON.stringify(num) : '',
       is_weapon: s.is_weapon ? 1 : 0,
       note: s._note || '', ord: s._ord || (i + 1), no_nodes: s._no_nodes || 0};
@@ -3667,7 +3677,7 @@ function wizEditOpen(sh) {
       raw: raw,
       is_weapon: !!(sy.is_weapon || (raw.dmg_atk !== undefined || raw.dmg_air !== undefined || raw.dmg_siege !== undefined)),
       module: (sy.stats && sy.stats['模块']) || '',
-      bays: (sy.bays || []).map(b => ({kind: b.kind, cap: +b.cap || 0, allow_group: b.allow_group || ''}))});
+      bays: wizBaysOf(sy, mod)});
     WIZ.orig.systems.push(sy.id);
     if (mod) WIZ.orig.modules.push(mod.id);
     const push = n => {
@@ -5667,7 +5677,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.45';
+window.__APP_VER = '2026-11-17.46';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
