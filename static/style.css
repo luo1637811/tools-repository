@@ -706,3 +706,23 @@ input:-webkit-autofill:focus{
 .sedgf .btn.danger{margin-right:auto}
 .btn.danger{background:#7f2a2a;border:1px solid #a33;color:#ffd9d9}
 .btn.danger:hover{background:#93302f;border-color:#c44}
+
+/* ---- 变更轨迹：框放大、内容区撑开、避免横向滚动条（2026-11-17.53） ---- */
+#histDlg{width:min(1080px,96vw);max-width:96vw;padding:0;box-sizing:border-box}
+#histDlg .dlg{width:100%;box-sizing:border-box}
+#histDlg .histbody{flex:1 1 auto;min-height:320px;max-height:64vh;overflow:auto}
+#histDlg #histChips{flex-wrap:wrap;gap:6px;margin:10px 0 2px}
+#histDlg .histitem{grid-template-columns:108px minmax(0,1fr) 18px minmax(0,1fr)}
+#histDlg .histitem>*{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#histDlg .histfold{margin-left:108px}
+#histDlg .histfoot{position:static}
+@media (max-width:720px){
+  #histDlg .histbody{min-height:240px;max-height:58vh}
+  #histDlg .histitem{grid-template-columns:82px minmax(0,1fr) 14px minmax(0,1fr)}
+}
+
+/* 弹窗本体与内层同宽：<dialog> 默认 560px，内层写死的宽度会被裁掉并出横向滚动条 */
+#entDlg{width:min(760px,92vw);max-width:96vw;box-sizing:border-box}
+#entDlg .dlg{width:100%;box-sizing:border-box}
+#verDlg{width:min(460px,92vw);max-width:96vw;padding:0;box-sizing:border-box}
+#verDlg .dlg{width:100%;box-sizing:border-box}
