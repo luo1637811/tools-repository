@@ -80,7 +80,8 @@ function normGroup(g) {
   return s;
 }
 // 舱位写了多个编组时按「任选其一」，取最宽松的那个
-function groupOk(pg, allow) {
+function groupOk(pg, allow, kind) {
+  if (kind && String(kind) !== '战机') return true;   /* 护航艇 / 无人机没有大、中编组之分 */
   const a = String(allow || '').split(/[,，/]/).map(normGroup).filter(Boolean);
   if (!a.length) return true;
   const p = normGroup(pg);
@@ -98,6 +99,13 @@ function sysBays(sy) {
   if (+n.bay_boat) out.push({kind: '护航艇', cap: +n.bay_boat});
   if (+n.bay_drone) out.push({kind: '无人机', cap: +n.bay_drone});
   return out;
+}
+
+/* 舱位卡上怎么称呼「编组限制」：只有战机分大 / 中编组，护航艇、无人机没这个说法。 */
+function bayGroupText(kind, allow) {
+  if (String(kind || '') !== '战机') return '不分编组';
+  const g = String(allow || '').split(/[,，/]/).map(x => x.trim()).filter(Boolean)[0] || '';
+  return g || '不限';
 }
 function mk() { return {ship: null, noCarrier: false, modules: {}, alloc: {}, planes: [],
   palloc: {}, psys: {}, carrierMods: undefined}; }
@@ -1879,7 +1887,7 @@ function renderPlanesInner(host) {
       const tr = el('tr');
       tr.appendChild(el('td', '', h.mod + ' · ' + h.kind + ' ' + h.cap + ' 舱'));
 
-      const cand = bps.filter(p => (!h.kind || !p.kind || p.kind === h.kind) && groupOk(p.pgroup, h.allow));
+      const cand = bps.filter(p => (!h.kind || !p.kind || p.kind === h.kind) && groupOk(p.pgroup, h.allow, h.kind));
       const cur = (sl.planes || []).find(x => x.m === h.mid && (x.bay || 0) === h.bi);
 
       const ps = el('select');
@@ -3021,16 +3029,23 @@ function wizRender() {
         : '这个系统提供舱位吗？舱位由系统提供，与舰种无关 —— 主力舰、护卫舰的系统也可以带机库。'));
     wIn(f, '战机舱能装几架（0=没有）', WIZ.dSys, 'bayF', 'number');
     wIn(f, '护航艇舱能装几架（0=没有）', WIZ.dSys, 'bayC', 'number');
-    wIn(f, '编组限制', WIZ.dSys, 'bayG', 'select',
+    wIn(f, '编组限制（只对战机舱生效）', WIZ.dSys, 'bayG', 'select',
       [['', '不限'], ['中编组', '仅中编组'], ['大编组', '仅大编组']]);
+    f.appendChild(el('div', 'muted',
+      '护航艇没有大 / 中编组之分：这一项只写进战机舱，战机舱填 0 时它不生效。'));
     wIn(f, '该系统节点上限（能点几个节点）', WIZ.dSys, 'tech_cap', 'number');
     const add = el('button', 'btn', WIZ.editSys >= 0 ? '保存修改' : '加进列表'); add.type = 'button';
     add.onclick = () => {
       if (!WIZ.dSys.name.trim()) return toast('系统名不能空', 'bad');
       const bf = +WIZ.dSys.bayF || 0, bc = +WIZ.dSys.bayC || 0, bg = WIZ.dSys.bayG || '';
+      /* 只重建「战机 / 护航艇」两舱，其它种类（老数据里的无人机舱等）原样保留，
+         否则在这里点一次保存就把它们抹掉了。 */
+      const _keepBays = ((WIZ.editSys >= 0 ? (WIZ.systems[WIZ.editSys].bays || []) : []))
+        .filter(b => b && b.kind !== '战机' && b.kind !== '护航艇');
       const bays = [];
       if (bf) bays.push({kind: '战机', cap: bf, allow_group: bg});
-        if (bc) bays.push({kind: '护航艇', cap: bc, allow_group: ''});
+      if (bc) bays.push({kind: '护航艇', cap: bc, allow_group: ''});
+      _keepBays.forEach(b => bays.push(b));
       const rec = {name: WIZ.dSys.name.trim(), slot: WIZ.dSys.slot.trim(),
         tech_cap: +WIZ.dSys.tech_cap || 0, bays: bays};
       if (WIZ.editSys >= 0) {
@@ -3431,56 +3446,23 @@ function wizRender() {
         const card = el('div', 'wiz-node sel static');
         const f = el('div', 'wiz-form');
 
-        const slotLine = el('label', 'row');
-        slotLine.appendChild(el('span', '', '槽位'));
-        const slotInp = el('input');
-        slotInp.type = 'text';
-        slotInp.placeholder = 'M1 / A1 / B4';
-        slotInp.value = sy.slot || '';
-        slotInp.oninput = () => { sy.slot = slotInp.value.trim().toUpperCase(); refresh(); };
-        slotLine.appendChild(slotInp);
-        f.appendChild(slotLine);
-
-        const capLine = (kind) => {
+        const roLine = (lab, val) => {
           const line = el('label', 'row');
-          line.appendChild(el('span', '', kind + '舱'));
-          const inp = el('input');
-          inp.type = 'number'; inp.min = 0; inp.step = 1; inp.placeholder = '0';
-          const cur = ((sy.bays || []).filter(b => b.kind === kind).map(b => b.cap)[0]) || '';
-          inp.value = cur || '';
-          inp.oninput = () => {
-              const g = (kind === '战机') ? (((sy.bays || [])[0] || {}).allow_group || '') : '';
-            const n = +inp.value || 0;
-            sy.bays = (sy.bays || []).filter(b => b.kind !== kind);
-            if (n) sy.bays.push({kind: kind, cap: n, allow_group: g});
-            refresh();
-          };
-          line.appendChild(inp);
+          line.appendChild(el('span', '', lab));
+          line.appendChild(el('span', 'ro-val', val));
           return line;
         };
-        f.appendChild(capLine('战机'));
-        f.appendChild(capLine('护航艇'));
-
-        const gLine = el('label', 'row');
-        gLine.appendChild(el('span', '', '编组限制'));
-        const sel = el('select');
-        [['', '不限'], ['中编组', '仅中编组'], ['大编组', '仅大编组']]
-          .forEach(([v, t]) => { const o = el('option', '', t); o.value = v; sel.appendChild(o); });
-        sel.value = ((sy.bays || [])[0] || {}).allow_group || '';
-        sel.onchange = () => { (sy.bays || []).forEach(b => b.allow_group = sel.value); };
-        gLine.appendChild(sel);
-        f.appendChild(gLine);
-
+        const _bays = (sy.bays || []).filter(b => (+b.cap || 0) > 0);
+        f.appendChild(roLine('槽位', sy.slot ? (sy.slot + '（第 2 步填）') : '（未填）'));
+        _bays.forEach(b => f.appendChild(roLine(b.kind + '舱',
+          (+b.cap) + ' 架 · ' + bayGroupText(b.kind, b.allow_group))));
+        if (_bays.length) f.appendChild(el('div', 'muted',
+          '这里只做确认，不能改 —— 要改舱位：点「上一步」回第 2 步，选中该系统点「改」。'));
         card.appendChild(f);
-        const sum = el('div', 'wiz-meta', '');
+        const sum = el('div', 'wiz-meta', _bays.length
+          ? '合计 ' + _bays.map(b => b.kind + ' ' + b.cap).join(' + ')
+          : '这个槽位还没有舱位');
         card.appendChild(sum);
-        const refresh = () => {
-          sum.textContent = (sy.bays || []).length
-            ? '合计 ' + sy.bays.map(b => b.kind + ' ' + b.cap).join(' + ')
-            : '这个槽位还没有舱位';
-          sumLine.textContent = summary();
-        };
-        refresh();
         box.appendChild(card);
         lane.appendChild(box);
       });
@@ -5685,7 +5667,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.44';
+window.__APP_VER = '2026-11-17.45';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

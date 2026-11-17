@@ -663,3 +663,6 @@ input:-webkit-autofill:focus{
 #planeSlots table th:nth-child(3),#planeSlots table td:nth-child(3){width:14%;text-align:center}
 #planeSlots table th:nth-child(4),#planeSlots table td:nth-child(4){width:8%;text-align:right;white-space:nowrap}
 #planeSlots table select{width:100%}
+
+/* 问卷第 5 步只读确认行：值是纯文本，不是输入框 */
+.wiz-form .row>span.ro-val{flex:1 1 auto;min-width:0;color:var(--ink);font-size:12.5px;line-height:1.45}

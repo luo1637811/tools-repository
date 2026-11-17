@@ -276,7 +276,9 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
             bkind = (bay.get("kind") or "").replace("搭载系统", "")
             if bkind == "无人机":
                 continue          # 无人机由系统自带，不占舱位、也不接受手动装载
-            allow = [norm_group(g) for g in str(bay.get("allow_group") or "").split(",") if g.strip()]
+            # 编组只对战机舱有意义：护航艇、无人机没有大 / 中编组之分（老数据可能残留 allow_group）
+            allow = [] if bkind in ("护航艇", "无人机") else \
+                [norm_group(g) for g in str(bay.get("allow_group") or "").split(",") if g.strip()]
             cap = int(num(bay.get("cap"), 0))
             used_b = 0
             for p_i, p in enumerate(plane_sel or []):
