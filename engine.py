@@ -173,6 +173,12 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     per_sys_bay = {}
     bay_pairs = {}
     for sy in ship["systems"]:
+        # 系统自带暴击（建船向导填的「自带暴击率 / 自带暴击伤害」）：计入整舰暴击展示值
+        _snorm = sy.get("norm") or {}
+        for _ck in ("crit_rate", "crit"):
+            _cv = num(_snorm.get(_ck), 0)
+            if _cv:
+                agg[_ck] = agg.get(_ck, 0) + _cv
         _has_bay = sys_has_bay(sy)
         used, cnt, active = 0, 0, 0
         for nd in sy["nodes"]:

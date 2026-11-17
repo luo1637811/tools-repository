@@ -721,7 +721,14 @@ function renderBaseAttrs() {
   const EXTRA_USED = { hull:1, armor:1, shield:1, eva:1, speed:1, warp:1, spd:1, move:1,
     repair:1, dmg_atk:1, dmg_air:1, dmg_siege:1, dmg:1 };
   const extraOf = (x) => Object.keys(x.a || {}).filter(k => !EXTRA_USED[k] && Number(x.a[k]));
-  if (rows.some(x => extraOf(x).length)) COLS.push({ k: '__extra', t: '其他加成', w: 190 });
+  /* 系统自带的暴击（向导弹里填的「自带暴击率 / 自带暴击伤害」）不挂在节点上，
+     这里单独取出来，保证填了就能在表里看见，没生效也说清原因 */
+  const ownCritOf = (x) => {
+    const r = Number(x.n.crit_rate) || 0, d = Number(x.n.crit) || 0;
+    if (!(r > 0 || d > 0)) return null;
+    return { r: r, d: d, mul: (r > 0 && d > 0) ? 1 + (r / 100) * (d / 100) : 1 };
+  };
+  if (rows.some(x => extraOf(x).length || ownCritOf(x))) COLS.push({ k: '__extra', t: '其他加成', w: 190 });
 
   const head = $('#baHead');
   if (head) {
@@ -744,8 +751,16 @@ function renderBaseAttrs() {
     }
     if (c.k === '__extra') {
       const ks = extraOf(x);
-      if (!ks.length) return '<td class="dim">—</td>';
-      return '<td class="bcell">' + ks.map(k => effLabel(k) + ' +' + fmtNum(x.a[k]) + (effUnit(k) || '%')).join(' · ') + '</td>';
+      const oc = ownCritOf(x);
+      const bits = ks.map(k => effLabel(k) + ' +' + fmtNum(x.a[k]) + (effUnit(k) || '%'));
+      if (oc) {
+        /* 只给一个「暴击系数」：具体两格数值在录入页已经写清，表里不复述 */
+        if (!(oc.r > 0 && oc.d > 0)) bits.push('暴击系数（只填了一格，不生效）');
+        else if (!x.w) bits.push('暴击系数（×' + fmtNum(oc.mul) + '）· 没填对舰 / 对空 / 攻城，暂不生效');
+        else bits.push('暴击系数（×' + fmtNum(oc.mul) + '）');
+      }
+      if (!bits.length) return '<td class="dim">—</td>';
+      return '<td class="bcell">' + bits.join(' · ') + '</td>';
     }
     if (c.k === 'speed') {
       const cr = n.cruise === undefined ? undefined : effVal('speed', n.cruise, x.a);
@@ -1143,9 +1158,13 @@ function sysDmgSum(ship, alloc) {
       pSiege += (Number(e.dmg_siege_pct) || 0) * lv;
     });
     const m = 1 + pct / 100;
-    out.dmg_atk += (Number(n.dmg_atk) || 0) * m * (1 + pAtk / 100);
-    out.dmg_air += (Number(n.dmg_air) || 0) * m * (1 + pAir / 100);
-    out.dmg_siege += (Number(n.dmg_siege) || 0) * m * (1 + pSiege / 100);
+    /* 系统自带暴击（向导里填的「自带暴击率 / 自带暴击伤害」）：只抬本系统这三行，
+       与加点得到的暴击分开相乘，同一条效果不会被算两次 */
+    const crOwn = Number(n.crit_rate) || 0, cdOwn = Number(n.crit) || 0;
+    const cmOwn = (crOwn > 0 && cdOwn > 0) ? 1 + (crOwn / 100) * (cdOwn / 100) : 1;
+    out.dmg_atk += (Number(n.dmg_atk) || 0) * m * (1 + pAtk / 100) * cmOwn;
+    out.dmg_air += (Number(n.dmg_air) || 0) * m * (1 + pAir / 100) * cmOwn;
+    out.dmg_siege += (Number(n.dmg_siege) || 0) * m * (1 + pSiege / 100) * cmOwn;
   });
   const cm = critMulOf(ship, alloc);
   if (cm > 1) {
@@ -2419,6 +2438,32 @@ function renderUsers() {
   $('#userNote').textContent = '共 ' + (S.users || []).length + ' 条；' +
     (canEdit ? '管理员可增删改。' : '当前角色只读。');
 }
+/* 「权限到期」的实时说明：留空 / 还剩几天 / 已到期，都在日期框下面说清 */
+function syncPermExpireHint() {
+  const f = $('#userForm');
+  const inp = f && f.perm_expire_at;
+  const box = $('#permExpireHint');
+  if (!inp || !box) return;
+  const v = (inp.value || '').trim();
+  box.className = 'dim perhint';
+  if (!v) { box.textContent = '留空 = 长期有效，不会自动收回。'; return; }
+  const t = new Date(v + 'T00:00:00');
+  if (!isFinite(t.getTime())) { box.textContent = '日期格式不对，应为 2026-11-19 这种写法。'; return; }
+  /* 按日历天算：今天 = 0，明天 = 1，别被「几点」影响 */
+  const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  const days = Math.round((t.getTime() - t0.getTime()) / 86400000);
+  const ds = v.replace(/-/g, '/');
+  if (days < 0) {
+    box.className = 'perhint bad';
+    box.textContent = ds + ' 已到期：对方登录后只能改密码，看不到任何模块。';
+  } else if (days === 0) {
+    box.className = 'perhint warn';
+    box.textContent = ds + ' 今天到期：今天过后权限收回。';
+  } else {
+    if (days <= 7) box.className = 'perhint warn';
+    box.textContent = ds + ' 到期，还剩 ' + days + ' 天' + (days <= 7 ? '（快到期了）' : '') + '。';
+  }
+}
 function openUserDlg(u) {
   S.editing = u || null;
   const f = $('#userForm');
@@ -2438,7 +2483,12 @@ function openUserDlg(u) {
   if (f.scope) f.scope.value = (u && u.scope) || 'all';
   if (f.org) f.org.value = (u && u.org) || '';
   if (f.alliance) f.alliance.value = (u && u.alliance) || '';
-  if (f.perm_expire_at) f.perm_expire_at.value = (u && u.perm_expire_at) || '';
+  if (f.perm_expire_at) {
+    f.perm_expire_at.value = (u && u.perm_expire_at) || '';
+    f.perm_expire_at.onchange = syncPermExpireHint;
+    f.perm_expire_at.oninput = syncPermExpireHint;
+  }
+  syncPermExpireHint();
   syncPermBox(u);
   bindScopeBox();
   f.role.onchange = () => {
@@ -2997,7 +3047,8 @@ function wizRender() {
       ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'], ['dmg_siege', '攻城', '/分'],
       ['dmg', '单发伤害', '点'], ['ammo_atk', '弹药数×攻击次数', ''],
       ['dur', '持续时间', 's'], ['cd', '冷却时间', 's'], ['lock', '锁定时间', 's'],
-      ['warn', '预警', '%'], ['cyc', '工作次数', '次'], ['repair', '维修量', '点']
+      ['warn', '预警', '%'], ['cyc', '工作次数', '次'], ['repair', '维修量', '点'],
+      ['crit_rate', '自带暴击率', '%'], ['crit', '自带暴击伤害', '%']
     ];
 
     WIZ.systems.forEach((sy, si) => {
@@ -3025,6 +3076,22 @@ function wizRender() {
           wIn(grid, label, sy.raw, k, 'number', null, unit);
         });
         card.appendChild(grid);
+        if (sy.is_weapon) {
+          /* 自带暴击只抬本系统的对舰/对空/攻城：三行空着就白填，输入时实时说一声 */
+          const hint = el('div', 'muted');
+          const upd = () => {
+            const rw = sy.raw || {};
+            const r = Number(rw.crit_rate) || 0, d = Number(rw.crit) || 0;
+            const hasDmg = rw.dmg_atk !== undefined || rw.dmg_air !== undefined || rw.dmg_siege !== undefined;
+            if (!(r > 0 || d > 0)) { hint.textContent = ''; return; }
+            if (!(r > 0 && d > 0)) { hint.textContent = '自带暴击只填了一格：暴击率和暴击伤害要都填才生效。'; return; }
+            if (!hasDmg) { hint.textContent = '自带暴击已填（×' + (1 + r * d / 10000).toFixed(2) + '），但对舰 / 对空 / 攻城都是空的：这三行没有数字可抬，先填伤害才看得到效果。'; return; }
+            hint.textContent = '自带暴击生效：本系统对舰 / 对空 / 攻城各 ×' + (1 + r * d / 10000).toFixed(2) + '。';
+          };
+          grid.addEventListener('input', upd);
+          upd();
+          card.appendChild(hint);
+        }
       }
 
       // 模块名（可选，只对「一系统一模块」的写法有意义）
@@ -3035,7 +3102,8 @@ function wizRender() {
     const tail = el('div', 'muted');
     tail.innerHTML = '输入框按系统类型自动裁剪：只有「装甲系统」和「动力系统」需要填船体数值，其余系统只填模块名。'
       + '<b>结构值</b>最终会按「基础值 ×（1 + 加点收益%）」算；'
-      + '武器系统的「对舰 / 对空 / 攻城」是每分钟的预估输出；单发 / 弹药数×攻击次数 / 持续 / 冷却 / 工作次数只做记录与展示，不参与任何计算。';
+      + '武器系统的「对舰 / 对空 / 攻城」是每分钟的预估输出；单发 / 弹药数×攻击次数 / 持续 / 冷却 / 工作次数只做记录与展示，不参与任何计算。'
+      + '最后两格「自带暴击率 / 自带暴击伤害」填该武器系统自带的暴击：三行各乘「1 + 暴击率% × 暴击伤害%」（如 30 与 50 → ×1.15），只作用于本系统；两格只填一格不生效。';
     b.appendChild(tail);
   } else if (st === 3) {
     if (!WIZ.systems.length) {
@@ -5577,7 +5645,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.39';
+window.__APP_VER = '2026-11-17.42';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

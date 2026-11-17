@@ -468,8 +468,9 @@
   </div>
   <label class="row"><span>所属组织</span><input type="text" name="org" placeholder="范围选「本组织」时，用它来筛人"></label>
   <label class="row"><span>所属联合体</span><input type="text" name="alliance" placeholder="范围选「本联合体」时，用它来筛人"></label>
-  <label class="row"><span>权限到期</span><input type="date" name="perm_expire_at"></label>
-  <small id="permHintBox" class="dim" style="display:block;margin:2px 0 0 96px"></small>
+  <label class="row"><span>权限到期</span><input type="date" name="perm_expire_at" id="permExpire"></label>
+  <small id="permExpireHint" class="dim perhint">留空 = 长期有效，不会自动收回。</small>
+  <small id="permHintBox" class="dim" style="display:block;margin:2px 0 0 92px"></small>
   <div class="toolbar" style="margin-top:12px">
     <button class="btn ghost" value="cancel" formnovalidate>取消</button>
     <button class="btn right" value="ok">保存</button>
