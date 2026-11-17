@@ -437,7 +437,7 @@
   <details style="margin-top:8px"><summary class="muted">高级：直接看/改 JSON（只读参考，保存以表单为准）</summary>
     <textarea id="entJson" spellcheck="false" readonly></textarea></details>
   <div class="toolbar" style="margin-top:10px">
-    <button class="btn ghost" value="cancel" formnovalidate>取消</button>
+    <button type="button" class="btn ghost" value="cancel" id="entCancel">取消</button>
     <button class="btn right" value="ok">保存</button>
   </div>
 </form></dialog>
@@ -472,7 +472,7 @@
   <small id="permExpireHint" class="dim perhint">留空 = 长期有效，不会自动收回。</small>
   <small id="permHintBox" class="dim" style="display:block;margin:2px 0 0 92px"></small>
   <div class="toolbar" style="margin-top:12px">
-    <button class="btn ghost" value="cancel" formnovalidate>取消</button>
+    <button type="button" class="btn ghost" value="cancel" id="userCancel">取消</button>
     <button class="btn right" value="ok">保存</button>
   </div>
 </form></dialog>

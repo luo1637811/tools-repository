@@ -2335,6 +2335,7 @@ function readEnt() {
 
 async function submitEnt(ev) {
   ev.preventDefault();
+  if (isCancelSubmit(ev)) { $('#entDlg').close(); return; }
   let obj;
   try { obj = readEnt(); }
   catch (e) { toast(e.message, 'bad'); return; }
@@ -2617,6 +2618,11 @@ function syncPermBox(u, roleOverride) {
 function boxPerms() {
   return [...document.querySelectorAll('#permBox input:checked')].map(cb => cb.value).join(',');
 }
+// 表单里的「取消」也是 submit 按钮，不判一下会被当成保存提交
+function isCancelSubmit(ev) {
+  const s = ev && ev.submitter;
+  return !!(s && String(s.value) === 'cancel');
+}
 // 高危操作二次确认：要求输入目标名，服务端还会校验 X-Confirm
 function askConfirm(expect, tip) {
   const v = prompt((tip || '这个操作不可恢复') + '\n请输入「' + expect + '」确认（点取消=放弃）');
@@ -2649,6 +2655,7 @@ function bindScopeBox() {
 }
 async function submitUser(ev) {
   ev.preventDefault();
+  if (isCancelSubmit(ev)) { $('#userDlg').close(); return; }
   const f = $('#userForm');
   const data = {username: f.username.value.trim(), password: f.password.value,
     name: f.name.value.trim(), role: f.role.value, squadron: f.squadron.value.trim(),
@@ -4888,6 +4895,7 @@ $('#newEnt').onclick = () => {
 $('#expJson').onclick = exportJson;
 $('#expJson').classList.toggle('hide', !can('export'));
 $('#entForm').onsubmit = submitEnt;
+$('#entCancel').onclick = () => { try { $('#entDlg').close(); } catch (e) {} };
 /* 注意：不要直接写 onclick = wizStart —— 浏览器会把 PointerEvent 当第一个参数传进去，
    被误判成「要编辑的 id」，于是弹「找不到这艘船 id=[object PointerEvent]」。 */
 $('#wizBtn').onclick = () => wizStart();
@@ -5015,6 +5023,7 @@ async function loadPwdReqs() {
 $('#addUserBtn').onclick = () => openUserDlg(null);
 $('#auditBtn').onclick = () => showTab('audit');
 $('#userForm').onsubmit = submitUser;
+$('#userCancel').onclick = () => { try { $('#userDlg').close(); } catch (e) {} };
 $('#pwdForm').onsubmit = submitPwd;
 $('#pwdReqBtn').onclick = loadPwdReqs;
 
@@ -5692,7 +5701,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.47';
+window.__APP_VER = '2026-11-17.48';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
