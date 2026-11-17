@@ -1078,10 +1078,20 @@ const CMP_ROWS = [
 /* 对舰/对空/攻城 = 该系统展示的基础值 ×（1 + 该系统的伤害加成%）
    要点：只对「基础值」与「加成」做计算，不引入周期/冷却等换算；
    伤害节点挂在哪个系统上，就只抬哪个系统的三行（装甲系统的伤害节点不会串到武器上）。 */
-/* 暴击期望倍率 = 1 + 概率 × 暴伤
-   概率 = 所有暴击节点的 crit_rate 之和，暴伤 = 所有暴击节点的 crit 之和
-   （同一个系统里「30% 概率造成 50% 额外伤害」+「暴伤 +40%」= 30% × 90%）。
-   两者缺一就不乘；不做多系统连乘。 */
+/* 暴击期望倍率 = 1 + [Σ(概率×暴伤) + 全局暴伤×概率之和]/10000（与 engine._crit_mul 同口径）
+   每条效果用自己的两个键配对：「30% 概率额外造成 50% 暴击伤害」= 30 与 50 成对相乘；
+   只写暴伤、没写概率的节点是全局暴伤，加在所有概率上；只写概率的节点与单边暴伤节点配对。
+   旧的 (Σ概率)×(Σ暴伤) 在两条各自带暴伤的概率效果并存时会高估：
+   0.2×0.3 + 0.1×0.8 = 0.14，旧算法 (0.2+0.1)×(0.3+0.8) = 0.33。不做多系统连乘。 */
+function critMulOfPairs(pairs) {
+  let both = 0, pAll = 0, cdOrphan = 0;
+  (pairs || []).forEach(p => {
+    const a = +p[0] || 0, b = +p[1] || 0;
+    pAll += a;
+    if (a && b) both += a * b; else if (b) cdOrphan += b;
+  });
+  return 1 + (both + cdOrphan * pAll) / 10000;
+}
 function critTotals(ship, alloc) {
   let rate = 0, dmg = 0;
   ((ship && ship.systems) || []).forEach(sy => (sy.nodes || []).forEach(nd => {
@@ -1095,9 +1105,22 @@ function critTotals(ship, alloc) {
   }));
   return { rate: rate, dmg: dmg };
 }
+function critPairsOf(ship, alloc) {
+  const out = [];
+  ((ship && ship.systems) || []).forEach(sy => (sy.nodes || []).forEach(nd => {
+    const lv = Number((alloc || {})[nd.id] || 0);
+    if (!lv) return;
+    let e = nd.effect;
+    if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
+    e = e || {};
+    if ('crit_rate' in e || 'crit' in e) {
+      out.push([(Number(e.crit_rate) || 0) * lv, (Number(e.crit) || 0) * lv]);
+    }
+  }));
+  return out;
+}
 function critMulOf(ship, alloc) {
-  const t = critTotals(ship, alloc);
-  return (t.rate > 0 && t.dmg > 0) ? 1 + (t.rate / 100) * (t.dmg / 100) : 1;
+  return critMulOfPairs(critPairsOf(ship, alloc));
 }
 
 function sysDmgSum(ship, alloc) {
@@ -1209,6 +1232,28 @@ function bayAggFor(key) {
   });
   return out;
 }
+/* 母舰侧：按槽位收集「概率×暴伤」对，供 critMulOfPairs 用（与 bayAggBySlot 同筛选口径） */
+function bayPairsBySlot(sl) {
+  const out = {};
+  const ship = shipOf((sl || {}).ship);
+  if (!ship) return out;
+  const al = (sl || {}).alloc || {};
+  (ship.systems || []).forEach(sy => {
+    if (!sysHasBayJs(sy)) return;
+    const key = (sy.slot || '').trim();
+    (sy.nodes || []).forEach(nd => {
+      const lv = Math.max(0, Math.min(+al[nd.id] || 0, +nd.max_lv || 0));
+      if (lv <= 0) return;
+      const pars = String(nd.parent || "").split(/[,，]/).map(x => x.trim()).filter(Boolean);
+      if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
+      const eff = nd.effect || {};
+      if ('crit_rate' in eff || 'crit' in eff) {
+        (out[key] = out[key] || []).push([(+eff.crit_rate || 0) * lv, (+eff.crit || 0) * lv]);
+      }
+    });
+  });
+  return out;
+}
 /* 舰载机自身加点：同型号多架共用一套，存在 sl.palloc[机型 id] 里 */
 function pallocOf(sl, pid) {
   sl.palloc = sl.palloc || {};
@@ -1239,10 +1284,34 @@ function planeOwnAgg(pid, sl) {
   }));
   return out;
 }
+/* 这一架机「自己的」概率×暴伤对：base.bonus 一条 + 每个自身节点一条 */
+function planeOwnPairs(pid, sl) {
+  const out = [];
+  const pf = ((S.bp && S.bp.planes) || []).find(z => z.id === pid) || {};
+  let pbase = {};
+  try { pbase = typeof pf.base === 'string' ? (JSON.parse(pf.base) || {}) : (pf.base || {}); } catch (e) { pbase = {}; }
+  const bb = pbase.bonus || {};
+  if ('crit_rate' in bb || 'crit' in bb) out.push([+bb.crit_rate || 0, +bb.crit || 0]);
+  const ps = shipOf(pid);
+  if (!ps) return out;
+  const al = pallocOf(sl, pid);
+  (ps.systems || []).forEach(sy => (sy.nodes || []).forEach(nd => {
+    const lv = Math.max(0, Math.min(+al[nd.id] || 0, +nd.max_lv || 0));
+    if (lv <= 0) return;
+    let eff = nd.effect;
+    if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
+    eff = eff || {};
+    const pars = String(nd.parent || '').split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
+    if ('crit_rate' in eff || 'crit' in eff) out.push([(+eff.crit_rate || 0) * lv, (+eff.crit || 0) * lv]);
+  }));
+  return out;
+}
 function planeTotals(key) {
   const sl = S.slots[key] || mk();
   const pool = (S.bp && S.bp.planes) || [];
   const bySlot = bayAggBySlot(sl);
+  const byPairs = bayPairsBySlot(sl);
   const rows = (sl.planes || []).filter(x => (Number(x.count) || 0) > 0).map(x => {
     const pf = pool.find(z => z.id === x.id) || {};
     let base = {};
@@ -1254,9 +1323,7 @@ function planeTotals(key) {
     const ownPct = own.plane + own.dmg;
     const carPct = (+car.plane || 0) + (+car.dmg || 0);
     const pct = carPct + ownPct;
-    const cr = (+car.crit_rate || 0) + own.crit_rate
-             , cd = (+car.crit || 0) + own.crit;
-    const cm = (cr > 0 && cd > 0) ? (1 + cr / 100 * cd / 100) : 1;
+    const cm = critMulOfPairs((byPairs[(mod.slot || '').trim()] || []).concat(planeOwnPairs(x.id, sl)));
     const c = Number(x.count) || 0;
     const per = (Number(base.dpm) || 0) * (1 + pct / 100) * cm;
     return { id: x.id, name: pf.name || x.id, kind: pf.kind || '', m: x.m, bay: x.bay,
@@ -5471,7 +5538,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.37';
+window.__APP_VER = '2026-11-17.38';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

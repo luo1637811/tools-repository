@@ -95,6 +95,29 @@ def sys_has_bay(sy):
     return False
 
 
+def _crit_mul(pairs):
+    """暴击期望倍率 = 1 + [Σ(概率×暴伤) + 全局暴伤×概率之和] / 10000。
+
+    pairs 里每条是 (概率, 暴伤)，来自「一条效果」：
+      - 同一节点同时写了 crit_rate 和 crit（如「30% 概率额外造成 50% 暴击伤害」）
+        → 这一条自己成对相乘，不会被别的概率串味；
+      - 只写暴伤、没写概率的节点是全局暴伤，加在**所有**概率上；
+      - 只写概率、没写暴伤的节点（「暴击率 +30」）和同样单边的暴伤节点配对，
+        行为与老口径一致。
+    旧的「(Σ概率)×(Σ暴伤)」在两条各自带暴伤的概率效果并存时会高估
+    （0.2×0.3 + 0.1×0.8 = 0.14，旧算法 (0.2+0.1)×(0.3+0.8) = 0.33）。"""
+    both = 0.0       # Σ 成对效果的 概率×暴伤
+    p_all = 0.0      # 所有概率之和
+    cd_orphan = 0.0  # 只写暴伤、没写概率的那部分暴伤（全局暴伤）
+    for _a, _b in (pairs or []):
+        p_all += _a
+        if _a and _b:
+            both += _a * _b
+        elif _b:
+            cd_orphan += _b
+    return 1.0 + (both + cd_orphan * p_all) / 10000.0
+
+
 def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     global EFF, EFF_UNIT
     with conn() as _c:
@@ -148,6 +171,7 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     sys_used = {}
     bay_agg = {}
     per_sys_bay = {}
+    bay_pairs = {}
     for sy in ship["systems"]:
         _has_bay = sys_has_bay(sy)
         used, cnt, active = 0, 0, 0
@@ -182,6 +206,11 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                     bay_agg[k] = bay_agg.get(k, 0) + v * lv
                     _pb = per_sys_bay.setdefault((sy.get("slot") or "").strip(), {})
                     _pb[k] = _pb.get(k, 0) + v * lv
+            _ef = nd["effect"]
+            if _has_bay and ("crit_rate" in _ef or "crit" in _ef):
+                bay_pairs.setdefault((sy.get("slot") or "").strip(), []).append(
+                    (float(num(_ef.get("crit_rate"), 0)) * lv,
+                     float(num(_ef.get("crit"), 0)) * lv))
             parts = []
             for k, v in nd["effect"].items():
                 if not v:
@@ -279,6 +308,10 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                 used_slots += groups
                 # 复制一份：下面的累加不能写回 bundle 里的 base.bonus（同一型号多架会重复叠加）
                 _own = dict((pb.get("base") or {}).get("bonus") or {})
+                _own_pairs = []
+                if "crit_rate" in _own or "crit" in _own:
+                    _own_pairs.append((float(num(_own.get("crit_rate"), 0)),
+                                       float(num(_own.get("crit"), 0))))
                 _palloc = p.get("alloc") or {}
                 for _pn in (pb.get("nodes") or []):
                     _lv = int(num(_palloc.get(_pn.get("id")), 0))
@@ -291,15 +324,15 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                     for _k, _v in (_pn.get("effect") or {}).items():
                         if _k in ("plane", "dmg", "crit", "crit_rate"):
                             _own[_k] = float(num(_own.get(_k), 0)) + float(_v) * _lv
+                    _pef = _pn.get("effect") or {}
+                    if "crit_rate" in _pef or "crit" in _pef:
+                        _own_pairs.append((float(num(_pef.get("crit_rate"), 0)) * _lv,
+                                           float(num(_pef.get("crit"), 0)) * _lv))
                 _own_pct = float(num(_own.get("plane"), 0)) + float(num(_own.get("dmg"), 0))
                 _agg = per_sys_bay.get((lm.get("slot") or "").strip()) or {}
                 _car = float(_agg.get("plane", 0)) + float(_agg.get("dmg", 0))
                 _pct = _car + _own_pct
-                _cmul = 1.0
-                _cr = float(_agg.get("crit_rate", 0)) + float(num(_own.get("crit_rate"), 0))
-                _cd = float(_agg.get("crit", 0)) + float(num(_own.get("crit"), 0))
-                if _cr > 0 and _cd > 0:
-                    _cmul = 1 + (_cr / 100.0) * (_cd / 100.0)
+                _cmul = _crit_mul((bay_pairs.get((lm.get("slot") or "").strip()) or []) + _own_pairs)
                 d = pb["base"]["dpm"] * (1 + _pct / 100) * _cmul * count
                 rows.append({"name": pb["name"], "count": count, "groups": groups,
                              "per_group": 1, "module": lm["name"], "bay": bi,
