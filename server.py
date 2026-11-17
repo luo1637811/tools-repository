@@ -921,6 +921,7 @@ ALL_PERMS = (
     "data_view", "data_edit",
     "season_view", "season_edit",
     "effects_edit",
+    "roster_query",
     "roster_view", "roster_edit",
     "people_view", "people_edit",
     "audit_view", "audit_self", "export",
@@ -931,6 +932,7 @@ PERM_LABEL = {
     "data_view": "数据管理·看", "data_edit": "数据管理·改",
     "season_view": "赛季历程·看", "season_edit": "赛季历程·改",
     "effects_edit": "效果库·改（影响全站计算）",
+    "roster_query": "人员查询·看",
     "roster_view": "人员档案·看", "roster_edit": "人员档案·改",
     "people_view": "人员管理·看", "people_edit": "人员管理·改（账号/审批）",
     "audit_view": "操作日志·看全部", "audit_self": "操作日志·只看自己",
@@ -943,6 +945,7 @@ PERM_GROUPS = [
     {"mod": "战报分析", "view": "battle_view", "edit": "battle_edit"},
     {"mod": "数据管理", "view": "data_view", "edit": "data_edit", "extra": [("effects_edit", "效果库")]},
     {"mod": "赛季历程", "view": "season_view", "edit": "season_edit"},
+    {"mod": "人员查询", "view": "roster_query", "edit": None},
     {"mod": "人员档案", "view": "roster_view", "edit": "roster_edit"},
     {"mod": "人员管理", "view": "people_view", "edit": "people_edit"},
     {"mod": "操作日志", "view": "audit_view", "edit": None, "extra": [("audit_self", "只看自己")]},
@@ -965,7 +968,7 @@ TEMPLATE_SEED = [
      ("sim_view", "sim_edit", "battle_view", "battle_edit", "data_view", "data_edit", "export"), "all"),
     ("viewer", "只读（看船看战报）", ("sim_view", "battle_view"), "all"),
     ("roster_editor", "名单维护（本组织）",
-     ("roster_view", "roster_edit", "export"), "org"),
+     ("roster_query", "roster_view", "roster_edit", "export"), "org"),
     ("auditor", "审计（看全部日志）", ("audit_view", "export"), "all"),
     ("auditor_self", "审计（只看自己的操作）", ("audit_self",), "self"),
 ]
@@ -974,6 +977,14 @@ SUPER_ROLE = "superadmin"                      # 超级管理员：唯一能改�
 ROLES = ("superadmin", "admin", "editor", "viewer")   # 允许的角色
 SCOPES = ("all", "org", "alliance", "self")
 SCOPE_CN = {"all": "全部", "org": "本组织", "alliance": "本联合体", "self": "自己"}
+
+
+def _implied(p):
+    """有人员档案（看/改）的人，自动带人员查询 —— 查询是档案的子集。"""
+    p = set(p)
+    if "roster_view" in p or "roster_edit" in p:
+        p.add("roster_query")
+    return p
 
 
 def perms_of(u):
@@ -985,12 +996,12 @@ def perms_of(u):
     if u.get("role") == SUPER_ROLE:
         return set(ALL_PERMS)
     if u.get("role") == "admin":
-        saved = set(parse_perms(u.get("perms")))
+        saved = _implied(parse_perms(u.get("perms")))
         return saved or set(ALL_PERMS)
     exp = str(u.get("perm_expire_at") or "").strip()
     if exp and exp[:10] < time.strftime("%Y-%m-%d"):
         return set()          # 临时授权已过期：权限清零，人还能登录但什么都看不到
-    return set(parse_perms(u.get("perms")))
+    return _implied(parse_perms(u.get("perms")))
 
 
 def _role(v):
@@ -2106,7 +2117,8 @@ class Handler(BaseHTTPRequestHandler):
                 "phone", "wechat", "qq", "links", "rating", "updated_at", "note")
 
     def members_list(self, q):
-        u = self.need_perm(("roster_view",))
+        # 人员查询（roster_query）与人员档案（roster_view）都能拉这张表
+        u = self.need_perm(("roster_query", "roster_view"))
         if not u:
             return
         kw = (q.get("q") or [""])[0].strip()

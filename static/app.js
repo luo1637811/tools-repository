@@ -551,7 +551,7 @@ const PERM_LABEL = {
   battle_view: '战报分析·看', battle_edit: '战报分析·改',
   data_view: '数据管理·看', data_edit: '数据管理·改',
   season_view: '赛季历程·看', season_edit: '赛季历程·改', effects_edit: '效果库·改',
-  roster_view: '人员档案·看', roster_edit: '人员档案·改', 
+  roster_query: '人员查询·看', roster_view: '人员档案·看', roster_edit: '人员档案·改',
   people_view: '人员管理·看', people_edit: '人员管理·改',
   audit_view: '操作日志·看全部', audit_self: '操作日志·只看自己', export: '导出',
 };
@@ -560,6 +560,7 @@ const PERM_GROUPS = [
   {mod: '战报分析', view: 'battle_view', edit: 'battle_edit'},
   {mod: '数据管理', view: 'data_view', edit: 'data_edit', extra: [['effects_edit', '效果库']]},
   {mod: '赛季历程', view: 'season_view', edit: 'season_edit'},
+  {mod: '人员查询', view: 'roster_query'},
   {mod: '人员档案', view: 'roster_view', edit: 'roster_edit'},
   {mod: '人员管理', view: 'people_view', edit: 'people_edit'},
   {mod: '操作日志', view: 'audit_view', extra: [['audit_self', '只看自己']]},
@@ -570,7 +571,7 @@ const ROLE_PERMS = {
   editor: 'sim_view,sim_edit,battle_view,battle_edit,data_view,data_edit,season_view,season_edit,export',
 };
 const TAB_PERM = {sim: 'sim_view', battle: 'battle_view', data: 'data_view',
-                  roster: 'roster_view', rosterM: 'roster_view',
+                  roster: 'roster_query', rosterM: 'roster_view',
                   audit: 'audit_view', people: 'people_view', season: 'season_view', posts: ''};
 function myPerms() {
   if (!S.user) return [];
@@ -584,6 +585,7 @@ function myPerms() {
 }
 const PERM_IMPLIES = {sim_view: 'sim_edit', battle_view: 'battle_edit',
                      data_view: 'data_edit', roster_view: 'roster_edit',
+                     roster_query: 'roster_view',
                      people_view: 'people_edit'};
 function can(p) {
   if (!p) return !!S.user;            // 没标注权限的页面/按钮：登录即可看
@@ -2621,6 +2623,12 @@ function renderPermBox() {
     box.appendChild(row);
   });
   box.dataset.built = '1';
+  // 勾了「人员档案」就自动带上「人员查询」：档案能看，查询自然能看
+  box.addEventListener('change', e => {
+    if (e.target.value !== 'roster_view' || !e.target.checked) return;
+    const q = box.querySelector('input[value="roster_query"]');
+    if (q && !q.disabled) q.checked = true;
+  });
 }
 // 角色 → 权限框状态：admin 恒全勾且置灰，其余可自由勾
 function syncPermBox(u, roleOverride) {
@@ -2636,7 +2644,7 @@ function syncPermBox(u, roleOverride) {
   });
   const hint = document.getElementById('permHintBox');
   if (hint) {
-    if (role === 'superadmin') hint.textContent = '超级管理员恒为全权（15 项），不能单独勾选。';
+    if (role === 'superadmin') hint.textContent = '超级管理员恒为全权（' + Object.keys(PERM_LABEL).length + ' 项），不能单独勾选。';
     else if (fixed) hint.textContent = '管理员默认拥有全部权限；只有超级管理员能调整管理员的权限。';
     else if (role === 'admin') hint.textContent = '你在调整管理员的权限：取消勾选后保存，该管理员会立刻失去对应能力（全不勾 = 恢复全权）。';
     else if (u && u.perm_expired) hint.textContent = '这个账号的权限已到期（只剩登录能力），改「权限到期」或重新勾选后保存即可恢复。';
@@ -5919,7 +5927,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.55';
+window.__APP_VER = '2026-11-17.56';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
