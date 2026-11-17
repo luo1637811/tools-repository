@@ -5455,7 +5455,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
   }
 
   /* 赛季信息 / 新建赛季共用一个轻量弹窗（复用 .semask .sedlg） */
-  function seasonDlg(title, fields, onOk) {
+  function seasonDlg(title, fields, onOk, onDel) {
     var old = document.getElementById('seMd');
     if (old && old.parentNode) old.parentNode.removeChild(old);
     var h = '<div class="semask" id="seMd"><div class="sedlg"><div class="sedgh">'
@@ -5465,7 +5465,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       h += '<label class="row"><span>' + esc(f.label) + '</span>';
       if (f.type === 'date') {
         h += '<span class="datewrap"><input type="date" id="' + f.id + '" value="'
-          + esc(f.value || '') + '"></span>';
+          + esc(f.value || '') + '"><span class="dph">点这里选日期（年/月/日）</span></span>';
       } else if (f.type === 'check') {
         h += '<input type="checkbox" id="' + f.id + '"' + (f.value ? ' checked' : '') + '>';
       } else {
@@ -5475,14 +5475,25 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
       }
       h += '</label>';
     });
-    h += '<div class="sedgf"><span class="grow"></span>'
-      + '<button class="btn" data-md="ok">保存</button></div></div></div></div>';
+    h += '<div class="sedgf">';
+    if (onDel) h += '<button class="btn danger" data-md="del">删除这个赛季</button>';
+    h += '<span class="grow"></span><button class="btn" data-md="ok">保存</button>'
+      + '</div></div></div></div>';
     document.body.insertAdjacentHTML('beforeend', h);
     var box = document.getElementById('seMd');
+    box.querySelectorAll('input[type="date"]').forEach(function (inp) {
+      markDateEmpty(inp);
+      inp.addEventListener('input', function () { markDateEmpty(inp); });
+      inp.addEventListener('change', function () { markDateEmpty(inp); });
+    });
     box.addEventListener('click', function (ev) {
       var tg = ev.target;
       if (tg === box || (tg.closest && tg.closest('[data-md="cancel"]'))) {
         if (box.parentNode) box.parentNode.removeChild(box);
+        return;
+      }
+      if (onDel && tg.closest && tg.closest('[data-md="del"]')) {
+        onDel(function () { if (box.parentNode) box.parentNode.removeChild(box); });
         return;
       }
       if (tg.closest && tg.closest('[data-md="ok"]')) {
@@ -5606,7 +5617,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
     seasons.forEach(function (x) {
       if (x.is_current) return;
       h += '<option value="' + x.id + '"' + (String(SE.season) === String(x.id) ? ' selected' : '')
-        + '>归纳：' + esc(x.label) + '</option>';
+        + '>' + esc(x.label) + '</option>';
     });
     h += '</select>';
     h += '<span class="chips seChips">';
@@ -5767,6 +5778,11 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
           close();
           done(op({ op: 'season_meta', id: cs.id, name: v.mlabel,
                     started_at: v.mstart, ended_at: v.mend, note: v.mnote }));
+        }, function (close) {
+          if (!confirm('确定删除赛季「' + (cs.label || '') + '」？\n'
+            + '它下面的星系 / 联合体 / 小队 / 事件记录会一起删掉，删了就找不回来了。')) return;
+          close();
+          done(op({ op: 'delete_season', id: cs.id }));
         });
         return;
       }
@@ -5851,7 +5867,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.49';
+window.__APP_VER = '2026-11-17.50';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

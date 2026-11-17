@@ -702,3 +702,7 @@ input:-webkit-autofill:focus{
   line-height:1;border:1px solid rgba(255,255,255,.12);background:transparent;
   color:var(--dim);cursor:pointer}
 .seEvr .mini:hover{border-color:#f87171;color:#fca5a5;background:rgba(248,113,113,.16)}
+.sebar .selsm{max-width:280px}
+.sedgf .btn.danger{margin-right:auto}
+.btn.danger{background:#7f2a2a;border:1px solid #a33;color:#ffd9d9}
+.btn.danger:hover{background:#93302f;border-color:#c44}

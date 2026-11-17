@@ -2569,6 +2569,31 @@ class Handler(BaseHTTPRequestHandler):
                 log("删除赛季事件", u["username"], "event#%d" % eid, "")
                 return self.send_json({"ok": True})
 
+            if op == "delete_season":
+                sid = _int(rid)
+                if not sid:
+                    return self.err(400, "缺少赛季 id")
+                row = c.execute("SELECT label, is_current FROM seasons WHERE id=?", (sid,)).fetchone()
+                if not row:
+                    return self.err(404, "赛季不存在（可能已删）")
+                label, was_cur = row[0], row[1]
+                if c.execute("SELECT COUNT(*) FROM seasons").fetchone()[0] <= 1:
+                    return self.err(409, "至少要留一个赛季：这是最后一个了")
+                c.execute("DELETE FROM squads WHERE alliance IN ("
+                          "SELECT id FROM alliances WHERE galaxy IN ("
+                          "SELECT id FROM galaxies WHERE season=?))", (sid,))
+                c.execute("DELETE FROM alliances WHERE galaxy IN ("
+                          "SELECT id FROM galaxies WHERE season=?)", (sid,))
+                c.execute("DELETE FROM galaxies WHERE season=?", (sid,))
+                c.execute("DELETE FROM season_events WHERE season=?", (sid,))
+                c.execute("DELETE FROM seasons WHERE id=?", (sid,))
+                if was_cur:
+                    nid = c.execute("SELECT id FROM seasons ORDER BY id DESC LIMIT 1").fetchone()[0]
+                    c.execute("UPDATE seasons SET is_current=0 WHERE id<>?", (nid,))
+                    c.execute("UPDATE seasons SET is_current=1, ended_at=NULL WHERE id=?", (nid,))
+                log("删除赛季", u["username"], label, "id=%d" % sid)
+                return self.send_json({"ok": True})
+
             TBL = {"galaxy": ("galaxies", "season"),
                    "alliance": ("alliances", "galaxy"),
                    "squad": ("squads", "alliance")}
