@@ -737,10 +737,26 @@ function renderBaseAttrs() {
       : (m.mkind ? [{ kind: (m.mkind || '').replace('搭载系统', ''), cap: m.cap, allow_group: m.allow_group }] : []);
     return bays.map(b => ({ kind: b.kind || '', cap: +b.cap || 0, src: '模块' }));
   };
-  const hasBay = sys.some(x => _slotShown(x.sy.slot)
-    && (sysBays(x.sy).length || modBaysOf(x.sy.slot).length));
-  const rows = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
+  /* 表里真正会显示出来的舱位（超主力舰的可替换槽位没装模块就不算） */
+  const dispBays = (x) => {
+    let bs = sysBays(x.sy).concat(modBaysOf(x.sy.slot));
+    if (_isSuper && !_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
+    return bs;
+  };
+  /* 一行只有在「有基础值」「有加点加成」「有舱位」时才出现：
+     整行都是「—」的系统没有信息量，留着只会让人以为漏填了。
+     舱位相关的键不算「基础值」，否则没装模块的搭载平台会留一行空壳。 */
+  const BAY_KEYS = { bay_plane: 1, bay_boat: 1, bay_drone: 1 };
+  const rowHas = (x) => {
+    const n = x.n || {}, a = x.a || {};
+    if (Object.keys(n).some(k => !BAY_KEYS[k] && n[k] !== undefined && n[k] !== null && n[k] !== '')) return true;
+    if (Object.keys(a).some(k => Number(a[k]))) return true;
+    return !!dispBays(x).length;
+  };
+  const rowsAll = sys.filter(x => (!weaponOnly || x.w) && _slotShown(x.sy.slot))
     .sort((a, b2) => (b2.w - a.w) || String(a.sy.slot || '').localeCompare(String(b2.sy.slot || '')));
+  const rows = rowsAll.filter(rowHas);
+  const hasBay = rows.some(x => dispBays(x).length);
 
   const COLS = [
     { k: 'slot', t: '槽位', w: 56 },
@@ -791,11 +807,7 @@ function renderBaseAttrs() {
     if (c.k === 'name') return '<td>' + mhEsc(x.sy.name) + '</td>';
     if (c.k === 'kind') return '<td>' + (x.w ? '<span class="tagw">武器</span>' : '<span class="tagf">功能</span>') + '</td>';
     if (c.k === 'bay') {
-      /* 该槽位没装模块 → 模块提供的战机/护航艇舱位不显示；系统自带的（无人机）照常显示 */
-      let bs = sysBays(x.sy).concat(modBaysOf(x.sy.slot));
-      /* 只有「超主力舰的可替换槽位」才按装没装模块过滤；
-         主力舰/护卫舰的舱位来自系统本身，照常显示 */
-      if (_isSuper && !_slotLoaded(x.sy.slot)) bs = bs.filter(b => (b.kind || '') === '无人机');
+      const bs = dispBays(x);
       if (!bs.length) return '<td class="dim">—</td>';
       return '<td class="bcell">' + bs.map(b => b.kind + ' ' + b.cap
         + (b.src === '模块' ? '（模块）' : '')).join(' · ') + '</td>';
@@ -832,7 +844,10 @@ function renderBaseAttrs() {
     return '<td class="num">' + fmtNum(v) + (c.pct ? '%' : '') + '</td>';
   };
   body.innerHTML = rows.map(x => '<tr' + (x.w ? ' class="wrow"' : '') + '>' + COLS.map(c => cellOf(c, x)).join('') + '</tr>').join('')
-    || '<tr><td colspan="' + COLS.length + '" class="dim">' + (weaponOnly ? '这艘船没有武器系统' : '这艘船还没有系统') + '</td></tr>';
+    || '<tr><td colspan="' + COLS.length + '" class="dim">'
+      + (weaponOnly ? '这艘船没有武器系统'
+        : (rowsAll.length ? '这些系统还没有基础值，也没有加点' : '这艘船还没有系统'))
+      + '</td></tr>';
 
   if (tiles) {
     const st = sysTotals(ship);
@@ -877,7 +892,11 @@ function renderBaseAttrs() {
     warn.innerHTML = msgs.length ? ('⚠ ' + msgs.join('；') + '。缺的数据在「数据管理 → 系统」里补。') : '';
     warn.classList.toggle('hide', !msgs.length);
   }
-  if (note) note.textContent = '共 ' + sys.length + ' 个系统（' + sys.filter(x => x.w).length + ' 个武器系统）' + (weaponOnly ? '，当前只看武器' : '');
+  if (note) {
+    note.textContent = '共 ' + sys.length + ' 个系统（' + sys.filter(x => x.w).length + ' 个武器系统）'
+      + (rows.length < rowsAll.length ? '，只列出有数值的 ' + rows.length + ' 个' : '')
+      + (weaponOnly ? '，当前只看武器' : '');
+  }
 }
 
 /* 前置节点可以是多个（逗号分隔），满足任意一个即可加点 */
@@ -5893,7 +5912,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.51';
+window.__APP_VER = '2026-11-17.52';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
