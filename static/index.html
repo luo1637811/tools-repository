@@ -9,7 +9,7 @@
 <body>
 <header>
   <div class="hdr-left">
-    <span class="tag" id="verTag">数据版本 —</span>
+    <span class="tag hide" id="verTag"></span>
     <span class="tag" id="liveTag">实时连接中…</span>
   </div>
   <h1><span id="brandTitle">追毫中枢</span>
@@ -441,7 +441,8 @@
 <dialog id="userDlg"><form class="dlg" method="dialog" id="userForm">
   <h3 id="dlgTitle">新增人员</h3>
   <label class="row"><span>登录名</span><input type="text" name="username" required></label>
-  <label class="row"><span>密码</span><input type="text" name="password" placeholder="留空=123456"></label>
+  <label class="row"><span>密码</span><input type="text" name="password" placeholder="留空 = 123456（临时密码）"></label>
+  <div class="hint" style="margin:-4px 0 8px">这里填的只是临时密码，本人第一次登录会被要求先设置新密码，改完才能进系统。</div>
   <label class="row"><span>姓名</span><input type="text" name="name"></label>
   <label class="row"><span>角色</span><select name="role">
     <option value="viewer">只读</option><option value="editor">编辑</option><option value="admin">管理员</option><option value="superadmin">超级管理员</option></select></label>

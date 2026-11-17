@@ -169,6 +169,12 @@ function renderVerTag() {
   if (!t) return;
   const p = S.pub || {};
   const isTop = !!(S.user && S.user.role === 'superadmin');
+  if (!isTop) {                       /* 版本号是排障信息，只给超管看 */
+    t.classList.add('hide');
+    t.textContent = '';
+    return;
+  }
+  t.classList.remove('hide');
   const label = p.label || ('v' + (p.version || 0));
   const pending = Math.max(0, (p.version || 0) - (p.num || 0));
   var fe = String(window.__APP_VER || '').replace(/^\d{4}-\d{2}-\d{2}\./, '.');
@@ -2691,7 +2697,8 @@ async function submitUser(ev) {
     const j = S.editing ? await api('/api/users/' + S.editing.id, {method: 'PUT', body: data})
                         : await api('/api/users', {method: 'POST', body: data});
     $('#userDlg').close();
-    toast(j && j.changed === false ? '内容没变，已跳过（不写日志）' : '已保存', 'good');
+    toast(j && j.changed === false ? '内容没变，已跳过（不写日志）'
+      : (S.editing ? '已保存' : '已新增：' + (data.username || '') + '（首次登录须先设置新密码）'), 'good');
     await loadUsers($('#uq').value.trim());
   } catch (e) { toast('失败：' + e.message, 'bad'); }
 }
@@ -3858,7 +3865,7 @@ async function connectStream() {
   es.addEventListener('version', ev => {
     streamUp();
     const v = +ev.data;
-    $('#liveTag').textContent = '实时 · v' + v;
+    $('#liveTag').textContent = (S.user && S.user.role === 'superadmin') ? '实时 · v' + v : '实时';
     if (v !== S.version && S.bp) { S.version = v; loadBlueprints(true); }
   });
   es.onerror = () => {
@@ -4979,7 +4986,7 @@ async function submitPwd(ev) {
   const f = $('#pwdForm');
   const oldv = f.old.value, nw = f.new.value, ag = f.again.value;
   if (nw !== ag) { toast('两次输入的新密码不一样', 'bad'); return; }
-  if (nw.length < 6) { toast('新密码至少 8 位', 'bad'); return; }
+  if (nw.length < 8) { toast('新密码至少 8 位', 'bad'); return; }
   try {
     const j = await api('/api/me/password', {method: 'POST', body: {old: oldv, new: nw}});
     S.user = j.user || S.user;
@@ -5021,7 +5028,7 @@ async function loadPwdReqs() {
       ok.onclick = async () => {
         const pw = prompt('给 ' + r.username + ' 的临时密码（至少 8 位，登录后会被强制修改）', 'tmp' + Math.random().toString(36).slice(2, 8));
         if (pw === null) return;
-        if (pw.trim().length < 6) return toast('临时密码至少 8 位', 'bad');
+        if (pw.trim().length < 8) return toast('临时密码至少 8 位', 'bad');
         try { await api('/api/pwd/requests/' + r.id + '/approve', {method: 'POST', body: {password: pw.trim()}});
           toast('已批准：' + r.username + ' 的临时密码是 ' + pw.trim(), 'good'); loadPwdReqs();
         } catch (e) { toast('失败：' + e.message, 'bad'); }
@@ -5912,7 +5919,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.54';
+window.__APP_VER = '2026-11-17.55';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

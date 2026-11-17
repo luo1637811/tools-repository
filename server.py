@@ -3313,9 +3313,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(403, "只有超级管理员能创建管理员")
         try:
             with conn() as c:
+                # must_change=1：这里填的（或默认的 123456）只是临时密码，
+                # 本人第一次登录会被强制先设置新密码，改完才放行任何接口。
                 c.execute("INSERT INTO users(username,pwd,role,name,squadron,phone,status,note,"
-                          "perms,scope,org,perm_expire_at,alliance,created_at,updated_at)"
-                          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                          "perms,scope,org,perm_expire_at,alliance,created_at,updated_at,"
+                          "must_change,pwd_changed_at)"
+                          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                           (name, hash_pwd(data.get("pwd") or data.get("password") or "123456"),
                            _role(data.get("role")), data.get("name") or name,
                            data.get("squadron") or "", data.get("phone") or "",
@@ -3324,7 +3327,7 @@ class Handler(BaseHTTPRequestHandler):
                            scope_of({"scope": data.get("scope")}),
                            (data.get("org") or "").strip(),
                            (data.get("perm_expire_at") or "").strip(),
-                           (data.get("alliance") or "").strip(), now(), now()))
+                           (data.get("alliance") or "").strip(), now(), now(), 1, None))
         except sqlite3.IntegrityError:
             return self.err(409, "登录名已存在")
         log("新增人员", u["username"], name, _role(data.get("role")))
