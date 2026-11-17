@@ -655,3 +655,11 @@ input:-webkit-autofill:focus{
   caret-color:var(--ink);
   transition:background-color 9999s ease-out 0s;
 }
+
+/* ---------- 舰载机组合：舱位表四列宽带，表头与内容对齐 ---------- */
+#planeSlots table{table-layout:fixed;width:100%}
+#planeSlots table th:nth-child(1),#planeSlots table td:nth-child(1){width:33%}
+#planeSlots table th:nth-child(2),#planeSlots table td:nth-child(2){width:45%}
+#planeSlots table th:nth-child(3),#planeSlots table td:nth-child(3){width:14%;text-align:center}
+#planeSlots table th:nth-child(4),#planeSlots table td:nth-child(4){width:8%;text-align:right;white-space:nowrap}
+#planeSlots table select{width:100%}
