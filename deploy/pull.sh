@@ -2,10 +2,14 @@
 # 追毫中枢 · 从 GitHub 拉取最新代码
 #   清单只从 raw.githubusercontent.com 取（CDN 会缓存旧版，导致“无变化”或“大小不符”）
 #   正文文件按 sha256 + 字节数双重校验，三镜像轮换，校验不过绝不覆盖线上
+#   被覆盖的旧文件留一份到 deploy/.bak/<原路径>，不在 static 里，公网取不到
+#   （2026-11-18 改：以前写 static/*.bak-auto，导致 /app.js.bak-auto 可被公网下载）
 # 用法：sudo bash deploy/pull.sh
+# 回滚单文件：sudo cp deploy/.bak/static/app.js static/app.js && sudo systemctl restart fleet
 set -u
 
 DEST="$(cd "$(dirname "$0")/.." && pwd)"
+BAK="$DEST/deploy/.bak"
 REPO="${FT_REPO:-luo1637811/tools-repository}"
 BRANCH="${FT_BRANCH:-main}"
 RAW="https://raw.githubusercontent.com/$REPO/$BRANCH"
@@ -86,7 +90,9 @@ EOF
     continue
   fi
   if [ -f "$TGT" ]; then
-    cp -a "$TGT" "$TGT.bak-auto"
+    mkdir -p "$BAK/$(dirname "$path")"
+    chmod 700 "$BAK" 2>/dev/null || true
+    cp -a "$TGT" "$BAK/$path"
   fi
   cp -f "$TMP/f" "$TGT"
   say "更新 $path"

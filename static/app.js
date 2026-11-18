@@ -48,9 +48,32 @@ function isAccountFilled(v, u) {
       || t === String(u.username || '').trim().toLowerCase();
 }
 
-/* 母舰上所有「带舱位」的模块 id：建船问卷里给系统填了战机舱/护航艇舱，存库时会生成一条 */
+/* 母舰上所有「带舱位」的搭载位：模块（mkind）+ 系统（新数据把 bays 直接写在系统上）
+   两者都用 id 标识，勾选 / 载荷都用同一个列表 */
 function carrierModsOf(ship) {
-  return (((ship && ship.modules) || []).filter(m => m.mkind)).map(m => m.id);
+  const out = (((ship && ship.modules) || []).filter(m => m.mkind)).map(m => m.id);
+  ((ship && ship.systems) || []).forEach(sy => {
+    if (sysHasBayJs(sy) && !out.includes(sy.id)) out.push(sy.id);
+  });
+  return out;
+}
+/* 按 id 找搭载位：先模块后系统（新数据没有模块，舱位挂在系统上） */
+function holderOf(ship, id) {
+  if (!ship || !id) return null;
+  return ((ship.modules || []).find(m => m.id === id))
+      || ((ship.systems || []).find(sy => sy.id === id)) || null;
+}
+/* 搭载位的舱位列表：bays 优先；没有就按 mkind / stats_norm 的 bay_* 合成 */
+function baysOfHolder(h) {
+  if (!h) return [];
+  if (Array.isArray(h.bays) && h.bays.length) return h.bays;
+  if (h.mkind) return [{kind: (h.mkind || '').replace('搭载系统', ''), cap: h.cap,
+                        allow_group: h.allow_group}];
+  const n = h.norm || {};
+  const out = [];
+  if (+(n.bay_plane) > 0) out.push({kind: '战机', cap: +n.bay_plane, allow_group: ''});
+  if (+(n.bay_boat) > 0) out.push({kind: '护航艇', cap: +n.bay_boat, allow_group: ''});
+  return out;
 }
 
 /* 勾选状态自愈：
@@ -523,7 +546,7 @@ function aggEffects() {
     if (!lv) return;
     let eff = nd.effect;
     if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
-    Object.keys(eff || {}).forEach(k => { agg[k] = (agg[k] || 0) + Number(eff[k] || 0) * lv; });
+    Object.keys(eff || {}).forEach(k => { agg[k] = (agg[k] || 0) + nodeLvAmt(nd, k, lv, eff[k]); });
   }));
   return agg;
 }
@@ -693,7 +716,7 @@ function renderBaseAttrs() {
       if (!lv) return;
       let eff = nd.effect;
       if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
-      Object.keys(eff || {}).forEach(k => { a[k] = (a[k] || 0) + Number(eff[k] || 0) * lv; });
+      Object.keys(eff || {}).forEach(k => { a[k] = (a[k] || 0) + nodeLvAmt(nd, k, lv, eff[k]); });
     });
     return a;
   };
@@ -701,7 +724,8 @@ function renderBaseAttrs() {
     let n = {};
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
     return { sy: sy, n: n, a: sysAggOf(sy),
-      w: (n.dmg_atk !== undefined || n.dmg_air !== undefined || n.dmg_siege !== undefined) };
+      w: (n.dmg_atk !== undefined || n.dmg_air !== undefined || n.dmg_siege !== undefined
+        || !!weaponSixOf(n) || !!weaponListOf(n)) };
   });
   const hasWeapon = sys.some(x => x.w);
   /* 只在这艘船确实装了模块时，才显示「舱位」这类模块相关内容 */
@@ -803,6 +827,29 @@ function renderBaseAttrs() {
     if (!(r > 0 || d > 0)) return null;
     return { r: r, d: d, mul: (r > 0 && d > 0) ? 1 + (r / 100) * (d / 100) : 1 };
   };
+  /* 六字段的系统：三行没存数就现算一格（与 sysDmgSum 同口径，含本系统加点与自带暴击） */
+  const weaponCellOf = (x, k) => {
+    const six = weaponSixOf(x.n);
+    const multi = weaponListOf(x.n);
+    if (!six && !multi) return undefined;
+    const aa = x.a || {};
+    const idx = k === 'dmg_atk' ? 0 : (k === 'dmg_air' ? 1 : 2);
+    const famA = {};
+    Object.keys(aa).forEach(kk => {
+      if (kk.indexOf('dmg_') !== 0) return;
+      if (kk === 'dmg_atk_pct' || kk === 'dmg_air_pct' || kk === 'dmg_siege_pct') return;
+      famA[kk.slice(4)] = Number(aa[kk]) || 0;
+    });
+    const cdR = (Number(aa.cd) || 0) + (Number(aa.freq) || 0);
+    const w3 = multi ? weaponSum3(x.n, cdR, famA) : null;
+    const b3 = w3 || weaponBase3(x.n, six, cdR);
+    /* 文档给了系统级那一行就以文档为准（和引擎、sysDmgSum 同一口径） */
+    const dv = x.n && x.n[k];
+    const base = (dv === undefined || dv === null) ? b3[idx] : Number(dv);
+    const oc = ownCritOf(x);
+    return base * (1 + (Number(aa.dmg) || 0) / 100) * (1 + (Number(aa[k + '_pct']) || 0) / 100)
+      * (oc ? oc.mul : 1);
+  };
   if (rows.some(x => extraOf(x).length || ownCritOf(x))) COLS.push({ k: '__extra', t: '其他加成', w: 190 });
 
   const head = $('#baHead');
@@ -839,6 +886,11 @@ function renderBaseAttrs() {
       const a = fmtNum(cr), b2 = fmtNum(wp);
       if (a === '—' && b2 === '—') return '<td class="num dim">—</td>';
       return '<td class="num">' + a + (b2 === '—' ? '' : ' / ' + b2) + '</td>';
+    }
+    if (c.weapon && (n[c.k] === undefined || n[c.k] === null)) {
+      /* 六字段的系统三行可能是空的：现算一格，别显示成空 */
+      const wv = weaponCellOf(x, c.k);
+      return '<td class="num">' + (wv === undefined ? '<span class="dim">—</span>' : fmtNum(wv)) + '</td>';
     }
     let v = n[c.k];
     if (c.k === 'spd' && v !== undefined) v = effVal('spd', v, { spd: Number(x.a.move) || 0 });
@@ -1118,6 +1170,93 @@ function nodeCard(nd, sl, sy, code) {
   return d;
 }
 
+/* ---------- 每级数组 + 六字段：与 engine._lv_amt / _weapon_out 同口径 ---------- */
+/* 节点的 per_lv：可以写成 [2,2,2,3,3]（单效果节点），也可以写成 {键: [...]}（一个节点挂多种效果） */
+function perLvOf(nd, k) {
+  let pv = nd && nd.per_lv;
+  if (typeof pv === 'string') { try { pv = JSON.parse(pv || 'null'); } catch (e) { pv = null; } }
+  if (!pv) return null;
+  if (Array.isArray(pv)) return pv;
+  if (typeof pv === 'object' && Array.isArray(pv[k])) return pv[k];
+  return null;
+}
+/* 点到第 lv 级一共加了多少：有数组就逐级求和（level 超过数组长度时按末项继续外推），
+   没有数组就是老口径「每级 v × lv」 */
+function nodeLvAmt(nd, k, lv, v) {
+  const val = (v === undefined || v === null) ? (Number((nd && nd.effect || {})[k]) || 0) : (Number(v) || 0);
+  const arr = perLvOf(nd, k);
+  const L = Math.max(0, Math.floor(Number(lv) || 0));
+  if (!arr || !arr.length) return val * L;
+  let sum = 0;
+  for (let i = 0; i < L; i++) sum += (i < arr.length ? (Number(arr[i]) || 0) : (Number(arr[arr.length - 1]) || 0));
+  return sum;
+}
+/* 六字段：单发 / 弹药 / 攻击次数 / 持续 / 冷却 / 门数。填齐就能现算，填不齐就返回 null 走存档三行 */
+function weaponSixOf(n) {
+  n = n || {};
+  const dmg = +n.dmg || 0, ammo = +n.ammo || 0, atk = +n.atk || 0;
+  const volley = (ammo && atk) ? ammo * atk : (+n.ammo_atk || 0);
+  if (!dmg || !volley || !((+n.dur || 0) || (+n.cd || 0))) return null;
+  return { dmg: dmg, volley: volley, guns: +n.guns || 1 };
+}
+/* 三路基础值：对舰扣 10 点标准护甲，对空 × 0.80，攻城没有公式只吃存档值 */
+function weaponBase3(n, six, cdRed) {
+  const cyc = Math.max(0.5, (+n.dur || 0) + (+n.cd || 0) * (1 - (+cdRed || 0) / 100));
+  const shot = six.dmg * six.volley / cyc * 60 * six.guns;
+  return [Math.max(0, six.dmg - 10) * six.volley / cyc * 60 * six.guns, shot * 0.8,
+    (Number(n.dmg_siege) || 0)];
+}
+/* 一个系统挂多把武器（新数据：stats_norm.weapons[]）时返回数组，否则 null */
+function weaponListOf(n) {
+  const wl = n && n.weapons;
+  return Array.isArray(wl) && wl.length ? wl : null;
+}
+/* 多武器三路现算：与 engine._weapon_out 的 weapons 分支同口径
+   每把武器按自己的 单发 / 弹药×攻击次数 / 持续 / 冷却 / 门数 / 护甲口径 / 校准系数 算，
+   再乘族加成（系统调校 + 整舰 + 节点里的 dmg_<族>），最后整系统求和对舰 / 对空。攻城只吃存档值 */
+function weaponSum3(n, cdRed, famAdd) {
+  const wl = weaponListOf(n);
+  if (!wl) return null;
+  const fam0 = n.fam_bonus || {};
+  let atk = 0, air = 0;
+  wl.forEach(w => {
+    const dmg = +w.dmg || 0;
+    const vol = +w.volley || ((+w.ammo || 0) * (+w.atk || 0));
+    if (!dmg || !vol) return;
+    const dur = +w.dur || 0, cd = +w.cd || 0;
+    const cyc = Math.max(0.5, dur + cd * (1 - (+cdRed || 0) / 100));
+    /* 门数 0 = 这把武器不装（文档里副炮常常是 0 门），不能按 1 门算 */
+    const g = (w.guns === undefined || w.guns === null) ? 1 : (+w.guns || 0);
+    if (!g) return;
+    const k = w.k === undefined ? 1 : (Number(w.k) || 1);
+    const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
+    const fb = 1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100;
+    const shot = dmg * vol / cyc * 60 * g * k * fb;
+    atk += Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * fb;
+    air += shot * 0.8;
+  });
+  /* 对空 / 攻城都优先吃文档存档值（每把武器有隐藏的防空系数，0.8 只是通用火炮的巧合） */
+  const airOut = (n.dmg_air === undefined || n.dmg_air === null) ? air : Number(n.dmg_air);
+  return [atk, airOut, Number(n.dmg_siege) || 0];
+}
+/* 节点里的「dmg_<武器族>」加成（如 脉冲炮伤害 +15%）：按族累加成 {pulse: 15} */
+function famAddOf(nodes, alloc) {
+  const fam = {};
+  (nodes || []).forEach(nd => {
+    const lv = Number((alloc || {})[nd.id] || 0);
+    if (!lv) return;
+    let e = nd.effect;
+    if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
+    Object.keys(e || {}).forEach(k => {
+      if (k.indexOf('dmg_') !== 0) return;
+      if (k === 'dmg_atk_pct' || k === 'dmg_air_pct' || k === 'dmg_siege_pct') return;
+      const f = k.slice(4);
+      fam[f] = (fam[f] || 0) + nodeLvAmt(nd, k, lv, e[k]);
+    });
+  });
+  return fam;
+}
+
 /* ---------- 基础加成：按方案汇总（不做 DPM / EHP / 技术值 这类派生计算） ---------- */
 function slotAgg(slotKey) {
   const sl = S.slots[slotKey];
@@ -1130,7 +1269,7 @@ function slotAgg(slotKey) {
     if (!lv) return;
     let eff = nd.effect;
     if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
-    Object.keys(eff || {}).forEach(k => { agg[k] = (agg[k] || 0) + Number(eff[k] || 0) * lv; });
+    Object.keys(eff || {}).forEach(k => { agg[k] = (agg[k] || 0) + nodeLvAmt(nd, k, lv, eff[k]); });
   }));
   return agg;
 }
@@ -1194,8 +1333,8 @@ function critTotals(ship, alloc) {
     let e = nd.effect;
     if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
     e = e || {};
-    rate += (Number(e.crit_rate) || 0) * lv;
-    dmg += (Number(e.crit) || 0) * lv;
+    rate += nodeLvAmt(nd, 'crit_rate', lv, e.crit_rate);
+    dmg += nodeLvAmt(nd, 'crit', lv, e.crit);
   }));
   return { rate: rate, dmg: dmg };
 }
@@ -1208,7 +1347,7 @@ function critPairsOf(ship, alloc) {
     if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
     e = e || {};
     if ('crit_rate' in e || 'crit' in e) {
-      out.push([(Number(e.crit_rate) || 0) * lv, (Number(e.crit) || 0) * lv]);
+      out.push([nodeLvAmt(nd, 'crit_rate', lv, e.crit_rate), nodeLvAmt(nd, 'crit', lv, e.crit)]);
     }
   }));
   return out;
@@ -1222,27 +1361,40 @@ function sysDmgSum(ship, alloc) {
   ((ship && ship.systems) || []).forEach(sy => {
     let n = {};
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
-    if (n.dmg_atk === undefined && n.dmg_air === undefined && n.dmg_siege === undefined) return;
-    let pct = 0, pAtk = 0, pAir = 0, pSiege = 0;
+    const six = weaponSixOf(n);
+    const multi = weaponListOf(n);
+    if (!six && !multi && n.dmg_atk === undefined && n.dmg_air === undefined && n.dmg_siege === undefined) return;
+    let pct = 0, pAtk = 0, pAir = 0, pSiege = 0, cdRed = 0;
     (sy.nodes || []).forEach(nd => {
       const lv = Number((alloc || {})[nd.id] || 0);
       if (!lv) return;
       let e = nd.effect;
       if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
       e = e || {};
-      pct += (Number(e.dmg) || 0) * lv;
-      pAtk += (Number(e.dmg_atk_pct) || 0) * lv;
-      pAir += (Number(e.dmg_air_pct) || 0) * lv;
-      pSiege += (Number(e.dmg_siege_pct) || 0) * lv;
+      pct += nodeLvAmt(nd, 'dmg', lv, e.dmg);
+      pAtk += nodeLvAmt(nd, 'dmg_atk_pct', lv, e.dmg_atk_pct);
+      pAir += nodeLvAmt(nd, 'dmg_air_pct', lv, e.dmg_air_pct);
+      pSiege += nodeLvAmt(nd, 'dmg_siege_pct', lv, e.dmg_siege_pct);
+      cdRed += nodeLvAmt(nd, 'cd', lv, e.cd) + nodeLvAmt(nd, 'freq', lv, e.freq);
     });
     const m = 1 + pct / 100;
-    /* 系统自带暴击（向导里填的「自带暴击率 / 自带暴击伤害」）：只抬本系统这三行，
-       与加点得到的暴击分开相乘，同一条效果不会被算两次 */
     const crOwn = Number(n.crit_rate) || 0, cdOwn = Number(n.crit) || 0;
     const cmOwn = (crOwn > 0 && cdOwn > 0) ? 1 + (crOwn / 100) * (cdOwn / 100) : 1;
-    out.dmg_atk += (Number(n.dmg_atk) || 0) * m * (1 + pAtk / 100) * cmOwn;
-    out.dmg_air += (Number(n.dmg_air) || 0) * m * (1 + pAir / 100) * cmOwn;
-    out.dmg_siege += (Number(n.dmg_siege) || 0) * m * (1 + pSiege / 100) * cmOwn;
+    /* 三行的「基础值」：多武器逐把现算；只有一套六字段就按周期公式现算；
+       都没有的老数据直接用存档的三行，不猜；攻城只吃存档值 */
+    const w3 = multi ? weaponSum3(n, cdRed, famAddOf(sy.nodes, alloc)) : null;
+    const b3 = w3 || (six ? weaponBase3(n, six, cdRed)
+      : [Number(n.dmg_atk) || 0, Number(n.dmg_air) || 0, Number(n.dmg_siege) || 0]);
+    /* 文档给了系统级三行就以文档为准（游戏显示值；近防等隐藏系数反推不出来） */
+    const dk = ['dmg_atk', 'dmg_air', 'dmg_siege'];
+    const b3d = b3.map((v, i) => {
+      const dv = n[dk[i]];
+      return (dv === undefined || dv === null) ? v : Number(dv);
+    });
+    const p3 = [1 + pAtk / 100, 1 + pAir / 100, 1 + pSiege / 100];
+    out.dmg_atk += b3d[0] * m * p3[0] * cmOwn;
+    out.dmg_air += b3d[1] * m * p3[1] * cmOwn;
+    out.dmg_siege += b3d[2] * m * p3[2] * cmOwn;
   });
   const cm = critMulOf(ship, alloc);
   if (cm > 1) {
@@ -1302,8 +1454,8 @@ function bayAggBySlot(sl) {
       const pars = String(nd.parent || "").split(/[,，]/).map(x => x.trim()).filter(Boolean);
       if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
       const eff = nd.effect || {};
-      ["plane", "dmg", "crit", "crit_rate"].forEach(k => {
-        if (k in eff) o[k] += (+eff[k] || 0) * lv;
+      Object.keys(eff || {}).forEach(k => {
+        o[k] = (+o[k] || 0) + nodeLvAmt(nd, k, lv, eff[k]);
       });
     });
   });
@@ -1323,8 +1475,8 @@ function bayAggFor(key) {
       const pars = String(nd.parent || "").split(/[,，]/).map(x => x.trim()).filter(Boolean);
       if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
       const eff = nd.effect || {};
-      ["plane", "dmg", "crit", "crit_rate"].forEach(k => {
-        if (k in eff) out[k] += (+eff[k] || 0) * lv;
+      Object.keys(eff || {}).forEach(k => {
+        out[k] = (+out[k] || 0) + nodeLvAmt(nd, k, lv, eff[k]);
       });
     });
   });
@@ -1346,7 +1498,7 @@ function bayPairsBySlot(sl) {
       if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
       const eff = nd.effect || {};
       if ('crit_rate' in eff || 'crit' in eff) {
-        (out[key] = out[key] || []).push([(+eff.crit_rate || 0) * lv, (+eff.crit || 0) * lv]);
+        (out[key] = out[key] || []).push([nodeLvAmt(nd, 'crit_rate', lv, eff.crit_rate), nodeLvAmt(nd, 'crit', lv, eff.crit)]);
       }
     });
   });
@@ -1367,7 +1519,7 @@ function planeOwnAgg(pid, sl) {
   let pbase = {};
   try { pbase = typeof pf.base === 'string' ? (JSON.parse(pf.base) || {}) : (pf.base || {}); } catch (e) { pbase = {}; }
   const bb = pbase.bonus || {};
-  ['plane', 'dmg', 'crit', 'crit_rate'].forEach(k => { if (k in bb) out[k] += +bb[k] || 0; });
+  Object.keys(bb || {}).forEach(k => { out[k] = (+out[k] || 0) + (+bb[k] || 0); });
   const al = pallocOf(sl, pid);
   (ps.systems || []).forEach(sy => (sy.nodes || []).forEach(nd => {
     const lv = Math.max(0, Math.min(+al[nd.id] || 0, +nd.max_lv || 0));
@@ -1376,8 +1528,8 @@ function planeOwnAgg(pid, sl) {
     if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
     const pars = String(nd.parent || '').split(/[,，]/).map(x => x.trim()).filter(Boolean);
     if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
-    ['plane', 'dmg', 'crit', 'crit_rate'].forEach(k => {
-      if (k in (eff || {})) out[k] += (+eff[k] || 0) * lv;
+    Object.keys(eff || {}).forEach(k => {
+      out[k] = (+out[k] || 0) + nodeLvAmt(nd, k, lv, eff[k]);
     });
   }));
   return out;
@@ -1401,9 +1553,20 @@ function planeOwnPairs(pid, sl) {
     eff = eff || {};
     const pars = String(nd.parent || '').split(/[,，]/).map(x => x.trim()).filter(Boolean);
     if (pars.length && !pars.some(pp => (+al[pp] || 0) > 0)) return;
-    if ('crit_rate' in eff || 'crit' in eff) out.push([(+eff.crit_rate || 0) * lv, (+eff.crit || 0) * lv]);
+    if ('crit_rate' in eff || 'crit' in eff) out.push([nodeLvAmt(nd, 'crit_rate', lv, eff.crit_rate), nodeLvAmt(nd, 'crit', lv, eff.crit)]);
   }));
   return out;
+}
+/* 舰载机单架 DPM：优先完整系统制，退回历史 dpm 字段（与 engine.plane_dpm 同口径） */
+function planeBaseDpm(base, cdReduce) {
+  base = base || {};
+  const dmg = +base.dmg || 0, ammo = +base.ammo || 0, atk = +base.atk || 1;
+  let dur = +base.dur || 0, cdv = +base.cd || 0;
+  if (dmg && ammo && (dur || cdv)) {
+    cdv = cdv * (1 - (+cdReduce || 0) / 100);
+    return dmg * ammo * atk / Math.max(0.5, dur + cdv) * 60;
+  }
+  return +base.dpm || 0;
 }
 function planeTotals(key) {
   const sl = S.slots[key] || mk();
@@ -1415,7 +1578,7 @@ function planeTotals(key) {
     let base = {};
     try { base = typeof pf.base === 'string' ? (JSON.parse(pf.base) || {}) : (pf.base || {}); } catch (e) { base = {}; }
     const shp = shipOf(sl.ship) || { modules: [] };
-    const mod = (shp.modules || []).find(z => z.id === x.m) || {};
+    const mod = holderOf(shp, x.m) || {};
     const car = bySlot[(mod.slot || '').trim()] || { plane: 0, dmg: 0, crit: 0, crit_rate: 0 };
     const own = planeOwnAgg(x.id, sl);
     const ownPct = own.plane + own.dmg;
@@ -1423,7 +1586,9 @@ function planeTotals(key) {
     const pct = carPct + ownPct;
     const cm = critMulOfPairs((byPairs[(mod.slot || '').trim()] || []).concat(planeOwnPairs(x.id, sl)));
     const c = Number(x.count) || 0;
-    const per = (Number(base.dpm) || 0) * (1 + pct / 100) * cm;
+    const ownCd = (+own.cd || 0) + (+own.freq || 0);
+    const carCd = (+car.cd || 0) + (+car.freq || 0);
+    const per = planeBaseDpm(base, ownCd + carCd) * (1 + pct / 100) * cm;
     return { id: x.id, name: pf.name || x.id, kind: pf.kind || '', m: x.m, bay: x.bay,
       count: c, per: per, carPct: carPct, ownPct: ownPct, pct: pct, critMul: cm,
       dpm: per * c, ehp: (Number(base.ehp) || 0) * c };
@@ -1797,9 +1962,9 @@ function renderPlanesInner(host) {
       } else {
         const sh = shipOf(sel.value);
         sl.noCarrier = false; sl.ship = sel.value; sl.alloc = {}; sl.planes = [];
-        sl.carrierMods = (sh.modules || []).filter(m => m.mkind).map(m => m.id);
+        sl.carrierMods = carrierModsOf(sh);
         sl.modules = {};
-        syncLaunchSlots((sh.modules || []).filter(m => m.mkind), k);
+        syncLaunchSlots(carrierModsOf(sh).map(id => holderOf(sh, id)).filter(Boolean), k);
         S.sys[k] = (((sh.systems || [])[0]) || {}).id || '';
       }
       recalc(k); setTimeout(renderPlanes, 240);
@@ -1810,12 +1975,11 @@ function renderPlanesInner(host) {
     card.appendChild(rowSel);
 
     const ship = sl.noCarrier ? null : shipOf(sl.ship);
-    if (ship && !canMod(ship)) {
-      card.appendChild(el('div', 'muted', '▲ ' + (ship.cls || ship.kind) + '：没有模块槽位（只给超主力舰）；若它的系统自带舱位，会在上方「舱位」里显示。'));
+    const holders = ship ? carrierModsOf(ship).map(id => holderOf(ship, id)).filter(Boolean) : [];
+    if (ship && !holders.length) {
+      card.appendChild(el('div', 'muted', '▲ ' + (ship.cls || ship.kind) + '：没有可用的搭载舱位 —— 模块和系统都没有舱位；舱位可以直接写在系统上（问卷第 3 步）。'));
     } else if (ship) {
-      const lm = (ship.modules || []).filter(m => m.mkind);
-      if (!lm.length) card.appendChild(el('div', 'muted', '这条船没有搭载类模块（去数据管理里加）。'));
-      lm.forEach(m => {
+      holders.forEach(m => {
         const lb = el('label', 'row');
         const ck = el('input'); ck.type = 'checkbox';
         ck.checked = (sl.carrierMods || []).includes(m.id);
@@ -1823,27 +1987,28 @@ function renderPlanesInner(host) {
           sl.carrierMods = sl.carrierMods || [];
           const letter = (m.slot || '').charAt(0);
           if (ck.checked) {
-            // 同系列互斥：勾了就自动取消同 M / A / B 系列的其它模块
-            const clash = sl.carrierMods.filter(id => {
-              const om = (ship.modules || []).find(x => x.id === id);
-              return om && om.slot && om.slot.charAt(0) === letter;
-            });
-            if (clash.length) {
-              sl.carrierMods = sl.carrierMods.filter(id => !clash.includes(id));
-              toast(letter + ' 系列只能选一个模块，已把 ' + clash.join('、') + ' 换掉', 'warn');
+            // 同系列互斥：勾了就自动取消同 M / A / B 系列的其它搭载位（模块和系统一起算）
+            if (letter) {
+              const clash = sl.carrierMods.filter(id => {
+                const om = holderOf(ship, id);
+                return om && om.slot && om.slot.charAt(0) === letter;
+              });
+              if (clash.length) {
+                sl.carrierMods = sl.carrierMods.filter(id => !clash.includes(id));
+                toast(letter + ' 系列只能选一个搭载位，已把 ' + clash.join('、') + ' 换掉', 'warn');
+              }
             }
             sl.carrierMods.push(m.id);
           }
           else sl.carrierMods = sl.carrierMods.filter(x => x !== m.id);
           sl.planes = (sl.planes || []).filter(x => sl.carrierMods.includes(x.m));
-          syncLaunchSlots(lm, k);
+          syncLaunchSlots(holders, k);
           recalc(k); setTimeout(renderPlanes, 240);
         };
         lb.appendChild(ck);
-        const bays = (m.bays && m.bays.length) ? m.bays
-          : (m.mkind ? [{kind: (m.mkind || '').replace('搭载系统', ''), cap: m.cap,
-                          allow_group: m.allow_group}] : []);
-        lb.appendChild(el('span', '', ' ' + m.name + '　'
+        const bays = baysOfHolder(m);
+        const isSys = !((ship.modules || []).some(z => z.id === m.id));
+        lb.appendChild(el('span', '', ' ' + m.name + (isSys ? '（系统自带舱位）' : '') + '　'
           + bays.map(b => (b.kind || '') + ' ' + (b.cap || 0) + ' 舱'
               + (b.allow_group ? '（' + b.allow_group + '）' : '')).join(' ＋ ')));
         card.appendChild(lb);
@@ -1852,20 +2017,13 @@ function renderPlanesInner(host) {
 
     const lchs = r.launch ? (Array.isArray(r.launch) ? r.launch : [r.launch]) : [];
     const cm = (sl.carrierMods || []).slice();
-    const modOf = id => {
-      for (const sh of (S.bp.ships || [])) {
-        const m = (sh.modules || []).find(z => z.id === id);
-        if (m) return m;
-      }
-      return null;
-    };
-    // 每个搭载系统按 bays 展开成若干「装载位」
+    const modOf = id => holderOf(ship || shipOf(sl.ship), id);
+    // 每个搭载位按 bays 展开成若干「装载位」
     const holds = [];
     cm.forEach(id => {
       const m = modOf(id) || {name: id, bays: []};
-      const bays = (m.bays && m.bays.length) ? m.bays
-        : (m.mkind ? [{kind: (m.mkind || '').replace('搭载系统', ''), cap: m.cap,
-                        allow_group: m.allow_group}] : []);
+      const bays = baysOfHolder(m);
+      if (!bays.length) bays.push({kind: '', cap: 0, allow_group: ''});
       bays.forEach((b, i) => {
         if ((b.kind || '') === '无人机') return;   // 无人机由系统自带，不占舱位、不进装载位
         holds.push({
@@ -1909,13 +2067,13 @@ function renderPlanesInner(host) {
 
     if (!holds.length) {
       const tr0 = el('tr');
-      const _lmN = (ship && canMod(ship)) ? (ship.modules || []).filter(m => m.mkind).length : 0;
+      const _lmN = holders.length;
       const td0 = el('td', 'muted', (sl.noCarrier
         ? '当前是「不带母舰」模式，只看舰载机；切回母舰才会出现舱位。'
-        : (ship && !canMod(ship)
-            ? '这条船的舱位写在系统里，但「舰载机组合」目前只给超主力舰装舱位（和引擎口径一致）。'
-            : (_lmN ? '这条母舰有 ' + _lmN + ' 个搭载系统，先把上面那个勾上，舱位就出来了。'
-                    : '这条母舰还没有可用的搭载舱位 —— 去「问卷录入」给它填「战机舱 / 护航艇舱」，或「数据管理 → 模块」加一条带舱位的记录。'))));
+        : (!ship
+            ? '先在上面选一条母舰。'
+            : (_lmN ? '这条母舰有 ' + _lmN + ' 个搭载位，先把上面那个勾上，舱位就出来了。'
+                    : '这条母舰还没有可用的搭载舱位 —— 舱位可以写在模块上，也可以直接写在系统上（问卷第 3 步）。'))));
       td0.colSpan = 4;
       tr0.appendChild(td0); tb.appendChild(tr0);
     }
@@ -2001,11 +2159,9 @@ function renderPlanesInner(host) {
     const rr = (S.results || {})[k2] || {};
     const s2 = S.slots[k2];
     const mods = (s2.carrierMods || []).map(id => {
-      for (const sh of (S.bp.ships || [])) {
-        const m = (sh.modules || []).find(x => x.id === id);
-        if (m) return m.name;
-      }
-      return id;
+      const sh = shipOf(s2.ship);
+      const m = holderOf(sh, id);
+      return m ? m.name : id;
     }).join(' + ') || '—';
     const pl = (s2.planes || []).map(x => {
       const bp = (S.bp.ships || []).find(z => z.id === x.id)
@@ -2856,7 +3012,7 @@ function wizStart(editId) {
     systems: [], nodes: [], modules: [], editIdx: -1,
     dSys: {name: '', slot: '', tech_cap: 5, bayF: '', bayC: '', bayG: ''},
   editSys: -1,
-    dNode: {sysIdx: '0', label: '', max_lv: 5, cost: 2, costs: '', effect: 'dmg', val: 3, parent: '', parent2: ''},
+    dNode: {sysIdx: '0', label: '', max_lv: 5, cost: 2, costs: '', effect: 'dmg', val: 3, parent: '', parent2: '', perLv: ''},
     dMod: {slot: '', name: '', dmg: 10, sysIdx: '', bays: [], bayKind: '战机', bayCap: '', bayAllow: ''}};
   BASE_FIELDS.forEach(([k, , d]) => WIZ.ship.base[k] = d);
   $('#wizDlg').showModal();
@@ -2901,12 +3057,40 @@ function mergeNodeEff(prevEff, effect, pair) {
   }
   return out;
 }
+/* —— 每级数值分段（per_lv）——
+   一个节点可以写 [2,2,2,3,3]（单效果节点），也可以写 {键:[...]}（一个节点挂多种效果）。
+   问卷里用「逐级数值」一格编辑：逗号分隔，留空 = 每级固定值。 */
+function perLvArr(perLv, key) {
+  if (!perLv) return null;
+  if (Array.isArray(perLv)) return perLv.map(Number);
+  if (typeof perLv === 'object') {
+    const a = perLv[key];
+    return Array.isArray(a) ? a.map(Number) : null;
+  }
+  return null;
+}
+function perLvText(perLv, key) {
+  const a = perLvArr(perLv, key);
+  return a && a.length ? a.join(',') : '';
+}
+function parseLvText(txt) {
+  return String(txt || '').split(/[,，\s]+/).map(x => Number(x)).filter(x => isFinite(x) && x > 0);
+}
+function buildPerLv(prev, key, arr, eff) {
+  if (prev && !Array.isArray(prev) && typeof prev === 'object') {
+    const o = Object.assign({}, prev);
+    if (arr.length) o[key] = arr; else delete o[key];
+    return Object.keys(o).length ? o : null;
+  }
+  if (Object.keys(eff || {}).length > 1) return arr.length ? {[key]: arr} : null;
+  return arr.length ? arr : null;
+}
 /* —— 节点编辑的三个入口（横向结构里就地展开）—— */
 function wizStartNewNode(si, parentCode) {
   WIZ.editIdx = -1;
   WIZ.nodeDraft = {sysIdx: si, parent: parentCode || ''};
   Object.assign(WIZ.dNode, {sysIdx: String(si), label: '', parent: parentCode || '', parent2: '',
-    effect: WIZ.dNode.effect || 'dmg', cost: 2, costs: '', max_lv: 5, val: 3, pair: 0});
+    effect: WIZ.dNode.effect || 'dmg', cost: 2, costs: '', max_lv: 5, val: 3, pair: 0, perLv: ''});
   wizRender();
 }
 function wizStartEditNode(idx) {
@@ -2919,6 +3103,7 @@ function wizStartEditNode(idx) {
   Object.assign(WIZ.dNode, {sysIdx: String(n.sysIdx), label: n.label, max_lv: n.max_lv,
     cost: n.cost, costs: n.costs || '', effect: n.effect, val: n.val,
     pair: pk ? (+((n._eff || {})[pk]) || 0) : 0,
+    perLv: perLvText(n._perLv, n.effect),
     parent: pl[0] || '', parent2: pl[1] || ''});
   wizRender();
 }
@@ -2934,6 +3119,8 @@ function wizSaveNode(si, x, isDraft) {
   const _prev = isDraft ? null : WIZ.nodes[WIZ.editIdx];
   base._eff = mergeNodeEff(_prev && _prev._eff, WIZ.dNode.effect, WIZ.dNode.pair);
   base._effKey = WIZ.dNode.effect;
+  base._perLv = buildPerLv(_prev && _prev._perLv, WIZ.dNode.effect,
+    parseLvText(WIZ.dNode.perLv), base._eff);
   if (isDraft) WIZ.nodes.push(base);
   /* 改已有节点时保留 _id/_note/_eff，否则会被当成新节点、老行还留在库里 */
   else WIZ.nodes[WIZ.editIdx] = Object.assign({}, WIZ.nodes[WIZ.editIdx], base);
@@ -3137,7 +3324,8 @@ function wizRender() {
     }
 
     const FUNC_FIELDS = [
-      ['hull', '结构值', '点'], ['armor', '抵抗伤害', '点'], ['shield', '护盾值', '%'],
+      ['hull', '结构值', '点'], ['syshull', '系统结构值', '点'],
+      ['armor', '抵抗伤害', '点'], ['shield', '护盾值', '%'],
       ['cruise', '巡航速度', 'jm'], ['warp', '曲率速度', 'jm'], ['spd', '突防速度', ''],
       ['eva', '通用闪避', '%'],
       ['repair_bonus_pct', '维修加成', '%']
@@ -3146,7 +3334,7 @@ function wizRender() {
        装甲类 → 结构值/抵抗伤害/护盾值/维修加成；动力类 → 巡航/曲率/突防/闪避；
        能源类 → 能量输出/储能；其余（指挥/信息/搭载…）不提供船体数值，只留模块名。 */
     const SYS_FIELD_GROUPS = {
-      armor: ['hull', 'armor', 'shield', 'repair_bonus_pct'],
+      armor: ['hull', 'syshull', 'armor', 'shield', 'repair_bonus_pct'],
       drive: ['cruise', 'warp', 'spd', 'eva']
     };
     const funcFieldsFor = (sy) => {
@@ -3163,7 +3351,9 @@ function wizRender() {
     };
     const WEP_FIELDS = [
       ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'], ['dmg_siege', '攻城', '/分'],
-      ['dmg', '单发伤害', '点'], ['ammo_atk', '弹药数×攻击次数', ''],
+      /* 六字段：填齐这几个，引擎就按「单发 x 弹药 x 攻击次数 / 周期 x 门数」现算三路输出 */
+      ['dmg', '单发伤害', '点'], ['ammo', '弹药数', ''], ['atk', '攻击次数', ''],
+      ['guns', '门数', '门'], ['ammo_atk', '弹药数×攻击次数（旧）', ''],
       ['dur', '持续时间', 's'], ['cd', '冷却时间', 's'], ['lock', '锁定时间', 's'],
       ['warn', '预警', '%'], ['cyc', '工作次数', '次'], ['repair', '维修量', '点'],
       ['crit_rate', '自带暴击率', '%'], ['crit', '自带暴击伤害', '%']
@@ -3195,12 +3385,24 @@ function wizRender() {
         });
         card.appendChild(grid);
         if (sy.is_weapon) {
+          /* 文档导入的多武器系统：这些字段在入库时算好，这里只读展示，避免被问卷覆盖 */
+          const wl = weaponListOf(sy.raw);
+          if (wl) {
+            const box = el('div', 'muted');
+            box.textContent = '本系统 ' + wl.length + ' 把武器（只读，来自文档导入）：' + wl.map(w =>
+              (w.name || '武器') + ' 单发' + fmtNum(w.dmg) + ' ×' + fmtNum(w.volley)
+              + ' 门' + fmtNum(w.guns || 1)
+              + ' 持续' + fmtNum(w.dur || 0) + 's 冷却' + fmtNum(w.cd || 0) + 's'
+              + (w.family ? '（' + w.family + '）' : '')).join(' · ');
+            card.appendChild(box);
+          }
           /* 自带暴击只抬本系统的对舰/对空/攻城：三行空着就白填，输入时实时说一声 */
           const hint = el('div', 'muted');
           const upd = () => {
             const rw = sy.raw || {};
             const r = Number(rw.crit_rate) || 0, d = Number(rw.crit) || 0;
-            const hasDmg = rw.dmg_atk !== undefined || rw.dmg_air !== undefined || rw.dmg_siege !== undefined;
+            const hasDmg = rw.dmg_atk !== undefined || rw.dmg_air !== undefined || rw.dmg_siege !== undefined
+              || !!weaponSixOf(rw) || !!weaponListOf(rw);
             if (!(r > 0 || d > 0)) { hint.textContent = ''; return; }
             if (!(r > 0 && d > 0)) { hint.textContent = '自带暴击只填了一格：暴击率和暴击伤害要都填才生效。'; return; }
             if (!hasDmg) { hint.textContent = '自带暴击已填（×' + (1 + r * d / 10000).toFixed(2) + '），但对舰 / 对空 / 攻城都是空的：这三行没有数字可抬，先填伤害才看得到效果。'; return; }
@@ -3212,6 +3414,11 @@ function wizRender() {
         }
       }
 
+      if (sy.raw && sy.raw._calib && (sy.raw._calib.name || sy.raw._calib.text)) {
+        card.appendChild(el('div', 'muted',
+          '系统调校（只读，来自文档）：' + (sy.raw._calib.name || '')
+          + (sy.raw._calib.text ? ' — ' + sy.raw._calib.text : '')));
+      }
       // 模块名（可选，只对「一系统一模块」的写法有意义）
       wIn(card, '模块名（可选）', sy, 'module', 'text');
       sysgrid.appendChild(card);
@@ -3220,7 +3427,8 @@ function wizRender() {
     const tail = el('div', 'muted');
     tail.innerHTML = '输入框按系统类型自动裁剪：只有「装甲系统」和「动力系统」需要填船体数值，其余系统只填模块名。'
       + '<b>结构值</b>最终会按「基础值 ×（1 + 加点收益%）」算；'
-      + '武器系统的「对舰 / 对空 / 攻城」是每分钟的预估输出；单发 / 弹药数×攻击次数 / 持续 / 冷却 / 工作次数只做记录与展示，不参与任何计算。'
+      + '武器系统的「对舰 / 对空 / 攻城」现在由引擎按六字段（单发 / 弹药 / 攻击次数 / 持续 / 冷却 / 门数）现算，'
+      + '上面那三行存档只作对账；攻城公式还没定下来，只吃存档值。'
       + '最后两格「自带暴击率 / 自带暴击伤害」填该武器系统自带的暴击：三行各乘「1 + 暴击率% × 暴击伤害%」（如 30 与 50 → ×1.15），只作用于本系统；两格只填一格不生效。';
     b.appendChild(tail);
   } else if (st === 3) {
@@ -3246,10 +3454,15 @@ function wizRender() {
         '横向结构：从左往右是第 1 层 → 第 2 层 → 第 3 层（对应 1 → 1-1 → 1-1-1）。'
         + '点卡片就在原地展开编辑，不用去下面找表单；「＋ 根节点」在系统标题右边。'));
 
-      /* 节点效果统一口径：只列这 21 项（顺序固定），老节点用到的其它效果仍能正确显示 */
+      /* 节点效果统一口径：先列内置这批（顺序固定），再接文档重建后新增的键；
+         effects 表里没登记的键会自动落到「（自定义）」里 */
       const NODE_EFFECT_IDS = ['dmg', 'freq', 'acc', 'acc_small', 'acc_large', 'acc_plane',
         'armor', 'crit_rate', 'crit', 'eff7587', 'eva', 'eva_missile', 'eva_torp',
-        'lock', 'lockres', 'hull', 'move', 'repair', 'shield', 'warp', 'speed'];
+        'lock', 'lockres', 'hull', 'move', 'repair', 'shield', 'warp', 'speed',
+        'syshull', 'dmg_cannon', 'dmg_rail', 'dmg_pulse', 'dmg_missile', 'dmg_plasma',
+        'dmg_drone', 'dmg_atk_pct', 'dmg_air_pct', 'dmg_siege_pct', 'dur', 'warn', 'cd', 'cd_up',
+        'cargo', 'repair_bonus_pct', 'intc', 'intc_torp', 'critres', 'plane',
+        'p_acc', 'p_move', 'p_lock', 'p_freq', 'p_eva_missile'];
       const effOptions = () => {
         const all = ((S.bp && S.bp.effects) || []);
         const byId = {};
@@ -3297,6 +3510,9 @@ function wizRender() {
             + (_pvN > 0 ? '（同节点 ' + effName(_pkN) + ' +' + _pvN + '/级）' : '')));
           card.appendChild(el('div', 'wiz-meta',
             '每级 ' + n.cost + (n.costs ? '（逐级 ' + n.costs + '）' : '') + ' · 上限 ' + n.max_lv + ' 级'));
+          const _pvTxt = perLvText(n._perLv, n.effect);
+          if (_pvTxt) card.appendChild(el('div', 'wiz-meta',
+            '逐级数值 ' + _pvTxt.replace(/,/g, '/') + '（按级数累加，超出末项外推）'));
           const acts = el('div', 'wiz-acts');
           const kid = el('button', 'btn sm ghost', '＋子节点'); kid.type = 'button';
           kid.onclick = (ev) => { ev.stopPropagation(); wizStartNewNode(si, x.code); };
@@ -3417,6 +3633,9 @@ function wizRender() {
             + '② 只填「暴击伤害」= 全局暴伤，叠加到同一系统里所有暴击概率上；没有概率时单填暴伤不生效。'));
         }
         wIn(f, '每级数值', WIZ.dNode, 'val', 'number');
+        wIn(f, '逐级数值（逗号分隔，可空；例 2,3,3,3,3 = 前 3 级 +2、后 2 级 +3）', WIZ.dNode, 'perLv', 'text');
+        f.appendChild(el('div', 'muted',
+          '填了逐级数值就按级数逐级累加（级数超过数组长度时按最后一项外推）；留空 = 每级都加「每级数值」。'));
         const acts = el('div', 'wiz-acts');
         const save = el('button', 'btn sm', isDraft ? '加进列表' : '保存'); save.type = 'button';
         save.onclick = () => wizSaveNode(si, x, isDraft);
@@ -3544,12 +3763,17 @@ function wizRender() {
     const tb0 = el('tbody');
     const put = (k, v) => { const tr = el('tr'); tr.appendChild(el('td', '', k)); tr.appendChild(el('td', '', v)); tb0.appendChild(tr); };
     put('舰船', (WIZ.ship.name || '（未填）') + ' · ' + (WIZ.ship.kind || '?') + ' · ' + (WIZ.ship.cls || '?') + ' · ' + (WIZ.ship.size || '?') + ' · 变形技术值 ' + (WIZ.ship.tech_total || 0));
-    WIZ.systems.forEach((sy, i) => put('系统 ' + (i + 1), sy.name + (sy.slot ? '（槽位 ' + sy.slot + '）' : '') + ' · 可用节点 ' + (sy.tech_cap || '不限')));
+    WIZ.systems.forEach((sy, i) => put('系统 ' + (i + 1), sy.name + (sy.slot ? '（槽位 ' + sy.slot + '）' : '')
+      + ' · 可用节点 ' + (sy.tech_cap || '不限')
+      + (weaponListOf(sy.raw) ? ' · ' + weaponListOf(sy.raw).length + ' 把武器' : '')
+      + ((sy.bays && sy.bays.length) ? ' · 舱位 ' + sy.bays.map(b => b.kind + ' ' + b.cap).join(' + ') : '')));
     WIZ.nodes.forEach((n, i) => {
       const sy = WIZ.systems[+n.sysIdx];
+      const _plt = perLvText(n._perLv, n.effect);
       put('加点 ' + (i + 1), (sy ? sy.name : '?') + ' / ' + n.label + ' · 每级 ' + n.cost
         + (n.costs ? '（逐级 ' + n.costs + '）' : '') + ' · 上限 ' + n.max_lv + ' 级 · '
-        + effName(n.effect) + ' +' + n.val + (n.parent ? ' · 前置「' + n.parent + '」' : ''));
+        + effName(n.effect) + ' +' + n.val + (n.parent ? ' · 前置「' + n.parent + '」' : '')
+        + (_plt ? ' · 逐级 ' + _plt.replace(/,/g, '/') : ''));
     });
     WIZ.systems.filter(x => x.slot).forEach((sy, k) => put('模块 ' + (k + 1),
       sy.slot + ' ' + sy.name + ' · ' + ((sy.bays && sy.bays.length)
@@ -3618,9 +3842,16 @@ function wizPayload() {
   /* 编辑模式沿用原 id；新建模式按序号生成 */
   const sids = WIZ.systems.map((s, i) => s._id || ('sys_' + sid + '_' + i));
   const systems = WIZ.systems.map((s, i) => {
+    /* 数字照旧（0 当清空），但数组/对象必须原样带回去：
+       weapons[]（文档导入的多武器）、bays、fam_bonus、_calib 一旦被过滤掉，
+       在问卷里保存一次系统就会退化成「首武器兼容字段」，多武器数据直接丢失。 */
     const num = {};
     Object.keys(s.raw || {}).forEach(k => {
-      const v = Number(s.raw[k]);
+      const raw = s.raw[k];
+      if (raw === undefined || raw === null || raw === '') return;
+      if (Array.isArray(raw)) { if (raw.length) num[k] = raw; return; }
+      if (typeof raw === 'object') { if (Object.keys(raw).length) num[k] = raw; return; }
+      const v = Number(raw);
       if (isFinite(v) && v !== 0) num[k] = v;
     });
     const stats = Object.assign({}, s._stats || {});
@@ -3642,8 +3873,14 @@ function wizPayload() {
       if (isFinite(v) && v > 0) WIZ.ship.base[k] = v;
     });
     /* 弹药数×攻击次数已合并成一格：原样记到 ammo，atk 记 1（不参与计算） */
+    ['ammo', 'atk', 'guns'].forEach(k => {
+      const v = Number(firstW.raw[k]);
+      if (isFinite(v) && v > 0) WIZ.ship.base[k] = v;
+    });
     const aa = Number(firstW.raw.ammo_atk);
-    if (isFinite(aa) && aa > 0) { WIZ.ship.base.ammo = aa; WIZ.ship.base.atk = 1; }
+    if (!(Number(firstW.raw.ammo) && Number(firstW.raw.atk)) && isFinite(aa) && aa > 0) {
+      WIZ.ship.base.ammo = aa; WIZ.ship.base.atk = 1;
+    }
   }
   /* 突防速度由功能系统（动力/引擎）提供，取第一个填了值的 */
   const spdSys = WIZ.systems.find(s => Number((s.raw || {}).spd) > 0);
@@ -3664,6 +3901,7 @@ function wizPayload() {
       label: n.label, max_lv: n.max_lv, cost: n.cost,
       costs: costs.length ? JSON.stringify(costs) : '',
       effect: eff,
+      per_lv: n._perLv ? JSON.stringify(n._perLv) : '',
       note: n._note || (n.effect ? (effName(n.effect) + ' +' + n.val + '/级') : '')};
   });
   const modules = WIZ.systems.map((sy, i) => ({sy, i}))
@@ -3717,7 +3955,7 @@ function wizEditOpen(sh) {
       base: Object.assign({}, sh.base || {}), note: sh.note || ''},
     systems: [], nodes: [], modules: [], editSys: -1,
     dSys: {name: '', slot: '', tech_cap: 5, bayF: '', bayC: '', bayG: ''},
-    dNode: {sysIdx: '0', label: '', max_lv: 5, cost: 2, costs: '', effect: 'dmg', val: 3, parent: '', parent2: ''},
+    dNode: {sysIdx: '0', label: '', max_lv: 5, cost: 2, costs: '', effect: 'dmg', val: 3, parent: '', parent2: '', perLv: ''},
     dMod: {slot: '', name: '', dmg: 10, sysIdx: '', bays: [], bayKind: '战机', bayCap: '', bayAllow: ''},
     orig: {systems: [], nodes: [], modules: []}};
   (sh.systems || []).forEach((sy, si) => {
@@ -3725,14 +3963,16 @@ function wizEditOpen(sh) {
     let raw = {};
     try { raw = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { raw = {}; }
     /* 旧数据把弹药数、攻击次数分开存：合并口径读回来时乘成一项，避免编辑后丢失 */
-    if (raw.ammo_atk === undefined && (Number(raw.ammo) || Number(raw.atk))) {
+    if (raw.ammo_atk === undefined && !(Number(raw.ammo) && Number(raw.atk))
+      && (Number(raw.ammo) || Number(raw.atk))) {
       raw.ammo_atk = (Number(raw.ammo) || 0) * (Number(raw.atk) || 1);
     }
     WIZ.systems.push({_id: sy.id, _stats: sy.stats || {}, _note: sy.note || '',
       _ord: sy.ord || (si + 1), _no_nodes: sy.no_nodes || 0, _mod: mod || null,
       name: sy.name, slot: sy.slot || '', tech_cap: +sy.tech_cap || 0,
       raw: raw,
-      is_weapon: !!(sy.is_weapon || (raw.dmg_atk !== undefined || raw.dmg_air !== undefined || raw.dmg_siege !== undefined)),
+      is_weapon: !!(sy.is_weapon || (raw.dmg_atk !== undefined || raw.dmg_air !== undefined
+        || raw.dmg_siege !== undefined || !!weaponSixOf(raw) || !!weaponListOf(raw))),
       module: (sy.stats && sy.stats['模块']) || '',
       bays: wizBaysOf(sy, mod)});
     WIZ.orig.systems.push(sy.id);
@@ -3741,6 +3981,7 @@ function wizEditOpen(sh) {
       const ks = Object.keys(n.effect || {});
       const ek = ks[0] || '';
       WIZ.nodes.push({_id: n.id, _note: n.note || '', _eff: n.effect || {}, _effKey: ek,
+        _perLv: n.per_lv || null,
         sysIdx: si, label: n.label,
         max_lv: +n.max_lv || 1, cost: +n.cost || 0, costs: (n.costs || []).join(','),
         effect: ek, val: Number((n.effect || {})[ek] || 0), parent: ''});
@@ -5927,7 +6168,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-17.56';
+window.__APP_VER = '2026-11-18.64';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

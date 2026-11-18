@@ -32,9 +32,10 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
 from db import BASE, DATA_DIR, DB_PATH, FROZEN, RES_DIR, conn
-from schema import SCHEMA, EFFECTS_SEED, EFFECTS_CANON, ATTRS_SEED, SHIPS, SYSTEMS, NODES, MODULES, PLANES, USERS
+from schema import (SCHEMA, EFFECTS_SEED, EFFECTS_CANON, ATTRS_SEED, SHIPS, SYSTEMS,
+                    NODES, MODULES, PLANES, USERS, CLASSES, EFFECT_RULES, EFFECT_NAMES)
 from util import j, num
-from engine import GROUP_RANK, _group_ok, _normalize_ship, simulate
+from engine import GROUP_RANK, _group_ok, _lv_amt, _normalize_ship, simulate
 
 STATIC = os.path.join(RES_DIR, "static")
 
@@ -42,7 +43,7 @@ HOST = os.environ.get("FT_HOST") or "127.0.0.1"
 PORT = (int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit()
         else int(os.environ.get("PORT") or os.environ.get("FT_PORT") or 8787))
 VERSION = "1.4.0"
-SCHEMA_VERSION = 2              # 数据库结构版本，写在 PRAGMA user_version 里
+SCHEMA_VERSION = 4              # 数据库结构版本，写在 PRAGMA user_version 里
 SESSION_HOURS = 12
 
 # ---- 操作日志治理：热库保留 N 天 / 上限 M 条，超出的先归档再删 ----
@@ -190,6 +191,18 @@ def init_db():
             ("sessions", "csrf", "TEXT"),
             ("alliances", "relation", "TEXT DEFAULT '中立'"),
             ("squads", "headcount", "INTEGER DEFAULT 0"),
+            # ---- schema v3 ----
+            ("ships", "class", "TEXT"), ("ships", "role", "TEXT"),
+            ("ships", "deprecated", "INTEGER DEFAULT 0"),
+            ("systems", "sys_kind", "TEXT"), ("systems", "max_modules", "INTEGER DEFAULT 0"),
+            ("systems", "deprecated", "INTEGER DEFAULT 0"),
+            ("nodes", "ord", "INTEGER DEFAULT 0"), ("nodes", "deprecated", "INTEGER DEFAULT 0"),
+            ("effects", "kind", "TEXT"), ("effects", "target", "TEXT"), ("effects", "scope", "TEXT"),
+            ("effects", "ord", "INTEGER DEFAULT 0"), ("effects", "builtin", "INTEGER DEFAULT 0"),
+            ("effects", "deprecated", "INTEGER DEFAULT 0"),
+            ("planes", "bay_kind", "TEXT"), ("planes", "deprecated", "INTEGER DEFAULT 0"),
+            # ---- schema v4 ----
+            ("nodes", "per_lv", "TEXT"),
         ]:
             try:
                 c.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_ddl}")
@@ -292,10 +305,57 @@ def init_db():
                           (json.dumps(bays, ensure_ascii=False), mid))
             c.executemany("INSERT OR REPLACE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
                           [(i, n, u, note) for i, n, u, note in EFFECTS_SEED])
-            c.executemany("INSERT OR REPLACE INTO planes VALUES(?,?,?,?,?,?,?)",
-                          [(i, n, k, g, per, json.dumps(b), note)
+            c.executemany("INSERT OR REPLACE INTO planes"
+                          "(id,name,kind,pgroup,per_group,base,note,bay_kind)"
+                          " VALUES(?,?,?,?,?,?,?,?)",
+                          [(i, n, k, g, per, json.dumps(b), note,
+                            "护航艇" if k == "护航艇" else ("无人机" if k == "无人机" else "战机"))
                            for i, n, k, g, per, b, note in PLANES])
             c.execute("INSERT OR REPLACE INTO meta VALUES('version', 1)")
+        # ---- schema v3：分类字典 + 效果计算字典（幂等，老库也会补上）----
+        for _cid, _cn, _cord, _cnote in CLASSES:
+            c.execute("INSERT OR IGNORE INTO classes(id,name,ord,note) VALUES(?,?,?,?)",
+                      (_cid, _cn, _cord, _cnote))
+        for _k, (_kind, _tgt, _scope) in EFFECT_RULES.items():
+            c.execute("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                      (_k, EFFECT_NAMES.get(_k, _k), "%" if _kind == "pct" else "", ""))
+        for _k, (_kind, _tgt, _scope) in EFFECT_RULES.items():
+            c.execute("UPDATE effects SET kind=COALESCE(NULLIF(kind,''),?),"
+                      " target=COALESCE(NULLIF(target,''),?), scope=COALESCE(NULLIF(scope,''),?)"
+                      " WHERE id=?", (_kind, _tgt, _scope, _k))
+        c.execute("UPDATE effects SET builtin=1 WHERE id IN (%s)"
+                  % ",".join("?" * len(EFFECT_RULES)), tuple(EFFECT_RULES.keys()))
+        # 老数据回填：cls（更细）优先，其次 kind；只填空值，不覆盖用户改过的
+        _CMAP = (("super", ("超主力舰",), ("航母", "超大型")),
+                 ("main", ("主力舰",), ("主力舰", "大型")),
+                 ("escort", ("护卫舰", "护卫艇"), ("护卫舰", "护卫艇", "小型")),
+                 ("plane", ("舰载机",), ()),
+                 ("drone", ("无人机",), ()))
+
+        def _fill(force=False):
+            for _cid, _kinds, _clss in _CMAP:
+                for _field, _vals in (("cls", _clss), ("kind", _kinds)):
+                    if not _vals:
+                        continue
+                    _q = ("UPDATE ships SET class=? WHERE (%s IS NULL OR %s='') AND %s IN (%s)"
+                          % (_field, _field, _field, ",".join("?" * len(_vals))))
+                    c.execute(_q, (_cid,) + _vals)
+            if not force:
+                return
+            # 一次性重推：cls 说了算（kind 太粗，护卫舰曾被并进主力舰）
+            for _cid, _kinds, _clss in _CMAP:
+                if not _clss:
+                    continue
+                c.execute("UPDATE ships SET class=? WHERE cls IN (%s)"
+                          % ",".join("?" * len(_clss)), (_cid,) + _clss)
+
+        _fill()
+        if not c.execute("SELECT 1 FROM settings WHERE k='v3_class_by_cls'").fetchone():
+            _fill(force=True)
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('v3_class_by_cls','1')")
+        c.execute("UPDATE planes SET bay_kind=CASE kind"
+                  " WHEN '护航艇' THEN '护航艇' WHEN '无人机' THEN '无人机' ELSE '战机' END"
+                  " WHERE bay_kind IS NULL OR bay_kind=''")
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             ts = now()
             c.executemany(
@@ -754,6 +814,7 @@ def load_bundle():
             d = dict(r)
             d["effect"] = j(d.get("effect"))
             d["costs"] = j(d.get("costs")) or []
+            d["per_lv"] = j(d.get("per_lv")) or None
             nodes.append(d)
         modules = []
         for r in c.execute("SELECT * FROM modules ORDER BY ship, slot"):
@@ -808,7 +869,10 @@ def load_bundle():
                 if v > 0:
                     dpm = v
                     break
-        is_boat = (s.get("cls") or "") == "护航艇"
+        # 新数据里舰载机的 cls 可能为空，靠 pgroup（护航艇 / 大编组 / 中编组）判舱位类型
+        is_boat = ((s.get("cls") or "") == "护航艇"
+                   or "护航艇" in (s.get("pgroup") or "")
+                   or (s.get("base") or {}).get("bay_kind") == "护航艇")
         # 蓝图里的舰载机一律：1 架 = 1 舱，忽略游戏内编组（3/6 架一组）
         rec = {"id": s["id"], "name": s["name"],
                "kind": "护航艇" if is_boat else "战机",
@@ -1126,14 +1190,14 @@ TABLES = {
                       "owner_org", "owner_alliance"]),
     "systems": ("id", ["id", "ship", "slot", "name", "tech_cap", "stats", "bays", "note", "ord", "no_nodes", "stats_norm", "is_weapon"]),
     "effects": ("id", ["id", "name", "unit", "note"]),
-    "nodes": ("id", ["id", "sys", "parent", "label", "max_lv", "cost", "costs", "effect", "note",
-              "checked_at", "checked_by"]),
+    "nodes": ("id", ["id", "sys", "parent", "label", "max_lv", "cost", "costs", "per_lv", "effect",
+              "note", "checked_at", "checked_by"]),
     "modules": ("id", ["id", "ship", "slot", "name", "mkind", "bays", "sys",
                        "bonus", "stats", "note"]),
     "planes": ("id", ["id", "name", "kind", "pgroup", "per_group", "base", "note"]),
     "groups": ("id", ["id", "name", "per_unit", "hangar", "note"]),
 }
-JSON_COLS = {"ships": ["base"], "systems": ["stats", "bays"], "nodes": ["effect", "costs"],
+JSON_COLS = {"ships": ["base"], "systems": ["stats", "bays", "stats_norm"], "nodes": ["effect", "costs", "per_lv"],
              "modules": ["bonus", "stats", "bays"], "planes": ["base"], "groups": []}
 
 
@@ -3063,7 +3127,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     for _k, _v in (_pn.get("effect") or {}).items():
                         if _k in ("plane", "dmg"):
-                            _own[_k] = float(num(_own.get(_k), 0)) + float(_v) * _lv
+                            _own[_k] = float(num(_own.get(_k), 0)) + _lv_amt(_pn, _k, _v, _lv)[0]
                 _pmul = 1 + (float(num(_own.get("plane"), 0)) + float(num(_own.get("dmg"), 0))) / 100.0
                 light = bool(data.get("light"))
                 rows.append({"name": pb["name"], "count": cnt,
@@ -3165,7 +3229,8 @@ class Handler(BaseHTTPRequestHandler):
                     c2.execute("UPDATE users SET uid=? WHERE id=?", (_g, r["id"]))
                 r = dict(r)
                 r["uid"] = _g
-        log("登录", name, "session")
+        # 成功登录也记 IP：8787 曾短时对公网开放，事后要靠这条线索核对来源。
+        log("登录", name, ip, "session")
         return self.send_json({"ok": True, "token": token, "csrf": csrf,
                                "user": safe_user(dict(r))})
 

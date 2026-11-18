@@ -4,15 +4,20 @@
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v INTEGER);
+CREATE TABLE IF NOT EXISTS classes(
+  id TEXT PRIMARY KEY, name TEXT, ord INTEGER DEFAULT 0, note TEXT);
 CREATE TABLE IF NOT EXISTS ships(
   id TEXT PRIMARY KEY, name TEXT, cls TEXT, kind TEXT, size TEXT, tech_total INTEGER,
-  base TEXT, note TEXT);
+  base TEXT, note TEXT,
+  class TEXT, role TEXT, deprecated INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS systems(
   id TEXT PRIMARY KEY, ship TEXT, slot TEXT, name TEXT, tech_cap INTEGER,
-  stats TEXT, note TEXT, ord INTEGER, no_nodes INTEGER DEFAULT 0);
+  stats TEXT, note TEXT, ord INTEGER, no_nodes INTEGER DEFAULT 0,
+  sys_kind TEXT, max_modules INTEGER DEFAULT 0, deprecated INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS nodes(
   id TEXT PRIMARY KEY, sys TEXT, parent TEXT, label TEXT, max_lv INTEGER,
-  cost INTEGER, costs TEXT, effect TEXT, note TEXT);
+  cost INTEGER, costs TEXT, per_lv TEXT, effect TEXT, note TEXT,
+  ord INTEGER DEFAULT 0, deprecated INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS modules(
   id TEXT PRIMARY KEY, ship TEXT, slot TEXT, name TEXT, mkind TEXT,
   cap INTEGER, allow_group TEXT, bonus TEXT, stats TEXT, note TEXT);
@@ -21,7 +26,7 @@ CREATE TABLE IF NOT EXISTS groups (
 );
 CREATE TABLE IF NOT EXISTS planes(
   id TEXT PRIMARY KEY, name TEXT, kind TEXT, pgroup TEXT, per_group INTEGER,
-  base TEXT, note TEXT);
+  base TEXT, note TEXT, bay_kind TEXT, deprecated INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, pwd TEXT,
   role TEXT, name TEXT, squadron TEXT, phone TEXT, status TEXT, note TEXT,
@@ -37,7 +42,9 @@ CREATE TABLE IF NOT EXISTS audit(
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user INTEGER, expire INTEGER);
 CREATE TABLE IF NOT EXISTS attrs(id TEXT PRIMARY KEY, name TEXT, unit TEXT, note TEXT, ord INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS effects(
-  id TEXT PRIMARY KEY, name TEXT, unit TEXT, note TEXT);
+  id TEXT PRIMARY KEY, name TEXT, unit TEXT, note TEXT,
+  kind TEXT, target TEXT, scope TEXT, ord INTEGER DEFAULT 0,
+  builtin INTEGER DEFAULT 0, deprecated INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS seasons(
   id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL,
@@ -249,3 +256,93 @@ USERS = [
     ("editor", "editor123", "editor", "编辑员", "一大区", "13800000001", "在职", "可改人员信息"),
     ("viewer", "viewer123", "viewer", "只读用户", "二大区", "13800000002", "在职", "只能查询"),
 ]
+
+
+# ---------------------------------------------------------------- 重建用种子
+# 舰船类别（下拉顺序即 ord）
+CLASSES = [
+    ("super", "超主力舰", 1, "可改装模块、可装搭载系统"),
+    ("main", "主力舰", 2, "大型战斗舰"),
+    ("escort", "护卫舰", 3, "中小型战斗舰"),
+    ("plane", "舰载机", 4, "战机 / 轰炸机 / 护航艇"),
+    ("drone", "无人机", 5, "系统自带，不占舱位"),
+]
+
+# 效果的计算口径：id → (kind, target, scope)
+#   kind  : pct=百分比加成  add=点值加成  note=纯描述（不参与计算）
+#   target: 作用到哪个数值字段（note 留空）
+#   scope : ship=整舰  system=所属系统  weapon=武器系统  plane=舰载机
+EFFECT_RULES = {
+    "dmg":            ("pct", "dmg", "system"),
+    "dmg_atk_pct":    ("pct", "dmg_atk", "weapon"),
+    "dmg_air_pct":    ("pct", "dmg_air", "weapon"),
+    "dmg_siege_pct":  ("pct", "dmg_siege", "weapon"),
+    "freq":           ("pct", "freq", "weapon"),
+    "acc":            ("pct", "acc", "weapon"),
+    "acc_small":      ("pct", "acc_small", "weapon"),
+    "acc_large":      ("pct", "acc_large", "weapon"),
+    "acc_plane":      ("pct", "acc_plane", "plane"),
+    "armor":          ("add", "armor", "ship"),
+    "crit_rate":      ("pct", "crit_rate", "system"),
+    "crit":           ("pct", "crit", "system"),
+    "eff7587":        ("note", "", ""),
+    "eva":            ("pct", "eva", "ship"),
+    "eva_missile":    ("pct", "eva_missile", "ship"),
+    "eva_torp":       ("pct", "eva_torp", "ship"),
+    "lock":           ("pct", "lock", "weapon"),
+    "lockres":        ("pct", "lockres", "ship"),
+    "hull":           ("add", "hull", "ship"),
+    "move":           ("pct", "move", "plane"),
+    "repair":         ("add", "repair", "system"),
+    "shield":         ("add", "shield", "ship"),
+    "warp":           ("pct", "warp", "ship"),
+    "speed":          ("pct", "cruise", "ship"),
+    # ---- 历史键（EFFECTS_SEED 里的老 id，引擎仍在消费，必须给口径）----
+    "cd":             ("pct", "cd", "weapon"),
+    "cd_up":          ("pct", "cd", "weapon"),
+    "plane":          ("pct", "plane", "plane"),
+    "critres":        ("pct", "crit_res", "ship"),
+    "intc":           ("pct", "intercept", "weapon"),
+    "range":          ("add", "range", "weapon"),
+    "selfheal":       ("pct", "selfheal", "ship"),
+    "syshull":        ("pct", "syshull", "system"),
+    "focus":          ("note", "", ""),
+    "formation":      ("note", "", ""),
+    # ---- 舰船数据文档（docx）重建时引入的键 ----
+    "dmg_cannon":     ("pct", "dmg_cannon", "weapon"),
+    "dmg_rail":       ("pct", "dmg_rail", "weapon"),
+    "dmg_pulse":      ("pct", "dmg_pulse", "weapon"),
+    "dmg_missile":    ("pct", "dmg_missile", "weapon"),
+    "dmg_plasma":     ("pct", "dmg_plasma", "weapon"),
+    "dmg_drone":      ("pct", "dmg_drone", "system"),
+    "dur":            ("pct", "dur", "weapon"),
+    "warn":           ("pct", "warn", "weapon"),
+    "cargo":          ("add", "cargo", "ship"),
+    "repair_bonus_pct": ("pct", "repair_bonus", "ship"),
+    "intc_torp":      ("pct", "intercept_torp", "weapon"),
+    "p_acc":          ("pct", "p_acc", "plane"),
+    "p_move":         ("pct", "p_move", "plane"),
+    "p_eva_missile":  ("pct", "p_eva_missile", "plane"),
+    "p_lock":         ("pct", "p_lock", "plane"),
+    "p_freq":         ("pct", "p_freq", "plane"),
+}
+
+# 新键进 effects 表时用的中文名（旧的 24 个键名在 EFFECTS_CANON 里）
+EFFECT_NAMES = {
+    "dmg_cannon": "火炮伤害",
+    "dmg_rail": "轨道炮伤害",
+    "dmg_pulse": "脉冲炮伤害",
+    "dmg_missile": "导弹/鱼雷伤害",
+    "dmg_plasma": "等离子伤害",
+    "dmg_drone": "无人机伤害",
+    "dur": "持续时间",
+    "warn": "锁定效率",
+    "cargo": "仓储量",
+    "repair_bonus_pct": "受维修效果",
+    "intc_torp": "鱼雷拦截率",
+    "p_acc": "载机命中率",
+    "p_move": "载机突防时间",
+    "p_eva_missile": "载机对导弹闪避",
+    "p_lock": "载机选目标时间",
+    "p_freq": "载机冷却时间",
+}
