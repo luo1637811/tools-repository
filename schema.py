@@ -345,4 +345,15 @@ EFFECT_NAMES = {
     "p_eva_missile": "载机对导弹闪避",
     "p_lock": "载机选目标时间",
     "p_freq": "载机冷却时间",
+    # 2026-11-19 补：这几个键以前没有中文名，问卷里显示成裸键名（syshull / cd / range …）
+    "syshull": "系统结构值",
+    "plane": "载机伤害",
+    "cd": "冷却时间",
+    "cd_up": "冷却时间（叠加）",
+    "intc": "拦截率",
+    "range": "射程",
+    "critres": "暴击抵抗",
+    "selfheal": "自维修",
+    "focus": "集火目标",
+    "formation": "编队",
 }

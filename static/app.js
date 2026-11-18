@@ -3026,8 +3026,18 @@ function wIn(parent, label, obj, key, type, opts, unit) {
   let inp;
   if (type === 'select') {
     inp = el('select');
-    (opts || []).forEach(([v, t]) => { const o = el('option', '', t); o.value = v;
-      if (obj[key] === v) o.selected = true; inp.appendChild(o); });
+    const addOpts = (list, host) => (list || []).forEach(([v, t]) => {
+      const o = el('option', '', t); o.value = v;
+      if (obj[key] === v) o.selected = true; host.appendChild(o);
+    });
+    if (opts && opts.groups) {
+      /* 分组下拉：按作用域分 optgroup（整舰 / 系统内 / 武器 / 载机 / 说明） */
+      opts.groups.forEach(g => {
+        if (!g.items || !g.items.length) return;
+        const og = el('optgroup'); og.label = g.label;
+        addOpts(g.items, og); inp.appendChild(og);
+      });
+    } else addOpts(opts, inp);
     inp.onchange = () => { obj[key] = inp.value; };
   } else {
     inp = el('input');
@@ -3549,35 +3559,58 @@ function wizRender() {
         'dmg_drone', 'dmg_atk_pct', 'dmg_air_pct', 'dmg_siege_pct', 'dur', 'warn', 'cd', 'cd_up',
         'cargo', 'repair_bonus_pct', 'intc', 'intc_torp', 'critres', 'plane',
         'p_acc', 'p_move', 'p_lock', 'p_freq', 'p_eva_missile'];
+      /* 作用域 → 分组标题（顺序固定；引擎按 scope 决定这条加成加到哪） */
+      const EFF_SCOPE_ORDER = [
+        ['ship', '整舰（直接加到舰体）'],
+        ['system', '系统内（只影响这个系统）'],
+        ['weapon', '武器（只影响本系统武器）'],
+        ['plane', '舰载机（机库 / 载机口径）'],
+        ['note', '说明（不参与计算）'],
+        ['other', '其它']
+      ];
+      const effLabel = (k) => {
+        const e = ((S.bp && S.bp.effects) || []).find(x => x.id === k);
+        if (!e) return k;
+        const nm = splitNameUnit(e.name, e.unit);
+        return nm.base || k;
+      };
       const effOptions = () => {
         const all = ((S.bp && S.bp.effects) || []);
         const byId = {};
         all.forEach(e => { byId[e.id] = e; });
-        const list = NODE_EFFECT_IDS.filter(k => byId[k]).map(k => [k, byId[k].name]);
-        /* 同名去重：内置优先，其次按 id 升序；同名重复项不再重复列出 */
-        const seen = {};
-        NODE_EFFECT_IDS.forEach(k => { if (byId[k]) seen[String(byId[k].name || k)] = k; });
-        const extra = all.filter(e => NODE_EFFECT_IDS.indexOf(e.id) < 0)
-          .slice()
-          .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh')
-            || String(a.id).localeCompare(String(b.id)));
-        extra.forEach(e => {
-          const nm = String(e.name || e.id);
-          if (seen[nm]) return;
-          seen[nm] = e.id;
-          list.push([e.id, nm + '（自定义）']);
-        });
         const cur = (WIZ.dNode && WIZ.dNode.effect) || '';
-        /* 本节点用的是被合并掉的重复项时，补一条并标注，避免下拉显示空白 */
-        if (cur && cur !== '__custom__' && byId[cur]) {
-          const nm = String(byId[cur].name || '');
-          if (nm && seen[nm] && seen[nm] !== cur) {
-            list.unshift([cur, nm + '（本条在用·重复项，建议改用上面那条）']);
-          }
-        }
+        /* 本船节点正在用 / 当前节点选中的键：即使没登记也要列出来，否则下拉会显示空白 */
+        const used = {};
+        (WIZ.nodes || []).forEach(n => {
+          if (n.effect) used[n.effect] = 1;
+          Object.keys(n._eff || {}).forEach(k => { used[k] = 1; });
+        });
+        if (cur && cur !== '__custom__') used[cur] = 1;
+        const groups = {};
+        EFF_SCOPE_ORDER.forEach(([g]) => { groups[g] = []; });
+        const seen = {};
+        NODE_EFFECT_IDS.forEach(k => {
+          const e = byId[k];
+          if (!e) return;
+          seen[k] = 1;
+          const g = (e.kind === 'note') ? 'note' : (groups[e.scope] ? e.scope : 'other');
+          groups[g].push([k, effLabel(k)]);
+        });
+        all.filter(e => !seen[e.id] && used[e.id])
+          .sort((a, b) => String(effLabel(a.id)).localeCompare(String(effLabel(b.id)), 'zh')
+            || String(a.id).localeCompare(String(b.id)))
+          .forEach(e => {
+            seen[e.id] = 1;
+            const g = (e.kind === 'note') ? 'note' : (groups[e.scope] ? e.scope : 'other');
+            groups[g].push([e.id, effLabel(e.id) + '（未登记）']);
+          });
+        const out = { groups: EFF_SCOPE_ORDER
+          .map(([g, label]) => ({ label: label, items: groups[g] }))
+          .filter(g => g.items.length) };
         /* 超管：改 / 删 这个效果（合并为一个入口；内置效果只能改名、不能删） */
-        if (cur && byId[cur] && S.user && S.user.role === 'superadmin') list.push(['__edit__', '✎ 修改 / 删除这个效果…']);
-        return list;
+        if (cur && byId[cur] && S.user && S.user.role === 'superadmin')
+          out.groups.push({ label: '维护', items: [['__edit__', '✎ 修改 / 删除这个效果…']] });
+        return out;
       };
 
       const nodeCardEl = (si, x) => {
@@ -3622,8 +3655,10 @@ function wizRender() {
         parSel2.onchange = () => { WIZ.dNode.parent2 = parSel2.value; };
         const _effs = effOptions();
         const _curE = WIZ.dNode.effect;
-        if (_curE && !_effs.some(o => o[0] === _curE))
-          _effs.unshift([_curE, '⚠ 已删除：' + _curE + '（保留原值，改选其它项才会覆盖）']);
+        const _flat = _effs.groups.reduce((a, g) => a.concat(g.items), []);
+        if (_curE && !_flat.some(o => o[0] === _curE))
+          _effs.groups.unshift({ label: '当前在用',
+            items: [[_curE, '⚠ 已删除：' + _curE + '（保留原值，改选其它项才会覆盖）']] });
         const effSel = wIn(f, '效果', WIZ.dNode, 'effect', 'select', _effs);
         effSel.value = WIZ.dNode.effect || 'dmg';
         effSel.onchange = async () => {
@@ -6254,7 +6289,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-18.66';
+window.__APP_VER = '2026-11-19.67';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

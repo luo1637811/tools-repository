@@ -738,3 +738,18 @@ input:-webkit-autofill:focus{
 .wepacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 @media (max-width:1100px){.weprow{grid-template-columns:repeat(3,minmax(0,1fr))}}
 
+/* 问卷弹窗：从 560px 的小窗放大到接近全屏，横向结构每列加宽、正文区自己滚动 */
+#wizDlg{width:min(1500px,96vw);max-width:96vw;height:min(92vh,1080px);max-height:92vh;padding:0}
+#wizDlg .dlg{width:100%;box-sizing:border-box;height:100%;max-height:none;display:flex;
+  flex-direction:column;min-height:0;padding:14px 16px 12px}
+#wizDlg #wizBody{flex:1 1 auto;min-height:0;overflow:auto;padding-right:6px}
+#wizDlg .toolbar{margin-top:10px!important;flex:0 0 auto}
+#wizDlg .wiz-col{flex:0 0 300px}
+#wizDlg .wiz-form .row>span{flex:0 0 120px}
+#wizDlg .wiz-lane{padding-bottom:14px}
+@media (min-width:1500px){#wizDlg .wiz-sysgrid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:900px){
+  #wizDlg{width:100vw;height:100vh;max-height:100vh}
+  #wizDlg .wiz-col{flex:0 0 258px}
+}
+
