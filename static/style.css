@@ -575,9 +575,9 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
   font-variant-numeric:tabular-nums}
 .seqm .hc:hover{color:#93c5fd;border-color:#93c5fd}
 
-/* 第 3 步「系统基础值」：一行两个系统卡片 */
-.wiz-sysgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;align-items:start;margin-bottom:8px}
-.wiz-sysgrid > .card2{margin-bottom:0}
+/* 第 3 步「系统基础值」：一行两个系统卡片（卡片必须能收缩，否则武器表会把网格撑出屏幕） */
+.wiz-sysgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;align-items:start;margin-bottom:8px}
+.wiz-sysgrid > .card2{margin-bottom:0;min-width:0}
 .wiz-sysgrid .wiz-grid2{grid-template-columns:1fr 1fr}
 @media (max-width:980px){.wiz-sysgrid{grid-template-columns:1fr}}
 
@@ -604,9 +604,9 @@ tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--hl)}
 
 
 /* ==== 第3步卡片布局（追加覆盖，不改原规则）==== */
-.wiz-sysgrid .wiz-head{flex-wrap:wrap!important;gap:6px 10px!important}
-.wiz-sysgrid .wiz-head>b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;flex:1 1 100%!important;line-height:1.35!important}
-.wiz-sysgrid .wiz-head>select{flex:1 1 100%!important;max-width:none!important;width:100%!important}
+.wiz-sysgrid .wiz-head{flex-wrap:wrap!important;gap:6px 10px!important;align-items:center!important}
+.wiz-sysgrid .wiz-head>b{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;flex:1 1 260px!important;line-height:1.35!important;font-size:14px!important}
+.wiz-sysgrid .wiz-head>select{flex:0 1 220px!important;max-width:100%!important;width:auto!important;min-width:0!important}
 .wiz-sysgrid .wiz-grid2 .row{display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:2px!important;margin:0!important}
 .wiz-sysgrid .wiz-grid2 .row>span{flex:none!important;font-size:11px!important;color:var(--dim)!important;white-space:normal!important;line-height:1.3!important}
 .wiz-sysgrid .wiz-grid2 .row>input,
@@ -727,16 +727,26 @@ input:-webkit-autofill:focus{
 #verDlg{width:min(460px,92vw);max-width:96vw;padding:0;box-sizing:border-box}
 #verDlg .dlg{width:100%;box-sizing:border-box}
 
-/* 问卷里的武器表（多武器系统逐把编辑六字段） */
-.wepbox{margin:8px 0 4px;padding-top:6px;border-top:1px dashed var(--line)}
-.weprow{display:grid;grid-template-columns:1.6fr 1fr .8fr .8fr .8fr .7fr .7fr .7fr .8fr auto;
-  gap:6px;align-items:end;margin:4px 0}
-.weprow .row{margin:0;display:flex;flex-direction:column;align-items:stretch;gap:2px}
-.weprow .row>span{font-size:10px;color:var(--dim);white-space:nowrap;line-height:1.2}
-.weprow .row>input,.weprow .row>select{width:100%;box-sizing:border-box;min-width:0}
-.weprow .wepdel{white-space:nowrap;height:26px;padding:0 8px}
-.wepacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-@media (max-width:1100px){.weprow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* 问卷里的武器表（多武器系统逐把编辑六字段）：每把一张小卡，两行内排完，不会再撑破卡片 */
+.wepbox{margin:10px 0 4px;padding-top:8px;border-top:1px dashed var(--line)}
+.wepnote{font-size:11px;line-height:1.6;color:var(--dim);margin-bottom:2px}
+.wepitem{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:8px;
+  background:var(--panel2)}
+.wepitem .wrow1{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.wepitem .wrow1>.row{display:flex;flex-direction:column;gap:2px;margin:0;min-width:0}
+.wepitem .w-name{flex:1 1 160px}
+.wepitem .w-fam{flex:0 0 132px}
+.wepitem .w-guns{flex:0 0 86px}
+.wepitem .wrow2{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 10px;margin-top:8px}
+.wepitem .wrow2>.row{display:flex;flex-direction:column;gap:2px;margin:0;min-width:0}
+.wepitem .row>span{font-size:10px;line-height:1.3;color:var(--dim);white-space:nowrap}
+.wepitem .row>input,.wepitem .row>select{width:100%;min-width:0;box-sizing:border-box;
+  height:28px;padding:0 8px;font-size:13px}
+.wepitem .wepdel{flex:0 0 auto;height:28px;padding:0 10px;white-space:nowrap;margin-left:auto}
+.wepitem .wsum{font-size:11px;color:var(--dim);margin-top:7px}
+.weptotal{font-size:12px;color:var(--ink);margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}
+.wepacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+@media (max-width:1200px){.wepitem .wrow2{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* 问卷弹窗：从 560px 的小窗放大到接近全屏，横向结构每列加宽、正文区自己滚动 */
 #wizDlg{width:min(1500px,96vw);max-width:96vw;height:min(92vh,1080px);max-height:92vh;padding:0}
@@ -747,7 +757,7 @@ input:-webkit-autofill:focus{
 #wizDlg .wiz-col{flex:0 0 300px}
 #wizDlg .wiz-form .row>span{flex:0 0 120px}
 #wizDlg .wiz-lane{padding-bottom:14px}
-@media (min-width:1500px){#wizDlg .wiz-sysgrid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (min-width:1500px){#wizDlg .wiz-sysgrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}}
 @media (max-width:900px){
   #wizDlg{width:100vw;height:100vh;max-height:100vh}
   #wizDlg .wiz-col{flex:0 0 258px}
