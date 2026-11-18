@@ -365,6 +365,23 @@
       </table>
       <div class="muted" id="userNote" style="margin-top:8px"></div>
     </div>
+
+    <div class="card" id="tplCard">
+      <div class="toolbar">
+        <h3 style="margin:0">权限模板</h3>
+        <span class="grow"></span>
+        <button class="btn ghost" id="tplRefresh">刷新</button>
+        <button class="btn" id="tplNew">新建模板</button>
+      </div>
+      <div class="muted" style="margin:6px 0 10px">
+        模板 = 一套「权限 + 数据范围」，新增或修改人员时选一下就能套用。原来的内置模板已清空，这里由你们自己维护。
+      </div>
+      <table>
+        <thead><tr><th style="width:190px">模板名称</th><th>权限</th><th style="width:110px">数据范围</th><th style="width:215px">操作</th></tr></thead>
+        <tbody id="tplBody"></tbody>
+      </table>
+      <div class="muted" id="tplNote" style="margin-top:8px"></div>
+    </div>
   </div>
 </section>
 

@@ -6168,7 +6168,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-18.64';
+window.__APP_VER = '2026-11-18.65';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
@@ -6335,7 +6335,7 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
     return '<div class="postitem' + (p.unread ? ' unread' : '') + '" data-id="' + p.id + '">' +
       (p.pinned ? '<span class="pin">置顶</span>' : '') +
       '<div class="ptitle">' + esc(p.title) + '</div>' +
-      '<div class="pmeta">' + esc(p.username || '') + ' · ' + esc(fmt(p.created_at)) +
+      '<div class="pmeta">' + esc(p.shown || p.username || '') + ' · ' + esc(fmt(p.created_at)) +
       ' · 回复 ' + (p.replies || 0) + '</div>' +
       '<div class="pexcerpt">' + esc(p.excerpt || '') + '</div></div>';
   }
@@ -6366,7 +6366,7 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
     const html =
       '<div class="pbody">' + esc(p.body || '').replace(/\n/g, '<br>') + '</div>' +
       '<div class="preplylist">' + (rs.length ? rs.map((r) =>
-        '<div class="preply"><b>' + esc(r.username || '') + '</b>' +
+        '<div class="preply"><b>' + esc(r.shown || r.username || '') + '</b>' +
         '<span class="pt">' + esc(fmt(r.created_at)) + '</span>' +
         '<div>' + esc(r.body || '').replace(/\n/g, '<br>') + '</div></div>').join('')
         : '<div class="pempty">还没有回复</div>') + '</div>' +
@@ -6472,10 +6472,30 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 })();
 /* ---------- 权限模板（人员管理） ---------- */
 (function () {
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
   const SCOPE_CN = { all: '全部', org: '本组织', alliance: '本联合体', self: '只看自己' };
   let TPL = [];
-  const cardEl = () => document.getElementById('tplCard');
   const bodyEl = () => document.getElementById('tplBody');
+
+  function dlg(title, html, onOk, okText) {
+    const w = document.createElement('div');
+    w.className = 'dlgwrap';
+    w.innerHTML = '<div class="dlg"><div class="dlgh">' + esc(title) + '</div>' +
+      '<div class="dlgb">' + html + '</div>' +
+      '<div class="dlgf"><button class="btn ghost" data-cancel="1">取消</button>' +
+      '<button class="btn" data-ok="1">' + esc(okText || '确定') + '</button></div></div>';
+    document.body.appendChild(w);
+    const close = () => w.remove();
+    w.addEventListener('click', (e) => {
+      if (e.target === w || e.target.dataset.cancel) return close();
+      if (e.target.dataset.ok) {
+        Promise.resolve(onOk && onOk(w)).then((r) => { if (r !== false) close(); });
+      }
+    });
+    return { w, close };
+  }
 
   async function load() {
     if (!can('people_view')) return;
@@ -6484,7 +6504,8 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
       TPL = r.templates || [];
       paint();
     } catch (e) {
-      const b = bodyEl(); if (b) b.innerHTML = '<div class="pempty">读取失败：' + (e.message || e) + '</div>';
+      const b = bodyEl();
+      if (b) b.innerHTML = '<tr><td colspan="4" class="pempty">读取失败：' + esc(e.message || e) + '</td></tr>';
     }
   }
 
@@ -6524,58 +6545,100 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
   function paint() {
     fillSelect();
-    return;
-    if (!TPL.length) { b.innerHTML = '<div class="pempty">还没有模板</div>'; return; }
-    const tbl = el('table', 'tbl');
-    const thead = el('thead');
-    const htr = el('tr');
-    ['模板', '权限数', '数据范围', '操作'].forEach((t, i) => {
-      const th = el('th', '', t);
-      if (i === 3) th.style.width = '170px';
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr); tbl.appendChild(thead);
-    const tb = el('tbody');
-    TPL.forEach((t) => {
-      const tr = el('tr');
-      const td1 = el('td');
-      td1.appendChild(document.createTextNode(t.cn || t.name));
-      if (t.builtin) {
-        const g = el('span', 'tag', '内置'); g.style.marginLeft = '6px';
-        td1.appendChild(g);
-      }
-      const td2 = el('td', '', String((t.perms || []).length));
-      const td3 = el('td', '', SCOPE_CN[t.scope] || t.scope || '全部');
-      const td4 = el('td');
-      const b1 = el('button', 'btn ghost sm', '套用');
-      b1.onclick = () => applyTpl(t);
-      td4.appendChild(b1);
-      if (!t.builtin) {
-        const b2 = el('button', 'btn ghost sm', '删除');
-        b2.style.marginLeft = '6px';
-        b2.onclick = async () => {
-          if (!confirm('删除模板「' + (t.cn || t.name) + '」？')) return;
-          try { await api('/api/perm_templates/' + t.id, { method: 'DELETE' }); toast('已删除模板', 'ok'); load(); }
-          catch (e) { toast('删除失败：' + (e.message || e), 'bad'); }
-        };
-        td4.appendChild(b2);
-      }
-      tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4);
-      tb.appendChild(tr);
-    });
-    tbl.appendChild(tb);
-    b.innerHTML = ''; b.appendChild(tbl);
+    const b = bodyEl();
+    if (!b) return;
+    const note = document.getElementById('tplNote');
+    if (note) note.textContent = TPL.length ? ('共 ' + TPL.length + ' 个模板') : '';
+    if (!TPL.length) {
+      b.innerHTML = '<tr><td colspan="4" class="pempty">还没有模板。点右上角「新建模板」，把常用的一套权限存下来，之后新增或修改人员时一键套用。</td></tr>';
+      return;
+    }
+    const canEdit = can('people_edit');
+    b.innerHTML = TPL.map((t) => {
+      const ks = t.perms || [];
+      const tags = ks.slice(0, 6).map((k) => '<span class="tag">' + esc(PERM_LABEL[k] || k) + '</span>').join('');
+      const more = ks.length > 6 ? ' <span class="dim">等 ' + ks.length + ' 项</span>' : '';
+      const ops = canEdit
+        ? '<button class="btn ghost sm" data-act="use">套用</button>'
+          + '<button class="btn ghost sm" data-act="edit" style="margin-left:6px">修改</button>'
+          + '<button class="btn del sm" data-act="del" style="margin-left:6px">删除</button>'
+        : '<span class="dim">只读</span>';
+      return '<tr data-id="' + t.id + '">'
+        + '<td><b>' + esc(t.cn || t.name) + '</b>'
+        + (t.cn && t.cn !== t.name ? '<div class="dim">' + esc(t.name) + '</div>' : '') + '</td>'
+        + '<td>' + (tags || '<span class="dim">—</span>') + more + '</td>'
+        + '<td>' + esc(SCOPE_CN[t.scope] || t.scope || '全部') + '</td>'
+        + '<td>' + ops + '</td></tr>';
+    }).join('');
+  }
+
+  function tplEdit(t) {
+    const cur = t || { name: '', cn: '', perms: [], scope: 'all' };
+    const have = {};
+    (cur.perms || []).forEach((k) => { have[k] = 1; });
+    const cb = (key, label) => '<label class="permcb"><input type="checkbox" value="' + key + '"'
+      + (have[key] ? ' checked' : '') + '> ' + esc(label) + '</label>';
+    const groups = PERM_GROUPS.map((g) => {
+      let cells = cb(g.view, '看');
+      if (g.edit) cells += cb(g.edit, '改');
+      (g.extra || []).forEach((x) => { cells += cb(x[0], x[1]); });
+      return '<div class="permrow"><span class="permmod">' + esc(g.mod) + '</span>' + cells + '</div>';
+    }).join('');
+    const scopes = Object.keys(SCOPE_CN).map((k) =>
+      '<label class="scopecb"><input type="radio" name="tscope" value="' + k + '"'
+      + ((cur.scope || 'all') === k ? ' checked' : '') + '><i>' + esc(SCOPE_CN[k]) + '</i></label>').join('');
+    const html =
+      '<div class="pform">'
+      + '<label class="row"><span>模板名称</span><input id="tplName" maxlength="40" placeholder="例如：星域维护员" value="'
+      + esc(cur.cn || cur.name || '') + '"></label>'
+      + '<div class="row" style="align-items:flex-start"><span>数据范围</span><div class="scopebox">' + scopes + '</div></div>'
+      + '<div class="row" style="align-items:flex-start"><span>权限</span><div class="permgrid" id="tplPerm">' + groups + '</div></div>'
+      + '<div class="muted" style="margin-top:6px">模板只决定「套用」时勾什么；已经存在的账号权限不会自动变。</div>'
+      + '</div>';
+    dlg(t ? '修改权限模板' : '新建权限模板', html, async (root) => {
+      const nm = ($('#tplName', root).value || '').trim();
+      if (!nm) { toast('模板名称不能空', 'bad'); return false; }
+      const perms = [...root.querySelectorAll('#tplPerm input:checked')].map((x) => x.value);
+      if (!perms.length) { toast('至少勾选一项权限', 'bad'); return false; }
+      const rd = [...root.querySelectorAll('input[name=tscope]')].find((x) => x.checked);
+      const body = { name: nm, cn: nm, perms: perms, scope: rd ? rd.value : 'all' };
+      if (t && t.id) body.id = t.id;
+      try { await api('/api/perm_templates', { method: 'POST', body: body }); }
+      catch (e) { toast('保存失败：' + (e.message || e), 'bad'); return false; }
+      toast('已保存模板「' + nm + '」', 'ok');
+      load();
+      return true;
+    }, '保存');
+  }
+
+  async function delTpl(t) {
+    if (!confirm('删除模板「' + (t.cn || t.name) + '」？已套用的账号不受影响。')) return;
+    try { await api('/api/perm_templates/' + t.id, { method: 'DELETE' }); }
+    catch (e) { return toast('删除失败：' + (e.message || e), 'bad'); }
+    toast('已删除模板', 'ok');
+    load();
   }
 
   function applyTpl(t) {
     openUserDlg(null);
-    const keys = t.perms || [];
-    document.querySelectorAll('#permBox input').forEach((cb) => {
-      if (!cb.disabled) cb.checked = keys.indexOf(cb.value) >= 0;
+    applyTplLocal(t);
+  }
+
+  function bindOps() {
+    const card = document.getElementById('tplCard');
+    if (!card || card.dataset.bound === '1') return;
+    card.dataset.bound = '1';
+    card.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const tr = btn.closest('tr');
+      const t = TPL.find((x) => String(x.id) === String(tr && tr.dataset.id));
+      if (!t) return;
+      const act = btn.dataset.act;
+      if (act === 'use') applyTpl(t);
+      else if (act === 'edit') tplEdit(t);
+      else if (act === 'del') delTpl(t);
     });
-    const rd = [...document.querySelectorAll('#scopeBox input[name=scope]')].find((r) => r.value === (t.scope || 'all'));
-    if (rd) { rd.checked = true; rd.dispatchEvent(new Event('change', { bubbles: true })); }
-    toast('已套用「' + (t.cn || t.name) + '」：权限与范围已填好，补上登录名/密码再点保存', 'ok');
   }
 
   function ensureSaveAs() {
@@ -6599,9 +6662,14 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
     hint.parentNode.insertBefore(b, hint.nextSibling);
   }
 
-  const refresh = document.getElementById('tplRefresh');
-  if (refresh) refresh.onclick = load;
-  const _origOpenUserDlg = window.__tplOpenHooked ? null : true;
+  const rf = document.getElementById('tplRefresh');
+  if (rf) rf.onclick = load;
+  const nw = document.getElementById('tplNew');
+  if (nw) nw.onclick = () => {
+    if (!can('people_edit')) return toast('没有人员管理权限', 'bad');
+    tplEdit(null);
+  };
+  bindOps();
   document.addEventListener('click', () => setTimeout(ensureSaveAs, 0));
   window.__tpl = load;
 })();

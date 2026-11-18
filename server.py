@@ -222,12 +222,11 @@ def init_db():
                 " VALUES(?,?,?,?,?,?,?,0)", _rows)
             c.execute("INSERT INTO settings(k,v) VALUES('mh_init',?)"
                       " ON CONFLICT(k) DO UPDATE SET v=excluded.v", (_ts0,))
-        # 内置模板「缺什么补什么」：新增内置模板后老库也能拿到，且不会覆盖用户改过的名称
-        for _n, _cn, _pm, _sc in TEMPLATE_SEED:
-            c.execute("INSERT INTO perm_templates(name,cn,perms,scope,builtin,created_at)"
-                      " VALUES(?,?,?,?,1,?) ON CONFLICT(name) DO UPDATE SET"
-                      " cn=excluded.cn, perms=excluded.perms, scope=excluded.scope, builtin=1",
-                      (_n, _cn, ",".join((lambda p: list(p) + (["season_view"] if "data_view" in p and "season_view" not in p else []) + (["season_edit"] if "data_edit" in p and "season_edit" not in p else []))(_pm)), _sc, now()))
+        # 权限模板改为人工维护：不再播种内置模板（用户要求先清空、之后在界面上增删改）。
+        # 只清一次并写 settings 标记；之后重启既不播种，也不会让已删的模板复活。
+        if not c.execute("SELECT 1 FROM settings WHERE k='tpl_manual'").fetchone():
+            c.execute("DELETE FROM perm_templates")
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('tpl_manual','1')")
         # 老权限键（sim/data/people/audit/roster）升级为新键，避免升级后权限丢失
         for _r in c.execute("SELECT id, perms FROM users").fetchall():
             _old = _r["perms"] or ""
@@ -1026,6 +1025,8 @@ LEGACY_PERMS = {
 }
 
 TEMPLATE_SEED = [
+    # 2026-11-18 起不再自动播种：权限模板改为人工维护（旧数据已一次性清空）。
+    # 这张表只留作历史参照 / 手工建模板时的参考清单，init_db() 不读它。
     ("admin_full", "管理员（全权限）", ALL_PERMS, "all"),
     ("season_editor", "赛季历程（看/改）", ("season_view", "season_edit"), "all"),
     ("editor", "编辑（数据 + 战报）",
@@ -2430,23 +2431,42 @@ class Handler(BaseHTTPRequestHandler):
         name = (data.get("name") or "").strip()[:40]
         cn = (data.get("cn") or name).strip()[:40]
         if not name:
-            return self.err(400, "模板标识不能空")
+            return self.err(400, "模板名称不能空")
         perms = parse_perms(data.get("perms"))
         if not perms:
             return self.err(400, "模板至少要有一项权限")
         scope = scope_of({"scope": data.get("scope")})
+        try:
+            tid = int(data.get("id") or 0)
+        except Exception:
+            tid = 0
         with conn() as c:
-            old = c.execute("SELECT cn,perms,scope FROM perm_templates WHERE name=?", (name,)).fetchone()
-            if old and (str(old["cn"] or "") == cn and parse_perms(old["perms"]) == perms
-                        and str(old["scope"] or "all") == scope):
-                return self.send_json({"ok": True, "name": name, "changed": False})
-            c.execute("INSERT INTO perm_templates(name,cn,perms,scope,builtin,created_at)"
-                      " VALUES(?,?,?,?,0,?)"
-                      " ON CONFLICT(name) DO UPDATE SET cn=excluded.cn, perms=excluded.perms,"
-                      " scope=excluded.scope",
-                      (name, cn, ",".join(perms), scope, now()))
-        log("保存权限模板", u["username"], name, "%d 项" % len(perms))
-        return self.send_json({"ok": True, "name": name})
+            if tid:
+                if not c.execute("SELECT 1 FROM perm_templates WHERE id=?", (tid,)).fetchone():
+                    return self.err(404, "模板不存在")
+                dup = c.execute("SELECT id FROM perm_templates WHERE name=? AND id<>?",
+                                (name, tid)).fetchone()
+                if dup:
+                    return self.err(400, "已经有同名模板了，换个名称")
+                c.execute("UPDATE perm_templates SET name=?, cn=?, perms=?, scope=?, builtin=0"
+                          " WHERE id=?", (name, cn, ",".join(perms), scope, tid))
+                row = c.execute("SELECT id FROM perm_templates WHERE id=?", (tid,)).fetchone()
+            else:
+                old = c.execute("SELECT id, cn, perms, scope FROM perm_templates WHERE name=?",
+                                (name,)).fetchone()
+                if old and (str(old["cn"] or "") == cn and parse_perms(old["perms"]) == perms
+                            and str(old["scope"] or "all") == scope):
+                    return self.send_json({"ok": True, "id": old["id"], "name": name,
+                                           "changed": False})
+                c.execute("INSERT INTO perm_templates(name,cn,perms,scope,builtin,created_at)"
+                          " VALUES(?,?,?,?,0,?)"
+                          " ON CONFLICT(name) DO UPDATE SET cn=excluded.cn, perms=excluded.perms,"
+                          " scope=excluded.scope",
+                          (name, cn, ",".join(perms), scope, now()))
+                row = c.execute("SELECT id FROM perm_templates WHERE name=?", (name,)).fetchone()
+        # 日志必须在事务外写：log() 自己开连接，事务里再写会互等 15 秒直到 busy_timeout
+        log("修改权限模板" if tid else "保存权限模板", u["username"], name, "%d 项" % len(perms))
+        return self.send_json({"ok": True, "id": (row["id"] if row else 0), "name": name})
 
     def perm_template_delete(self, tid):
         u = self.need_perm(("people_edit",))
@@ -2455,11 +2475,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.need_auth() is None:
             return
         with conn() as c:
-            r = c.execute("SELECT name, builtin FROM perm_templates WHERE id=?", (tid,)).fetchone()
+            r = c.execute("SELECT name FROM perm_templates WHERE id=?", (tid,)).fetchone()
             if not r:
                 return self.err(404, "模板不存在")
-            if r["builtin"]:
-                return self.err(403, "内置模板不能删除")
             c.execute("DELETE FROM perm_templates WHERE id=?", (tid,))
         log("删除权限模板", u["username"], r["name"])
         return self.send_json({"ok": True})
@@ -2797,10 +2815,12 @@ class Handler(BaseHTTPRequestHandler):
             total = c.execute("SELECT COUNT(*) FROM posts WHERE COALESCE(deleted,0)=0").fetchone()[0]
             rows = [dict(r) for r in c.execute(
                 "SELECT p.id, p.title, p.username, p.created_at, p.pinned, p.body,"
+                " COALESCE(NULLIF(TRIM(COALESCE(u.name,'')), ''), p.username) AS shown,"
                 " (SELECT COUNT(*) FROM post_replies r WHERE r.post_id=p.id AND COALESCE(r.deleted,0)=0) AS replies,"
                 " (SELECT MAX(r.created_at) FROM post_replies r WHERE r.post_id=p.id) AS last_at,"
                 " (SELECT COUNT(*) FROM post_reads pr WHERE pr.post_id=p.id AND pr.user_id=?) AS read_by_me"
-                " FROM posts p WHERE COALESCE(p.deleted,0)=0"
+                " FROM posts p LEFT JOIN users u ON u.id=p.user_id"
+                " WHERE COALESCE(p.deleted,0)=0"
                 " ORDER BY COALESCE(p.pinned,0) DESC, COALESCE(p.created_at,'') DESC, p.id DESC"
                 " LIMIT ? OFFSET ?", (u.get("id"), limit, off))]
         for r in rows:
@@ -2832,13 +2852,18 @@ class Handler(BaseHTTPRequestHandler):
             p = c.execute("SELECT * FROM posts WHERE id=? AND COALESCE(deleted,0)=0", (pid,)).fetchone()
             if not p:
                 return self.err(404, "公告不存在或已删除")
+            p = dict(p)
+            _nm = c.execute("SELECT name FROM users WHERE id=?", (p.get("user_id"),)).fetchone()
+            p["shown"] = ((_nm["name"] or "").strip() if _nm else "") or (p.get("username") or "")
             rs = [dict(r) for r in c.execute(
-                "SELECT id, username, body, created_at FROM post_replies"
-                " WHERE post_id=? AND COALESCE(deleted,0)=0 ORDER BY id", (pid,))]
+                "SELECT r.id, r.username, r.body, r.created_at,"
+                " COALESCE(NULLIF(TRIM(COALESCE(u.name,'')), ''), r.username) AS shown"
+                " FROM post_replies r LEFT JOIN users u ON u.id=r.user_id"
+                " WHERE r.post_id=? AND COALESCE(r.deleted,0)=0 ORDER BY r.id", (pid,))]
             c.execute("INSERT OR REPLACE INTO post_reads(user_id, post_id, read_at) VALUES(?,?,?)",
                       (u.get("id"), pid, now()))
         role = u.get("role")
-        return self.send_json({"ok": True, "post": dict(p), "replies": rs,
+        return self.send_json({"ok": True, "post": p, "replies": rs,
                                "can_pin": role in ("admin", SUPER_ROLE),
                                "can_del": role == SUPER_ROLE or p["user_id"] == u.get("id")})
 
