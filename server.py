@@ -124,8 +124,95 @@ def check_pwd(pwd, stored):
     return hash_pwd(pwd, salt) == stored
 
 
+# ---- 舰船数据种子（deploy/ships_seed.json，由 _deploy_tools/make_ships_seed.py 生成）----
+# data.db 不在部署清单里（里面混着人员/公告/赛季等线上数据），舰船数据靠这个文件随代码走：
+# 服务端启动时按 version 幂等导入，只动这些船的 ships/systems/nodes/modules 与 classes/effects 元数据。
+SHIP_SEED_COLS = {
+    "ships": ["id", "name", "cls", "tech_total", "base", "note", "kind", "pgroup",
+              "cmd_type", "owner_org", "owner_alliance", "class", "role", "deprecated"],
+    "systems": ["id", "ship", "slot", "name", "tech_cap", "stats", "note", "ord", "no_nodes",
+                "bays", "stats_norm", "is_weapon", "sys_kind", "max_modules", "deprecated"],
+    "nodes": ["id", "sys", "parent", "label", "max_lv", "cost", "effect", "note", "costs",
+              "checked_at", "checked_by", "ord", "deprecated", "per_lv"],
+    "modules": ["id", "ship", "slot", "name", "mkind", "cap", "allow_group", "bonus",
+                "stats", "note", "bays", "sys"],
+}
+
+
+def _ship_seed_path():
+    return os.path.join(RES_DIR, "deploy", "ships_seed.json")
+
+
+def _import_ships_seed(c):
+    """把舰船种子并入本库；同 version 直接跳过。返回提示文字（失败也只返回文字，不抛）。
+
+    网页上改过舰船数据后（data_upsert 会写 settings.ships_seed_off），启动时不再用种子覆盖；
+    想强制拉一次新种子：FT_SEED_FORCE=1 重启一次服务即可（导入完会清掉这个标记）。
+    """
+    fp = _ship_seed_path()
+    if not os.path.isfile(fp):
+        return ""
+    force = (os.environ.get("FT_SEED_FORCE") or "").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        with open(fp, "r", encoding="utf-8") as f:
+            seed = json.load(f)
+        ver = str(seed.get("version") or "").strip()
+        ships = [s for s in (seed.get("ships") or []) if isinstance(s, dict) and s.get("id")]
+        ids = [s["id"] for s in ships]
+        if not ver or not ids:
+            return "舰船种子内容不完整，已跳过（version/船 id 为空）"
+        if not force:
+            row = c.execute("SELECT v FROM settings WHERE k='ships_seed'").fetchone()
+            if row is not None and (row["v"] or "").strip() == ver:
+                return ""
+            # 网页上改过舰船数据（data_upsert 会置这个标记）：以后启动不再拿种子覆盖网页的修改
+            off = c.execute("SELECT v FROM settings WHERE k='ships_seed_off'").fetchone()
+            if off is not None and (off["v"] or "").strip() not in ("", "0"):
+                return ""
+        qs = ",".join("?" * len(ids))
+        sys_ids = [r["id"] for r in c.execute(
+            "SELECT id FROM systems WHERE ship IN (%s)" % qs, ids).fetchall()]
+        if sys_ids:
+            qn = ",".join("?" * len(sys_ids))
+            c.execute("DELETE FROM nodes WHERE sys IN (%s)" % qn, sys_ids)
+        c.execute("DELETE FROM systems WHERE ship IN (%s)" % qs, ids)
+        c.execute("DELETE FROM modules WHERE ship IN (%s)" % qs, ids)
+
+        for table in ("ships", "systems", "nodes", "modules"):
+            rows = [r for r in (seed.get(table) or []) if isinstance(r, dict)]
+            if not rows:
+                continue
+            have = [r[1] for r in c.execute("PRAGMA table_info(%s)" % table).fetchall()]
+            keys = [k for k in SHIP_SEED_COLS[table] if k in have]
+            sql = "INSERT OR REPLACE INTO %s(%s) VALUES(%s)" % (
+                table, ",".join(keys), ",".join("?" * len(keys)))
+            c.executemany(sql, [[r.get(k) for k in keys] for r in rows])
+
+        for r in seed.get("classes") or []:
+            if isinstance(r, dict) and r.get("id"):
+                c.execute("INSERT OR IGNORE INTO classes(id,name,ord,note) VALUES(?,?,?,?)",
+                          (r.get("id"), r.get("name") or r.get("id"),
+                           r.get("ord") or 0, r.get("note") or ""))
+        # 效果键：只补缺 + 校正 kind/target/scope（引擎按 scope 路由），不覆盖用户改过的名字
+        for r in seed.get("effects") or []:
+            if not (isinstance(r, dict) and r.get("id")):
+                continue
+            c.execute("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
+                      (r.get("id"), r.get("name") or r.get("id"),
+                       r.get("unit") or "", r.get("note") or ""))
+            c.execute("UPDATE effects SET kind=?, target=?, scope=? WHERE id=?",
+                      (r.get("kind"), r.get("target"), r.get("scope"), r.get("id")))
+        c.execute("DELETE FROM settings WHERE k='ships_seed_off'")
+        c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ships_seed',?)", (ver,))
+        return "舰船种子已导入：%d 艘 / %d 系统 / %d 节点（version %s）" % (
+            len(ships), len(seed.get("systems") or []), len(seed.get("nodes") or []), ver)
+    except Exception as e:                       # 种子坏了也不能拦住服务启动
+        return "舰船种子导入失败：%s: %s" % (type(e).__name__, e)
+
+
 def init_db():
     fresh = not os.path.exists(DB_PATH)
+    _seed_msg = ""
     with conn() as c:
         c.executescript(SCHEMA)
         c.execute("""CREATE TABLE IF NOT EXISTS signups(
@@ -355,6 +442,8 @@ def init_db():
         c.execute("UPDATE planes SET bay_kind=CASE kind"
                   " WHEN '护航艇' THEN '护航艇' WHEN '无人机' THEN '无人机' ELSE '战机' END"
                   " WHERE bay_kind IS NULL OR bay_kind=''")
+        # 舰船数据随代码走（deploy/ships_seed.json），按 version 幂等导入
+        _seed_msg = _import_ships_seed(c)
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             ts = now()
             c.executemany(
@@ -362,6 +451,8 @@ def init_db():
                 "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 [(u, hash_pwd(p), r, n, sq, ph, st, nt, ts, ts)
                  for u, p, r, n, sq, ph, st, nt in USERS])
+    if _seed_msg:
+        print("[" + now() + "] " + _seed_msg, flush=True)
 
 
 class SSEHub:
@@ -2023,6 +2114,9 @@ class Handler(BaseHTTPRequestHandler):
                           list(row.values()))
                 act = "新增数据"
                 diff = list(row.keys())
+            if table in ("ships", "systems", "nodes", "modules"):
+                # 网页上改过舰船数据：停掉种子自动导入，免得下次部署把网页的修改覆盖掉
+                c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ships_seed_off','1')")
         bump_version()
         log(act, u["username"], f"{table}/{row[pk]}", "、".join(diff))
         return self.send_json({"ok": True, "id": row[pk], "action": act, "changed": len(diff)})

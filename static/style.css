@@ -726,3 +726,15 @@ input:-webkit-autofill:focus{
 #entDlg .dlg{width:100%;box-sizing:border-box}
 #verDlg{width:min(460px,92vw);max-width:96vw;padding:0;box-sizing:border-box}
 #verDlg .dlg{width:100%;box-sizing:border-box}
+
+/* 问卷里的武器表（多武器系统逐把编辑六字段） */
+.wepbox{margin:8px 0 4px;padding-top:6px;border-top:1px dashed var(--line)}
+.weprow{display:grid;grid-template-columns:1.6fr 1fr .8fr .8fr .8fr .7fr .7fr .7fr .8fr auto;
+  gap:6px;align-items:end;margin:4px 0}
+.weprow .row{margin:0;display:flex;flex-direction:column;align-items:stretch;gap:2px}
+.weprow .row>span{font-size:10px;color:var(--dim);white-space:nowrap;line-height:1.2}
+.weprow .row>input,.weprow .row>select{width:100%;box-sizing:border-box;min-width:0}
+.weprow .wepdel{white-space:nowrap;height:26px;padding:0 8px}
+.wepacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+@media (max-width:1100px){.weprow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+
