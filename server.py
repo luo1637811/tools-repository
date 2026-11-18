@@ -143,6 +143,46 @@ def _ship_seed_path():
     return os.path.join(RES_DIR, "deploy", "ships_seed.json")
 
 
+EFFECT_SEED_COLS = ["id", "name", "kind", "target", "scope", "unit", "note", "ord",
+                    "builtin", "deprecated"]
+
+
+def _sync_effects_seed(c, seed, force=False):
+    """效果库整表覆盖 —— 只做一次。
+
+    用途：把本地这份效果表（id / 中文名 / kind / target / scope / unit）一次性压到服务器上，
+    解决「服务器上的节点效果是旧的、带垃圾行、名字是裸键名」。
+      - 覆盖内容：种子里的效果行原样写入；库里多出来的（老问卷自动建的长句键、时间戳键）删除；
+      - 一次性：成功后写 settings.eff_seed_once=1，以后启动不再覆盖（无论种子是否重新生成）；
+      - 想再覆盖一次：FT_SEED_FORCE=1 重启一次。
+    """
+    eff = [r for r in (seed.get("effects") or []) if isinstance(r, dict) and r.get("id")]
+    if not eff:
+        return ""
+    ev = str(seed.get("eff_version") or "").strip()
+    if not ev:
+        ev = hashlib.sha256(
+            json.dumps(eff, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:12]
+    if not force:
+        once = c.execute("SELECT v FROM settings WHERE k='eff_seed_once'").fetchone()
+        if once is not None and (once["v"] or "").strip() not in ("", "0"):
+            return ""
+        row = c.execute("SELECT v FROM settings WHERE k='eff_seed'").fetchone()
+        if row is not None and (row["v"] or "").strip() == ev:
+            return ""
+    have = [r[1] for r in c.execute("PRAGMA table_info(effects)").fetchall()]
+    keys = [k for k in EFFECT_SEED_COLS if k in have]
+    ids = [r["id"] for r in eff]
+    c.execute("DELETE FROM effects WHERE id NOT IN (%s)" % ",".join("?" * len(ids)), ids)
+    sql = "INSERT OR REPLACE INTO effects(%s) VALUES(%s)" % (
+        ",".join(keys), ",".join("?" * len(keys)))
+    c.executemany(sql, [[r.get(k) for k in keys] for r in eff])
+    c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('eff_seed',?)", (ev,))
+    c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('eff_seed_once','1')")
+    return "效果库已按种子覆盖：%d 条（version %s）" % (len(eff), ev)
+
+
 def _import_ships_seed(c):
     """把舰船种子并入本库；同 version 直接跳过。返回提示文字（失败也只返回文字，不抛）。
 
@@ -156,19 +196,24 @@ def _import_ships_seed(c):
     try:
         with open(fp, "r", encoding="utf-8") as f:
             seed = json.load(f)
+        _msgs = []
+        _em = _sync_effects_seed(c, seed, force)
+        if _em:
+            _msgs.append(_em)
+        _tail = "；".join(_msgs)
         ver = str(seed.get("version") or "").strip()
         ships = [s for s in (seed.get("ships") or []) if isinstance(s, dict) and s.get("id")]
         ids = [s["id"] for s in ships]
         if not ver or not ids:
-            return "舰船种子内容不完整，已跳过（version/船 id 为空）"
+            return _tail or "舰船种子内容不完整，已跳过（version/船 id 为空）"
         if not force:
             row = c.execute("SELECT v FROM settings WHERE k='ships_seed'").fetchone()
             if row is not None and (row["v"] or "").strip() == ver:
-                return ""
+                return _tail
             # 网页上改过舰船数据（data_upsert 会置这个标记）：以后启动不再拿种子覆盖网页的修改
             off = c.execute("SELECT v FROM settings WHERE k='ships_seed_off'").fetchone()
             if off is not None and (off["v"] or "").strip() not in ("", "0"):
-                return ""
+                return _tail
         qs = ",".join("?" * len(ids))
         sys_ids = [r["id"] for r in c.execute(
             "SELECT id FROM systems WHERE ship IN (%s)" % qs, ids).fetchall()]
@@ -193,19 +238,12 @@ def _import_ships_seed(c):
                 c.execute("INSERT OR IGNORE INTO classes(id,name,ord,note) VALUES(?,?,?,?)",
                           (r.get("id"), r.get("name") or r.get("id"),
                            r.get("ord") or 0, r.get("note") or ""))
-        # 效果键：只补缺 + 校正 kind/target/scope（引擎按 scope 路由），不覆盖用户改过的名字
-        for r in seed.get("effects") or []:
-            if not (isinstance(r, dict) and r.get("id")):
-                continue
-            c.execute("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
-                      (r.get("id"), r.get("name") or r.get("id"),
-                       r.get("unit") or "", r.get("note") or ""))
-            c.execute("UPDATE effects SET kind=?, target=?, scope=? WHERE id=?",
-                      (r.get("kind"), r.get("target"), r.get("scope"), r.get("id")))
+        # 效果库已在开头由 _sync_effects_seed() 整表覆盖，这里不再逐条补
         c.execute("DELETE FROM settings WHERE k='ships_seed_off'")
         c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ships_seed',?)", (ver,))
-        return "舰船种子已导入：%d 艘 / %d 系统 / %d 节点（version %s）" % (
-            len(ships), len(seed.get("systems") or []), len(seed.get("nodes") or []), ver)
+        _msgs.append("舰船种子已导入：%d 艘 / %d 系统 / %d 节点（version %s）" % (
+            len(ships), len(seed.get("systems") or []), len(seed.get("nodes") or []), ver))
+        return "；".join(_msgs)
     except Exception as e:                       # 种子坏了也不能拦住服务启动
         return "舰船种子导入失败：%s: %s" % (type(e).__name__, e)
 
@@ -405,12 +443,38 @@ def init_db():
         for _k, (_kind, _tgt, _scope) in EFFECT_RULES.items():
             c.execute("INSERT OR IGNORE INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
                       (_k, EFFECT_NAMES.get(_k, _k), "%" if _kind == "pct" else "", ""))
+        # 名字兜底：只补「空 / 等于 id」的占位名，用户改过的中文名不动
+        for _k, _nm in EFFECT_NAMES.items():
+            c.execute("UPDATE effects SET name=? WHERE id=? AND (name IS NULL"
+                      " OR TRIM(COALESCE(name,''))='' OR name=id)", (_nm, _k))
         for _k, (_kind, _tgt, _scope) in EFFECT_RULES.items():
             c.execute("UPDATE effects SET kind=COALESCE(NULLIF(kind,''),?),"
                       " target=COALESCE(NULLIF(target,''),?), scope=COALESCE(NULLIF(scope,''),?)"
                       " WHERE id=?", (_kind, _tgt, _scope, _k))
         c.execute("UPDATE effects SET builtin=1 WHERE id IN (%s)"
                   % ",".join("?" * len(EFFECT_RULES)), tuple(EFFECT_RULES.keys()))
+        # 一次性清理：老版本问卷「新建效果」会按时间戳/长句建键，
+        # 未登记（EFFECT_RULES 里没有）且没有节点在用的那些是垃圾行，留着只会把下拉框撑爆
+        if not c.execute("SELECT 1 FROM settings WHERE k='eff_prune_v1'").fetchone():
+            _known = set(EFFECT_RULES.keys())
+            _used = set()
+            for (_e,) in c.execute("SELECT effect FROM nodes"):
+                try:
+                    _d = json.loads(_e or "{}")
+                except Exception:
+                    continue
+                if isinstance(_d, dict):
+                    _used.update(_d.keys())
+            _drop = [r[0] for r in c.execute("SELECT id FROM effects")
+                     if r[0] not in _known and r[0] not in _used
+                     and (len(r[0]) > 20 or (r[0][:1] == "e" and r[0][1:].isdigit()))]
+            for _id in _drop:
+                c.execute("DELETE FROM effects WHERE id=?", (_id,))
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('eff_prune_v1',?)",
+                      (str(len(_drop)),))
+            if _drop:
+                print("[%s] 效果库清理：删掉 %d 条未使用的旧效果行" % (now(), len(_drop)),
+                      flush=True)
         # 老数据回填：cls（更细）优先，其次 kind；只填空值，不覆盖用户改过的
         _CMAP = (("super", ("超主力舰",), ("航母", "超大型")),
                  ("main", ("主力舰",), ("主力舰", "大型")),
