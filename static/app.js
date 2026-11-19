@@ -1980,17 +1980,31 @@ function renderPlanesInner(host) {
     }
   });
 
-  /* 母舰没有舱位（模块和系统都没有 bays）的方案整块不出现：选一条带舱位的船才会显示 */
+  /* 母舰本身没有舱位（模块和系统都没有 bays）的方案，不进「舰载机组合」；卡片保留，全都没舱位时给一句说明 */
   const visSlots = SLOTS.filter(k0 => {
     const sl0 = S.slots[k0];
     if (sl0.noCarrier || !sl0.ship) return true;
     const sh0 = shipOf(sl0.ship);
     return !!(sh0 && carrierModsOf(sh0).length);
   });
+  const skipSlots = SLOTS.filter(k0 => visSlots.indexOf(k0) < 0);
   const pcard = $('#planeCard');
-  if (pcard) pcard.style.display = visSlots.length ? '' : 'none';
+  if (pcard) pcard.style.display = '';
   if (!visSlots.length) {
     const t0 = $('#planeCmp'); if (t0) t0.innerHTML = '';
+    const tb0 = t0 && t0.closest('table'); if (tb0) tb0.style.display = 'none';
+    const names = SLOTS.map(k0 => {
+      const sl0 = S.slots[k0];
+      if (sl0.noCarrier) return k0 + '：不带母舰';
+      const sh0 = sl0.ship && shipOf(sl0.ship);
+      return k0 + '：' + ((sh0 && sh0.name) || sl0.ship || '未选');
+    }).join(' / ');
+    const hb = el('div', 'muted', '当前两套方案的母舰都没有搭载舱位（' + names + '），所以这里没有可配的舰载机。'
+      + '左上角「蓝图」换成 CV3000 / 太阳鲸 / 猎兵级 这类带舱位的船，再来配。');
+    hb.style.padding = '10px 12px';
+    hb.style.border = '1px dashed var(--line)';
+    hb.style.borderRadius = '8px';
+    host.appendChild(hb);
     return;
   }
 
@@ -2007,7 +2021,7 @@ function renderPlanesInner(host) {
 
     const sel = el('select');
     sel.appendChild(new Option('（不带母舰 · 只看舰载机）', ''));
-    (S.bp.ships || []).filter(x => x.kind !== '舰载机').forEach(x => {
+    (S.bp.ships || []).filter(x => x.kind !== '舰载机' && carrierModsOf(x).length).forEach(x => {
       sel.appendChild(new Option(x.name + '（' + (x.kind || x.size) + '）', x.id));
     });
     sel.value = sl.noCarrier ? '' : (sl.ship || '');
@@ -2031,12 +2045,7 @@ function renderPlanesInner(host) {
 
     const ship = sl.noCarrier ? null : shipOf(sl.ship);
     const holders = ship ? carrierModsOf(ship).map(id => holderOf(ship, id)).filter(Boolean) : [];
-    /* 母舰没有舱位（模块和系统都没有 bays）：舱位判定整块不显示，只留上面那个「母舰」下拉 */
-    if (ship && !holders.length) {
-      sl.carrierMods = []; sl.planes = [];
-      host.appendChild(card);
-      return;
-    }
+    if (ship && !holders.length) { sl.carrierMods = []; sl.planes = []; host.appendChild(card); return; }
     /* 换过母舰之后，把旧母舰留下的勾选/载荷清掉，避免冒出「模块 X 只有 0 个舱」这种幽灵行 */
     sl.carrierMods = (sl.carrierMods || []).filter(id => holders.some(m => m.id === id));
     sl.planes = (sl.planes || []).filter(pp => sl.carrierMods.includes(pp.m));
@@ -2214,7 +2223,19 @@ function renderPlanesInner(host) {
     host.appendChild(card);
   });
 
+  if (skipSlots.length) {
+    const who = skipSlots.map(k0 => {
+      const sl0 = S.slots[k0];
+      const sh0 = sl0.ship && shipOf(sl0.ship);
+      return '方案 ' + k0 + '（' + ((sh0 && sh0.name) || sl0.ship || '未选') + '）';
+    }).join('、');
+    const fe = el('div', 'muted', '已跳过 ' + who + '：母舰没有搭载舱位，不参与舰载机搭配。');
+    fe.style.marginTop = '8px';
+    host.appendChild(fe);
+  }
+
   const t2 = $('#planeCmp'); t2.innerHTML = '';
+  const t2p = t2 && t2.closest('table'); if (t2p) t2p.style.display = '';
   visSlots.forEach(k2 => {
     const rr = (S.results || {})[k2] || {};
     const s2 = S.slots[k2];
@@ -6630,7 +6651,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.80';
+window.__APP_VER = '2026-11-19.83';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
