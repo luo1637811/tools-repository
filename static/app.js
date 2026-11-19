@@ -1229,7 +1229,7 @@ function weaponListOf(n) {
 /* 系统调校加成：问卷里勾了「启用加成」才算，返回百分数（如 5） */
 function calibPctOf(cal) {
   if (!cal || !cal.on) return 0;
-  return (Number(cal.pct) || 0) + (Number(cal.adv) || 0);
+  return Number(cal.pct) || 0;  /* 进阶加成(adv)暂不参与计算 */
 }
 /* 多武器三路现算：与 engine._weapon_out 的 weapons 分支同口径
    每把武器按自己的 单发 / 弹药×攻击次数 / 持续 / 冷却 / 门数 / 护甲口径 / 校准系数 算，
@@ -3812,9 +3812,6 @@ function wizRender() {
         wIn(crow, '本系统加成', cal, 'pct', 'number', null, '%');
         wIn(crow, '进阶加成（可留空）', cal, 'adv', 'number', null, '%');
         cbox.appendChild(crow);
-        cbox.appendChild(el('div', 'muted',
-          '勾上后本系统每把武器的对舰 / 对空现算值 ×（1 + 加成% + 进阶%）。'
-          + '游戏里这部分通常已含在武器面板数字里，所以默认不勾，避免重复加成。'));
         card.appendChild(cbox);
       }
       // 模块名（可选，只对「一系统一模块」的写法有意义）
@@ -6609,7 +6606,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.73';
+window.__APP_VER = '2026-11-19.76';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

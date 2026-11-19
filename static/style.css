@@ -1101,3 +1101,10 @@ header h1::after{right:-64px;transform:translateY(-50%) scaleX(-1)}
   color:#ffe4e1;
   box-shadow:0 0 18px rgba(248,113,113,.22);
 }
+
+/* ---- 原生控件跟随暗色：下拉弹层 / 复选框 / 滚动条 ---- */
+:root, html { color-scheme: dark; }
+select, select option, option { background: #0d141d; color: #dbe8f6; }
+select option:checked, select option:hover { background: #14384c; color: #eaf6ff; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf8); }
+.calrow .row>span{flex:0 0 178px}
