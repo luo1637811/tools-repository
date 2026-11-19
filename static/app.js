@@ -1975,12 +1975,26 @@ function renderPlanesInner(host) {
     }
   });
 
+  /* 母舰没有舱位（模块和系统都没有 bays）的方案整块不出现：选一条带舱位的船才会显示 */
+  const visSlots = SLOTS.filter(k0 => {
+    const sl0 = S.slots[k0];
+    if (sl0.noCarrier || !sl0.ship) return true;
+    const sh0 = shipOf(sl0.ship);
+    return !!(sh0 && carrierModsOf(sh0).length);
+  });
+  const pcard = $('#planeCard');
+  if (pcard) pcard.style.display = visSlots.length ? '' : 'none';
+  if (!visSlots.length) {
+    const t0 = $('#planeCmp'); if (t0) t0.innerHTML = '';
+    return;
+  }
+
   const curTag = el('div', 'row muted');
   curTag.appendChild(el('span', '', '下面两套方案都在这一页编辑：左边填完 A，再去右上角切到 B 填另一套；两套对比见表格。'));
   curTag.style.marginBottom = '8px';
   host.appendChild(curTag);
 
-  SLOTS.forEach(k => {
+  visSlots.forEach(k => {
     const sl = S.slots[k];
     const r = (S.results || {})[k] || {};
     const card = el('div', 'card');
@@ -2012,9 +2026,16 @@ function renderPlanesInner(host) {
 
     const ship = sl.noCarrier ? null : shipOf(sl.ship);
     const holders = ship ? carrierModsOf(ship).map(id => holderOf(ship, id)).filter(Boolean) : [];
+    /* 母舰没有舱位（模块和系统都没有 bays）：舱位判定整块不显示，只留上面那个「母舰」下拉 */
     if (ship && !holders.length) {
-      card.appendChild(el('div', 'muted', '▲ ' + (ship.cls || ship.kind) + '：没有可用的搭载舱位 —— 模块和系统都没有舱位；舱位可以直接写在系统上（问卷第 3 步）。'));
-    } else if (ship) {
+      sl.carrierMods = []; sl.planes = [];
+      host.appendChild(card);
+      return;
+    }
+    /* 换过母舰之后，把旧母舰留下的勾选/载荷清掉，避免冒出「模块 X 只有 0 个舱」这种幽灵行 */
+    sl.carrierMods = (sl.carrierMods || []).filter(id => holders.some(m => m.id === id));
+    sl.planes = (sl.planes || []).filter(pp => sl.carrierMods.includes(pp.m));
+    if (ship) {
       holders.forEach(m => {
         const lb = el('label', 'row');
         const ck = el('input'); ck.type = 'checkbox';
@@ -2052,14 +2073,15 @@ function renderPlanesInner(host) {
     }
 
     const lchs = r.launch ? (Array.isArray(r.launch) ? r.launch : [r.launch]) : [];
-    const cm = (sl.carrierMods || []).slice();
     const modOf = id => holderOf(ship || shipOf(sl.ship), id);
+    const cm = (sl.carrierMods || []).filter(id => modOf(id));
     // 每个搭载位按 bays 展开成若干「装载位」
     const holds = [];
     cm.forEach(id => {
-      const m = modOf(id) || {name: id, bays: []};
+      const m = modOf(id);
+      if (!m) return;
       const bays = baysOfHolder(m);
-      if (!bays.length) bays.push({kind: '', cap: 0, allow_group: ''});
+      if (!bays.length) return;   /* 没有舱位的搭载位整条跳过，不再造空行 */
       bays.forEach((b, i) => {
         if ((b.kind || '') === '无人机') return;   // 无人机由系统自带，不占舱位、不进装载位
         holds.push({
@@ -2170,9 +2192,6 @@ function renderPlanesInner(host) {
     tbl.appendChild(tb);
     card.appendChild(tbl);
 
-    if (!cm.length && !sl.noCarrier) {
-      card.appendChild(el('div', 'muted', '这条母舰没有可选的搭载系统（去「数据管理 → 模块」给它加一条带 bays 舱位的记录）。'));
-    }
 
     if (!sl.noCarrier && !lchs.length && (sl.planes || []).length) {
       const warn = el('div', 'viol');
@@ -2191,7 +2210,7 @@ function renderPlanesInner(host) {
   });
 
   const t2 = $('#planeCmp'); t2.innerHTML = '';
-  SLOTS.forEach(k2 => {
+  visSlots.forEach(k2 => {
     const rr = (S.results || {})[k2] || {};
     const s2 = S.slots[k2];
     const mods = (s2.carrierMods || []).map(id => {
@@ -6606,7 +6625,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.76';
+window.__APP_VER = '2026-11-19.79';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
