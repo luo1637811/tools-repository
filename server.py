@@ -46,7 +46,7 @@ BACKUP_KEEP = int(os.environ.get("FT_BACKUP_KEEP") or 14)     # 备份保留份�
 HOST = os.environ.get("FT_HOST") or "127.0.0.1"
 PORT = (int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit()
         else int(os.environ.get("PORT") or os.environ.get("FT_PORT") or 8787))
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 SCHEMA_VERSION = 4              # 数据库结构版本，写在 PRAGMA user_version 里
 SESSION_HOURS = 12
 
@@ -1521,7 +1521,7 @@ class PayloadTooLarge(Exception):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FleetTool/0.3"
+    server_version = "ZhuihaoNexus/1.5"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -3927,7 +3927,7 @@ def ensure_initial_passwords():
 
     role_cn = {"admin": "管理员", "editor": "编辑", "viewer": "只读"}
     txt = os.path.join(DATA_DIR, "初始口令.txt")
-    lines = ["FleetTool 初始账号（首次登录后必须修改口令）", ""]
+    lines = ["追毫中枢 · 初始账号（首次登录后必须修改口令）", ""]
     for un, role, pwd in out:
         lines.append("  账号：%-12s 口令：%-14s %s" % (un, pwd, role_cn.get(role, role)))
     lines.append("")
@@ -4044,7 +4044,7 @@ def main():
                 return 2
             port += 1
     url = "http://%s:%d/" % ("127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST, port)
-    print("FleetTool v%s 已启动：%s（数据库结构 v%d）" % (VERSION, url, SCHEMA_VERSION))
+    print("追毫中枢 v%s 已启动：%s（数据库结构 v%d）" % (VERSION, url, SCHEMA_VERSION))
     print("数据目录：%s" % DATA_DIR)
     print("关闭这个窗口即停止服务。")
     if IDLE_EXIT:

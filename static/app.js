@@ -687,7 +687,7 @@ function applyPerms() {
 function applyBrand(t) {
   const el1 = $('#brandTitle');
   if (el1) el1.textContent = t;
-  document.title = t + ' · 舰队工具';
+  document.title = t + ' · 舰船工具';
 }
 async function loadSettings() {
   try {
@@ -6609,7 +6609,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.72';
+window.__APP_VER = '2026-11-19.73';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
