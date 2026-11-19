@@ -1108,3 +1108,9 @@ select, select option, option { background: #0d141d; color: #dbe8f6; }
 select option:checked, select option:hover { background: #14384c; color: #eaf6ff; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf8); }
 .calrow .row>span{flex:0 0 178px}
+
+/* 弹窗内联错误提示（模态层会挡住右下角 toast，改密失败必须显示在弹窗里） */
+.perr{color:#f87171;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.32);
+      border-left:3px solid #f87171;border-radius:6px;padding:8px 10px;font-size:13px;
+      line-height:1.5;margin:2px 0 10px}
+.perr.hide{display:none}

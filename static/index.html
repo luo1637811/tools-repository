@@ -497,9 +497,10 @@
 <dialog id="pwdDlg"><form class="dlg" method="dialog" id="pwdForm">
   <h3 id="pwdTitle">修改密码</h3>
   <div class="muted" id="pwdHint" style="margin-bottom:8px"></div>
+  <div class="perr hide" id="pwdErr" role="alert"></div>
   <label class="row"><span>当前密码</span><input type="password" name="old" autocomplete="current-password" required></label>
-  <label class="row"><span>新密码</span><input type="password" name="new" autocomplete="new-password" minlength="6" required></label>
-  <label class="row"><span>再输一次</span><input type="password" name="again" autocomplete="new-password" minlength="6" required></label>
+  <label class="row"><span>新密码</span><input type="password" name="new" autocomplete="new-password" minlength="8" placeholder="至少 8 位，含大小写/数字/符号中两类" required></label>
+  <label class="row"><span>再输一次</span><input type="password" name="again" autocomplete="new-password" minlength="8" required></label>
   <div class="toolbar" style="margin-top:12px">
     <button class="btn ghost hide" id="pwdCancel" value="cancel" formnovalidate>取消</button>
     <button class="btn ghost hide" id="pwdQuit" type="button">退出登录</button>

@@ -5691,6 +5691,8 @@ function openPwdDlg(force) {
   PWD_FORCED = false;
   const f = $('#pwdForm');
   f.reset();
+  const errEl = $('#pwdErr');
+  if (errEl) { errEl.textContent = ''; errEl.classList.add('hide'); }
   $('#pwdTitle').textContent = force ? '请先设置新密码' : '修改密码';
   $('#pwdHint').textContent = force
     ? (S.user && S.user.must_change
@@ -5716,9 +5718,17 @@ function openPwdDlg(force) {
 async function submitPwd(ev) {
   ev.preventDefault();
   const f = $('#pwdForm');
+  const errEl = $('#pwdErr');
+  const fail = msg => {
+    if (errEl) { errEl.textContent = msg; errEl.classList.remove('hide'); }
+    toast(msg, 'bad');                      // 弹窗是模态层，toast 会被挡住，真正看得见的是上面这行
+  };
+  if (errEl) { errEl.textContent = ''; errEl.classList.add('hide'); }
   const oldv = f.old.value, nw = f.new.value, ag = f.again.value;
-  if (nw !== ag) { toast('两次输入的新密码不一样', 'bad'); return; }
-  if (nw.length < 8) { toast('新密码至少 8 位', 'bad'); return; }
+  if (!oldv) { fail('请填写当前密码'); return; }
+  if (nw !== ag) { fail('两次输入的新密码不一样'); return; }
+  if (nw.length < 8) { fail('新密码至少 8 位'); return; }
+  if (nw === oldv) { fail('新密码不能和当前密码一样'); return; }
   try {
     const j = await api('/api/me/password', {method: 'POST', body: {old: oldv, new: nw}});
     S.user = j.user || S.user;
@@ -5726,7 +5736,7 @@ async function submitPwd(ev) {
     $('#pwdDlg').close();
     toast('密码已更新', 'good');
     if (PWD_FORCED) { PWD_FORCED = false; location.reload(); }
-  } catch (e) { toast('改密失败：' + e.message, 'bad'); }
+  } catch (e) { fail('改密失败：' + e.message); }
 }
 
 async function loadPwdReqs() {
@@ -5786,6 +5796,10 @@ $('#auditBtn').onclick = () => showTab('audit');
 $('#userForm').onsubmit = submitUser;
 $('#userCancel').onclick = () => { try { $('#userDlg').close(); } catch (e) {} };
 $('#pwdForm').onsubmit = submitPwd;
+['old', 'new', 'again'].forEach(n => {
+  const inp = document.querySelector('#pwdForm [name="' + n + '"]');
+  if (inp) inp.addEventListener('input', () => { const e = $('#pwdErr'); if (e) { e.textContent = ''; e.classList.add('hide'); } });
+});
 $('#pwdReqBtn').onclick = loadPwdReqs;
 
 /* ---- 操作日志页签 ---- */
@@ -6651,7 +6665,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.84';
+window.__APP_VER = '2026-11-19.85';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
