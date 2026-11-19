@@ -1916,7 +1916,12 @@ function syncLaunchSlots(list, k) {
     const arr = Array.isArray(v) ? v : [v];
     if (!arr.some(id => list.some(m => m.id === id))) keep[slot] = v;
   });
-  if ((sl.carrierMods || []).length) keep['M1'] = sl.carrierMods.slice();
+  if ((sl.carrierMods || []).length) {
+    /* 只有「模块」要进 modules（系统自带舱位由引擎自动接上），否则会报「模块 X 不在模块表里」 */
+    const sh0 = shipOf(sl.ship);
+    const mids = sl.carrierMods.filter(id => ((sh0 && sh0.modules) || []).some(m => m.id === id));
+    if (mids.length) keep['M1'] = mids;
+  }
   sl.modules = keep;
 }
 
@@ -6625,7 +6630,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.79';
+window.__APP_VER = '2026-11-19.80';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

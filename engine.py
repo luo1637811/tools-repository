@@ -379,6 +379,11 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         for mid in ids:
             if mid:
                 mods[mid] = mid
+    # 系统自带的舱位（如 cv3000_M1）也会从「模块」口进来：它们不是模块，交给下面的系统搭载位处理
+    _sys_ids = set(str(sy.get("id")) for sy in (ship.get("systems") or []) if sy.get("id"))
+    for mid in list(mods.keys()):
+        if mid in _sys_ids:
+            mods.pop(mid, None)
     if not ship["mod_ok"]:
         if mods:
             ignored = sorted(mods.keys())
