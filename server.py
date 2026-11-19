@@ -435,6 +435,9 @@ def init_db():
             ("planes", "bay_kind", "TEXT"), ("planes", "deprecated", "INTEGER DEFAULT 0"),
             # ---- schema v4 ----
             ("nodes", "per_lv", "TEXT"),
+            # 这几列建库脚本里没有、旧迁移也没补过：新装（空库）会缺，导致系统数值全部读不到
+            ("systems", "stats_norm", "TEXT"), ("systems", "is_weapon", "INTEGER DEFAULT 0"),
+            ("systems", "bays", "TEXT"),
         ]:
             try:
                 c.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_ddl}")

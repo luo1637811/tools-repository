@@ -1,7 +1,7 @@
 {
  "version": "7216e4822032",
- "eff_version": "5ffeec8381d0",
- "generated_at": "2026-11-19 00:15:34",
+ "eff_version": "519bf8381821",
+ "generated_at": "2026-11-19 16:08:44",
  "note": "由 _deploy_tools/make_ships_seed.py 生成；服务端启动时按 version 幂等导入",
  "ship_ids": ["ac721", "cas066", "cv3000", "douniu", "fg300", "fg300_scout", "liebing", "pl_a021", "pl_b010", "pl_b101", "pl_levy", "pl_pulse", "pt_shield", "sh_tank", "sunwhale", "yuhai"],
  "ships": [
@@ -421,7 +421,6 @@
   {"builtin": 1, "deprecated": 0, "id": "armor", "kind": "add", "name": "物理护甲", "note": "物理减伤点数", "ord": 0, "scope": "ship", "target": "armor", "unit": "点"},
   {"builtin": 1, "deprecated": 0, "id": "cargo", "kind": "add", "name": "仓储量", "note": "", "ord": 0, "scope": "ship", "target": "cargo", "unit": ""},
   {"builtin": 1, "deprecated": 0, "id": "cd", "kind": "pct", "name": "冷却时间", "note": "", "ord": 0, "scope": "weapon", "target": "cd", "unit": "%"},
-  {"builtin": 1, "deprecated": 0, "id": "cd_up", "kind": "pct", "name": "冷却时间（叠加）", "note": "", "ord": 0, "scope": "weapon", "target": "cd", "unit": "%"},
   {"builtin": 1, "deprecated": 0, "id": "crit", "kind": "pct", "name": "暴击伤害", "note": "", "ord": 0, "scope": "system", "target": "crit", "unit": "%"},
   {"builtin": 1, "deprecated": 0, "id": "crit_rate", "kind": "pct", "name": "暴击率", "note": "", "ord": 0, "scope": "system", "target": "crit_rate", "unit": "%"},
   {"builtin": 1, "deprecated": 0, "id": "critres", "kind": "pct", "name": "暴击抵抗", "note": "", "ord": 0, "scope": "ship", "target": "crit_res", "unit": "%"},
@@ -455,7 +454,6 @@
   {"builtin": 1, "deprecated": 0, "id": "p_lock", "kind": "pct", "name": "载机选目标时间", "note": "", "ord": 0, "scope": "plane", "target": "p_lock", "unit": "%"},
   {"builtin": 1, "deprecated": 0, "id": "p_move", "kind": "pct", "name": "载机突防时间", "note": "", "ord": 0, "scope": "plane", "target": "p_move", "unit": "%"},
   {"builtin": 1, "deprecated": 0, "id": "plane", "kind": "pct", "name": "载机伤害", "note": "", "ord": 0, "scope": "plane", "target": "plane", "unit": "%"},
-  {"builtin": 1, "deprecated": 0, "id": "range", "kind": "add", "name": "射程", "note": "", "ord": 0, "scope": "weapon", "target": "range", "unit": ""},
   {"builtin": 1, "deprecated": 0, "id": "repair", "kind": "add", "name": "维修量", "note": "每次修复量", "ord": 0, "scope": "system", "target": "repair", "unit": "点"},
   {"builtin": 1, "deprecated": 0, "id": "repair_bonus_pct", "kind": "pct", "name": "受维修效果", "note": "", "ord": 0, "scope": "ship", "target": "repair_bonus", "unit": "%"},
   {"builtin": 1, "deprecated": 0, "id": "selfheal", "kind": "pct", "name": "自维修", "note": "", "ord": 0, "scope": "ship", "target": "selfheal", "unit": "%"},

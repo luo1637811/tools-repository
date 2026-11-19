@@ -92,7 +92,7 @@ EFFECTS_SEED = [
     ("shield", "护盾", "点", "能量护盾点数"),
     ("hull", "结构", "点", "结构值点数"),
     ("repair", "维修量", "点", "每次修复量"),
-    ("speed", "巡航速度", "%", "常规移动速度"), ("warp", "曲率速度", "%", "曲率移动速度"), ("move", "突防速度", "%", "缩短往复飞行时间"), ("cd_up", "冷却缩减（系统）", "%", ""), ("crit", "暴击伤害", "%", ""), ("critres", "抗暴", "%", ""), ("focus", "锁定优先", "", ""), ("formation", "阵型", "", ""), ("intc", "拦截率", "%", ""), ("lock", "锁定时间", "%", ""), ("range", "目标范围", "", ""), ("selfheal", "自维修", "%", ""), ("syshull", "系统结构", "%", ""), ("plane", "舰载机伤害", "%", "机库内舰载机输出"),
+    ("speed", "巡航速度", "%", "常规移动速度"), ("warp", "曲率速度", "%", "曲率移动速度"), ("move", "突防速度", "%", "缩短往复飞行时间"), ("crit", "暴击伤害", "%", ""), ("critres", "抗暴", "%", ""), ("focus", "锁定优先", "", ""), ("formation", "阵型", "", ""), ("intc", "拦截率", "%", ""), ("lock", "锁定时间", "%", ""), ("selfheal", "自维修", "%", ""), ("syshull", "系统结构", "%", ""), ("plane", "舰载机伤害", "%", "机库内舰载机输出"),
 ]
 
 
@@ -299,11 +299,9 @@ EFFECT_RULES = {
     "speed":          ("pct", "cruise", "ship"),
     # ---- 历史键（EFFECTS_SEED 里的老 id，引擎仍在消费，必须给口径）----
     "cd":             ("pct", "cd", "weapon"),
-    "cd_up":          ("pct", "cd", "weapon"),
     "plane":          ("pct", "plane", "plane"),
     "critres":        ("pct", "crit_res", "ship"),
     "intc":           ("pct", "intercept", "weapon"),
-    "range":          ("add", "range", "weapon"),
     "selfheal":       ("pct", "selfheal", "ship"),
     "syshull":        ("pct", "syshull", "system"),
     "focus":          ("note", "", ""),
@@ -349,9 +347,7 @@ EFFECT_NAMES = {
     "syshull": "系统结构值",
     "plane": "载机伤害",
     "cd": "冷却时间",
-    "cd_up": "冷却时间（叠加）",
     "intc": "拦截率",
-    "range": "射程",
     "critres": "暴击抵抗",
     "selfheal": "自维修",
     "focus": "集火目标",

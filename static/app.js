@@ -3901,7 +3901,7 @@ function wizRender() {
         'armor', 'crit_rate', 'crit', 'eff7587', 'eva', 'eva_missile', 'eva_torp',
         'lock', 'lockres', 'hull', 'move', 'repair', 'shield', 'warp', 'speed',
         'syshull', 'dmg_cannon', 'dmg_rail', 'dmg_pulse', 'dmg_missile', 'dmg_plasma',
-        'dmg_drone', 'dmg_atk_pct', 'dmg_air_pct', 'dmg_siege_pct', 'dur', 'warn', 'cd', 'cd_up',
+        'dmg_drone', 'dmg_atk_pct', 'dmg_air_pct', 'dmg_siege_pct', 'dur', 'warn', 'cd',
         'cargo', 'repair_bonus_pct', 'intc', 'intc_torp', 'critres', 'plane',
         'p_acc', 'p_move', 'p_lock', 'p_freq', 'p_eva_missile'];
       /* 作用域 → 分组标题（顺序固定；引擎按 scope 决定这条加成加到哪） */
@@ -6651,7 +6651,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.83';
+window.__APP_VER = '2026-11-19.84';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
