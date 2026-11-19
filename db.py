@@ -37,12 +37,14 @@ def conn():
 
 
 def ensure_wal():
-    """保留函数名（server 启动时调用）；实测 WAL 下「先读后写」会 SQLITE_BUSY，
-    这里固定回滚日志模式，配合 busy_timeout 足够单人/小队使用。"""
+    """WAL：读不挡写、写不挡读，配合 busy_timeout=15s 足够小队并发。
+    早期版本误把「先读后写」的 SQLITE_BUSY 归因于 WAL，实际是同一请求里
+    log() 在写事务内另开连接导致的死等——那个问题已修。
+    数据库若在 NFS 等不支持 WAL 的盘上，PRAGMA 会静默退回 delete，不影响启动。"""
     c = sqlite3.connect(DB_PATH, timeout=15)
     try:
-        c.execute("PRAGMA journal_mode=DELETE")
-        c.execute("PRAGMA synchronous=FULL")
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
     except Exception:
         pass
     c.close()

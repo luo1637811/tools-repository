@@ -240,6 +240,8 @@ async function publishVer() {
 
 /* ---------- 蓝图 ---------- */
 const shipOf = id => (S.bp.ships || []).find(s => s.id === id);
+/* 只在「这条船还在不在库里」时用：含弃用船（弃用的船仍能正常计算） */
+const shipAnyOf = id => ((S.bp.shipsAll || S.bp.ships || []).find(s => s.id === id));
 
 async function loadBlueprints(silent) {
   try {
@@ -249,8 +251,18 @@ async function loadBlueprints(silent) {
     S.bp.shipsAll = (j.ships || []).slice();
     S.bp.ships = (j.ships || []).filter(s => !(+s.deprecated || 0));
     renderVerTag();
-    const firstShip = (j.ships || [])[0];
-    SLOTS.forEach(k => { if (!S.slots[k].ship) S.slots[k].ship = firstShip ? firstShip.id : ''; });
+    const allIds = new Set((j.ships || []).map(x => x.id));
+    const firstShip = (j.ships || []).find(x => !(+x.deprecated || 0)) || (j.ships || [])[0];
+    SLOTS.forEach(k => {
+      const sl = S.slots[k];
+      /* 这条船被删掉了（含启动时去重删掉的重复船）：换成第一艘可用的，别让后面每次计算都报错 */
+      if (!sl.ship || !allIds.has(sl.ship)) {
+        sl.ship = firstShip ? firstShip.id : '';
+        sl.noCarrier = false; sl.modules = {}; sl.alloc = {}; sl.planes = [];
+        if (S.results) delete S.results[k];
+      }
+      if (!sl.ship) sl.ship = '';
+    });
     const _sh0 = S.slots[S.cur] && shipOf(S.slots[S.cur].ship);
     const _sy0 = ((_sh0 && _sh0.systems) || [])[0];
     S.sys[S.cur] = S.sys[S.cur] || (_sy0 ? _sy0.id : '');
@@ -1726,6 +1738,13 @@ let pend = {};
 function recalc(key) {
   const sl = S.slots[key];
   if (!S.bp || !sl.ship) return;
+  if (!shipAnyOf(sl.ship)) {          /* 船已经被删：先换一艘，再算，避免反复弹「blueprint not found」 */
+    const first = ((S.bp.ships || [])[0]) || null;
+    sl.ship = first ? first.id : '';
+    sl.noCarrier = false; sl.modules = {}; sl.alloc = {}; sl.planes = [];
+    if (!sl.ship) return;
+    if (key === S.cur) renderEditor();
+  }
   clearTimeout(pend[key]);
   pend[key] = setTimeout(async () => {
     try {
@@ -1737,7 +1756,15 @@ function recalc(key) {
           : {ship: sl.ship, modules: sl.modules, alloc: sl.alloc, planes: planes, light: true}});
       S.results = S.results || {}; S.results[key] = j.result;
       renderResults();
-    } catch (e) { toast('计算失败：' + e.message, 'bad'); }
+    } catch (e) {
+      if (e && e.status === 400 && /blueprint not found/.test(e.message || '')) {
+        /* 服务端说这条船不在了（别人删的 / 刚被去重）：刷新列表并换一艘 */
+        toast('这艘船已经从库里删掉了，已自动换一艘重新计算', 'bad');
+        await loadBlueprints(true);
+        return;
+      }
+      toast('计算失败：' + e.message, 'bad');
+    }
   }, 120);
 }
 
@@ -2235,9 +2262,18 @@ function renderData() {
   const canEditRow = can(ent === 'effects' ? 'effects_edit' : 'data_edit');
   const wizBtn = $('#wizBtn'); if (wizBtn) wizBtn.classList.toggle('hide', !isShip || !canEditRow);
   const newBtn = $('#newEnt'); if (newBtn) newBtn.classList.toggle('hide', isShip || !canEditRow);
+  /* 每次渲染都重算：首次进入时权限可能还没加载完，不能只在绑定那一瞬间算一次 */
+  const expBtn = $('#expJson'); if (expBtn) expBtn.classList.toggle('hide', !can('export'));
+  const impBtn = $('#impShipBtn'); if (impBtn) impBtn.classList.toggle('hide', !isShip || !canEditRow);
+  const dedBtn = $('#dedupeBtn'); if (dedBtn) dedBtn.classList.toggle('hide', !isShip || !canEditRow);
   const cols = colsFor(ent);
   const head = $('#entHead'); head.innerHTML = '';
   cols.forEach(c => head.appendChild(el('th', '', c.replace('_', ''))));
+  if (isShip) {
+    head.appendChild(el('th', '', '系统'));
+    head.appendChild(el('th', '', '加点'));
+    head.appendChild(el('th', '', '标记'));
+  }
   head.appendChild(el('th', '', '操作'));
   const body = $('#entBody'); body.innerHTML = '';
   const canEdit = canEditRow;
@@ -2276,6 +2312,22 @@ function renderData() {
       }
       tr.appendChild(el('td', '', String(v).slice(0, 40)));
     });
+    if (isShip) {
+      /* 数据体检：同名 / 0 系统 / 已弃用 一眼能看出来 */
+      const sysArr = row.systems || [];
+      const nNodes = sysArr.reduce((a, x) => a + ((x.nodes || []).length), 0);
+      const mine = (row.name || '').trim();
+      const dup = ((S.bp.shipsAll || []).filter(x => (x.name || '').trim() === mine)).length;
+      const flags = [];
+      if (+row.deprecated || 0) flags.push('已弃用');
+      if (dup > 1) flags.push('同名 ' + dup + ' 条');
+      if (!sysArr.length) flags.push('0 系统');
+      tr.appendChild(el('td', 'muted', String(sysArr.length)));
+      tr.appendChild(el('td', 'muted', String(nNodes)));
+      const tdF = el('td', 'muted', flags.length ? '⚠ ' + flags.join(' · ') : '—');
+      if (flags.length) { tdF.style.color = 'var(--warn)'; }
+      tr.appendChild(tdF);
+    }
     const td = el('td');
     if (canEdit) {
       const b = el('button', 'btn ghost', '改');
@@ -2283,6 +2335,12 @@ function renderData() {
       const d = el('button', 'btn danger', '删'); d.style.marginLeft = '6px';
       d.onclick = () => delEnt(row.id);
       td.append(b, d);
+      if (ent === 'ships') {
+        const e2 = el('button', 'btn ghost', '导出'); e2.style.marginLeft = '6px';
+        e2.title = '导出这艘船（船体 + 系统 + 加点 + 模块）为 JSON';
+        e2.onclick = () => exportShip(row.id);
+        td.append(e2);
+      }
     }
     tr.appendChild(td); body.appendChild(tr);
   });
@@ -2292,11 +2350,15 @@ function renderData() {
     : (ent === 'modules')
     ? '模块的 bonus/stats 已清空，点「改」按 {"dmg":15,"cd":20} 这类写法填；空着就只算舱位。'
     : '';
+  const dataTips = [];
+  if (isShip) dataTips.push('「标记」列会提示同名重复、0 系统、已弃用的船');
+  if (hint) dataTips.push(hint);
   $('#dataNote').textContent = canEdit
     ? '共 ' + allRows.length + ' 条'
       + (q ? '，筛出 ' + shownRows.length + ' 条' : '')
       + (shownRows.length === 0 && q ? '（换个关键字试试）' : '')
-      + '；' + hint + '改完立即生效，所有在线页面自动刷新。'
+      + (dataTips.length ? '。' + dataTips.join('；') : '')
+      + '。改完立即生效，所有在线页面自动刷新。'
     : '只读：用 admin 登录后才能改数据。';
 }
 
@@ -2553,7 +2615,7 @@ async function submitEnt(ev) {
 async function delEnt(id) {
   let extra = '';
   if (S.ent === 'ships') {
-    const sh = (S.bp.ships || []).find(x => x.id === id);
+    const sh = (S.bp.shipsAll || S.bp.ships || []).find(x => x.id === id);
     if (sh) {
       const sys = sh.systems || [];
       const nd = sys.reduce((a, x) => a + (x.nodes || []).length, 0);
@@ -2565,6 +2627,172 @@ async function delEnt(id) {
   try { await api('/api/data/' + S.ent + '/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
     toast('已删除', 'good'); await loadBlueprints(true); renderData(); }
   catch (e) { toast('删除失败：' + e.message, 'bad'); }
+}
+
+/* ---------- 单船导出 / 导入、批量清理重复 ---------- */
+function shipBundleOf(sid) {
+  const sh = (S.bp.shipsAll || S.bp.ships || []).find(x => x.id === sid);
+  if (!sh) return null;
+  return {
+    kind: 'fleet-ship', payload_version: 1, exported_at: new Date().toISOString(),
+    ship: { id: sh.id, name: sh.name, cls: sh.cls, kind: sh.kind, size: sh.size,
+            pgroup: sh.pgroup, cmd_type: sh.cmd_type, tech_total: sh.tech_total,
+            base: sh.base || {}, note: sh.note, class: sh.class, role: sh.role },
+    modules: (sh.modules || []).map(m => ({ id: m.id, ship: m.ship, slot: m.slot,
+      name: m.name, mkind: m.mkind, cap: m.cap, allow_group: m.allow_group,
+      bonus: m.bonus, stats: m.stats, note: m.note, bays: m.bays, sys: m.sys })),
+    systems: (sh.systems || []).map(sy => ({
+      id: sy.id, ship: sy.ship, slot: sy.slot, name: sy.name, tech_cap: sy.tech_cap,
+      stats: sy.stats || null, stats_norm: sy.norm || {}, bays: sy.bays || null,
+      is_weapon: sy.is_weapon, sys_kind: sy.sys_kind, no_nodes: sy.no_nodes, ord: sy.ord,
+      nodes: (sy.nodes || []).map(n => ({ id: n.id, sys: n.sys, parent: n.parent,
+        label: n.label, max_lv: n.max_lv, cost: n.cost, costs: n.costs,
+        effect: n.effect, per_lv: n.per_lv, note: n.note }))
+    }))
+  };
+}
+
+function exportShip(sid) {
+  const b = shipBundleOf(sid);
+  if (!b) { toast('找不到这艘船', 'bad'); return; }
+  const blob = new Blob([JSON.stringify(b, null, 2)], {type: 'application/json'});
+  const a = el('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'ship-' + sid + '.json'; a.click();
+  toast('已导出 ' + (b.ship.name || sid), 'good');
+}
+
+function uniqShipName(name, taken) {
+  const base = (name || '导入舰船').trim() || '导入舰船';
+  if (!taken.has(base)) return base;
+  let i = 1, cand = base + '（副本）';
+  while (taken.has(cand)) { i += 1; cand = base + '（副本 ' + i + '）'; }
+  return cand;
+}
+
+async function importOneShip(b) {
+  if (!b || !b.ship) throw new Error('文件里没有 ship 字段');
+  const all = S.bp.shipsAll || [];
+  const names = new Set(all.map(x => (x.name || '').trim()));
+  const ids = new Set(all.map(x => x.id));
+  let sid = String(b.ship.id || ('ship_' + Date.now()));
+  let nm = String(b.ship.name || '').trim() || '导入舰船';
+  if (ids.has(sid)) sid = 'ship_' + Date.now() + '_' + Math.floor(Math.random() * 900 + 100);
+  if (names.has(nm)) nm = uniqShipName(nm, names);
+  await api('/api/data/ships', {method: 'POST', body: Object.assign({}, b.ship,
+    {id: sid, name: nm, class: b.ship.class || b.ship.cls})});
+  let ns = 0, nn = 0, nmd = 0;
+  const sysMap = {};
+  for (const sy of (b.systems || [])) {
+    const syId = sid + '_' + (sy.slot || 'X');
+    sysMap[sy.id] = syId;
+    const row = Object.assign({}, sy, {id: syId, ship: sid});
+    delete row.nodes;
+    await api('/api/data/systems', {method: 'POST', body: row});
+    ns += 1;
+    for (const n of (sy.nodes || [])) {
+      const code = String(n.id || '').split(':').pop();
+      await api('/api/data/nodes', {method: 'POST', body: Object.assign({}, n,
+        {id: syId + ':' + code, sys: syId})});
+      nn += 1;
+    }
+  }
+  let mi = 0;
+  for (const m of (b.modules || [])) {
+    mi += 1;
+    await api('/api/data/modules', {method: 'POST', body: Object.assign({}, m,
+      {id: sid + '_mod' + mi, ship: sid, sys: m.sys ? (sysMap[m.sys] || m.sys) : null})});
+    nmd += 1;
+  }
+  return {sid: sid, nm: nm, ns: ns, nn: nn, nmd: nmd};
+}
+
+async function importShipFile(file) {
+  if (!file) return;
+  let obj = null;
+  try { obj = JSON.parse(await file.text()); }
+  catch (e) { toast('不是合法的 JSON 文件', 'bad'); return; }
+  const list = Array.isArray(obj) ? obj : (obj && obj.ship ? [obj] : null);
+  if (!list || !list.length) { toast('文件里没有可导入的舰船（应为单船导出文件）', 'bad'); return; }
+  if (!askConfirm(file.name, '导入 ' + list.length + ' 艘船？\n\n重名会自动加「（副本）」，原有的船不动。')) return;
+  let done = 0, sysN = 0, ndN = 0;
+  try {
+    for (const b of list) {
+      const r = await importOneShip(b);
+      done += 1; sysN += r.ns; ndN += r.nn;
+    }
+    toast('已导入 ' + done + ' 艘（系统 ' + sysN + ' 个、加点 ' + ndN + ' 条）', 'good');
+  } catch (e) {
+    toast('导入到第 ' + (done + 1) + ' 艘时失败：' + e.message
+      + (done ? '（前面 ' + done + ' 艘已写入）' : ''), 'bad');
+  }
+  await loadBlueprints(true); renderData(); renderEditor();
+}
+
+function shipDedupePlan() {
+  const rows = (S.bp.shipsAll || []).slice();
+  const groups = {};
+  rows.forEach(s => {
+    const k = String(s.name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!k) return;
+    (groups[k] = groups[k] || []).push(s);
+  });
+  const kick = [], mark = [];
+  const rich = x => {
+    const sys = x.systems || [];
+    const nNodes = sys.reduce((a, y) => a + ((y.nodes || []).length), 0);
+    const strong = sys.some(y => (y.norm && Object.keys(y.norm).length) || (y.bays && y.bays.length));
+    return {sys: sys.length, nodes: nNodes, strong: strong};
+  };
+  Object.keys(groups).forEach(k => {
+    const arr = groups[k];
+    if (arr.length < 2) return;
+    arr.sort((x, y) => {
+      const px = /^ship_/.test(x.id) ? 1 : 0, py = /^ship_/.test(y.id) ? 1 : 0;
+      if (px !== py) return px - py;
+      const rx = rich(x), ry = rich(y);
+      if (rx.strong !== ry.strong) return rx.strong ? -1 : 1;
+      if (ry.nodes !== rx.nodes) return ry.nodes - rx.nodes;
+      if (ry.sys !== rx.sys) return ry.sys - rx.sys;
+      return String(x.id).localeCompare(String(y.id));
+    });
+    const keeper = arr[0];
+    arr.slice(1).forEach(x => {
+      const r = rich(x);
+      if (!r.sys || (r.nodes === 0 && !r.strong)) kick.push(x);
+      else mark.push({row: x, keeper: keeper});
+    });
+  });
+  return {kick: kick, mark: mark, groups: Object.keys(groups).length};
+}
+
+async function dedupeShips() {
+  const plan = shipDedupePlan();
+  const kick = plan.kick, mark = plan.mark;
+  if (!kick.length && !mark.length) { toast('没有发现同名舰船', 'good'); return; }
+  const lines = [];
+  if (kick.length) lines.push('删除空壳 ' + kick.length + ' 条：'
+    + kick.slice(0, 5).map(x => x.id).join('、') + (kick.length > 5 ? ' …' : ''));
+  if (mark.length) lines.push('标记弃用 ' + mark.length + ' 条：'
+    + mark.slice(0, 5).map(x => x.row.id).join('、') + (mark.length > 5 ? ' …' : ''));
+  if (!askConfirm('清理重复舰船', lines.join('\n\n')
+    + '\n\n空壳（没有系统 / 没有加点）直接删；有内容的只标为「已弃用」，数据和备注都保留。')) return;
+  let ok = 0, bad = 0;
+  for (const x of kick) {
+    try { await api('/api/data/ships/' + encodeURIComponent(x.id), {method: 'DELETE', confirm: x.id}); ok += 1; }
+    catch (e) { bad += 1; }
+  }
+  for (const m of mark) {
+    try {
+      const body = Object.assign({}, m.row, {deprecated: 1,
+        note: ('重复：与 ' + m.keeper.id + ' 同名，请核对后删除。' + (m.row.note || '')).slice(0, 300)});
+      delete body.systems; delete body.modules; delete body.planes;
+      await api('/api/data/ships', {method: 'PUT', body: body});
+      ok += 1;
+    } catch (e) { bad += 1; }
+  }
+  toast('清理完成：成功 ' + ok + ' 条' + (bad ? '，失败 ' + bad + ' 条' : ''),
+    bad ? 'bad' : 'good');
+  await loadBlueprints(true); renderData(); renderEditor();
 }
 
 async function exportJson() {
@@ -3269,7 +3497,7 @@ function wizWeaponsBox(sy, rerender) {
     sy.is_weapon = true;
     rerender();
   };
-  const calc = el('button', 'btn', '按六字段重算对舰存档'); calc.type = 'button';
+  const calc = el('button', 'btn ghost', '按六字段重算对舰存档'); calc.type = 'button';
   calc.onclick = () => {
     if (!ws.length) return toast('先增加一把武器', 'bad');
     const r = wepCalc(sy);
@@ -4229,13 +4457,19 @@ async function wizSave() {
     }
   }
   const btn = $('#wizNext'); btn.disabled = true;
+  const doneStages = [];
+  let stage = '舰船';
   try {
     await api('/api/data/ships', {method: 'PUT', body: p.ship});
+    stage = '系统'; doneStages.push('舰船');
     for (const s of p.systems) await api('/api/data/systems', {method: 'PUT', body: s});
+    stage = '加点'; doneStages.push('系统 ' + p.systems.length + ' 个');
     for (const n of p.nodes) await api('/api/data/nodes', {method: 'PUT', body: n});
     const withMod = canMod(p.ship);
+    stage = '模块'; doneStages.push('加点 ' + p.nodes.length + ' 条');
     if (withMod) {
       for (const m of p.modules) await api('/api/data/modules', {method: 'PUT', body: m});
+      if (p.modules.length) doneStages.push('模块 ' + p.modules.length + ' 个');
     }
     /* 编辑模式：把这次删掉的旧行一起清掉（先删节点，再删模块，最后删系统） */
     if (WIZ.edit) {
@@ -4252,7 +4486,11 @@ async function wizSave() {
     S.slots[S.cur].ship = p.ship.id; S.sys[S.cur] = '';   /* 存完自动切到这条船 */
     await loadBlueprints(true); renderData(); renderEditor();
   } catch (e) {
-    alert('保存失败：\n\n' + (e && e.message ? e.message : e) + '\n\n（这次没有写入任何数据，可以改完再存）');
+    const info = doneStages.length
+      ? '已经写进库里的：' + doneStages.join('、') + '。'
+        + '\n\n剩下的没写进去——重新打开这条船、再点一次「保存修改」就行（按 id 覆盖，不会多出重复数据）。'
+      : '这次一条都没写进去，改完再存即可。';
+    alert('保存失败（停在「' + stage + '」这一步）：\n\n' + (e && e.message ? e.message : e) + '\n\n' + info);
   }
   finally { btn.disabled = false; }
 }
@@ -5372,7 +5610,9 @@ $('#newEnt').onclick = () => {
   openEnt(null);
 };
 $('#expJson').onclick = exportJson;
-$('#expJson').classList.toggle('hide', !can('export'));
+$('#dedupeBtn').onclick = () => dedupeShips();
+$('#impShipBtn').onclick = () => $('#impShipFile').click();
+$('#impShipFile').onchange = e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; importShipFile(f); };
 $('#entForm').onsubmit = submitEnt;
 $('#entCancel').onclick = () => { try { $('#entDlg').close(); } catch (e) {} };
 /* 注意：不要直接写 onclick = wizStart —— 浏览器会把 PointerEvent 当第一个参数传进去，
@@ -6369,7 +6609,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.69';
+window.__APP_VER = '2026-11-19.72';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

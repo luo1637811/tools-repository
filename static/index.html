@@ -147,6 +147,9 @@
       <button class="btn" id="newEnt">直接新增一行</button>
       <input type="text" id="entQ" placeholder="筛选当前表（id / 名称 / 系统…）" style="width:200px">
       <button class="btn ghost" id="expJson">导出 JSON</button>
+      <button class="btn ghost" id="impShipBtn" title="导入之前「导出」的单船 JSON">导入单船</button>
+      <input type="file" id="impShipFile" accept="application/json,.json" style="display:none">
+      <button class="btn ghost" id="dedupeBtn" title="找出同名舰船：空壳直接删，有内容的标为弃用">清理重复舰船</button>
       <span class="muted" id="dataNote"></span>
     </div>
     <div class="datascroll" id="entScroll">

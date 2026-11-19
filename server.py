@@ -31,13 +31,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
-from db import BASE, DATA_DIR, DB_PATH, FROZEN, RES_DIR, conn
+from db import BASE, DATA_DIR, DB_PATH, FROZEN, RES_DIR, conn, ensure_wal
 from schema import (SCHEMA, EFFECTS_SEED, EFFECTS_CANON, ATTRS_SEED, SHIPS, SYSTEMS,
                     NODES, MODULES, PLANES, USERS, CLASSES, EFFECT_RULES, EFFECT_NAMES)
 from util import j, num
 from engine import GROUP_RANK, _group_ok, _lv_amt, _normalize_ship, simulate
 
 STATIC = os.path.join(RES_DIR, "static")
+MAX_BODY_MB = int(os.environ.get("FT_MAX_BODY_MB") or 2)      # 请求体上限（MB）
+MAX_BODY_BYTES = max(1, MAX_BODY_MB) * 1024 * 1024
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")               # 每日备份目录
+BACKUP_KEEP = int(os.environ.get("FT_BACKUP_KEEP") or 14)     # 备份保留份数
 
 HOST = os.environ.get("FT_HOST") or "127.0.0.1"
 PORT = (int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit()
@@ -350,6 +354,7 @@ def _dedupe_duplicate_ships(c):
 
 
 def init_db():
+    ensure_wal()          # 先把日志模式切到 WAL（幂等；不支持 WAL 的盘会自动退回 delete）
     fresh = not os.path.exists(DB_PATH)
     _seed_msg = ""
     _dedupe_msg = ""
@@ -1511,6 +1516,10 @@ def pwd_contact_ok(stored, contact):
 REL_SET = ("友好", "中立", "敌对")
 
 
+class PayloadTooLarge(Exception):
+    """请求体超过 MAX_BODY_BYTES：单独抛，让上层回 413 而不是 400。"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FleetTool/0.3"
     protocol_version = "HTTP/1.1"
@@ -1519,6 +1528,25 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     _head = False          # HEAD 请求：头部照发，响应体不写
+
+    # 统一安全响应头：覆写 end_headers，JSON / 静态 / 304 / 错误响应都会带上。
+    # CSP 允许内联样式与登录页的内联脚本；HSTS 由前置 nginx 负责。
+    SEC_HEADERS = (
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "SAMEORIGIN"),
+        ("Referrer-Policy", "same-origin"),
+        ("Permissions-Policy", "geolocation=(), microphone=(), camera=()"),
+        ("Cross-Origin-Opener-Policy", "same-origin"),
+        ("Content-Security-Policy",
+         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+         "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; "
+         "base-uri 'self'; form-action 'self'"),
+    )
+
+    def end_headers(self):
+        for _k, _v in self.SEC_HEADERS:
+            self.send_header(_k, _v)
+        super().end_headers()
 
     def do_HEAD(self):
         """HEAD：给 curl -I / 监控探活用。路由与 GET 一致，但只回头部。
@@ -1631,6 +1659,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY_BYTES:
+            raise PayloadTooLarge("请求内容太大（上限 %d MB）" % MAX_BODY_MB)
         if not n:
             return {}                 # 允许空体：登出 / 领 ticket 这类没有 payload
         return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
@@ -1651,6 +1681,14 @@ class Handler(BaseHTTPRequestHandler):
         ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8"}.get(os.path.splitext(fp)[1],
                                                        "application/octet-stream")
+        st = os.stat(fp)
+        etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+        if (self.headers.get("If-None-Match") or "").strip() == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
         raw, gzraw = static_bytes(fp)
         gz = False
         if ctype.startswith(("text/", "application/javascript")):
@@ -1659,7 +1697,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-cache")   # 必须回源校验：部署后立即生效
+        self.send_header("ETag", etag)
         if gz:
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
@@ -1704,6 +1743,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.stream_ticket()
         try:
             data = self.body()
+        except PayloadTooLarge as _e:
+            return self.err(413, str(_e))
         except Exception:
             return self.err(400, "bad json")
         try:
@@ -1818,6 +1859,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             data = self.body()
+        except PayloadTooLarge as _e:
+            return self.err(413, str(_e))
         except Exception:
             data = {}
         try:
@@ -3911,6 +3954,58 @@ def open_browser(url):
         pass
 
 
+def _backup_newest():
+    """最近一次备份的 mtime；没有备份返回 0。"""
+    try:
+        files = sorted(f for f in os.listdir(BACKUP_DIR)
+                       if f.startswith("data-") and f.endswith(".db"))
+        if not files:
+            return 0.0
+        return os.path.getmtime(os.path.join(BACKUP_DIR, files[-1]))
+    except Exception:
+        return 0.0
+
+
+def backup_db(tag="auto"):
+    """在线备份 data.db（sqlite3 backup API，WAL 下也安全），并清理旧备份。"""
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dst = os.path.join(BACKUP_DIR, "data-%s.db" % stamp)
+        src = sqlite3.connect(DB_PATH, timeout=15)
+        try:
+            out = sqlite3.connect(dst)
+            try:
+                src.backup(out)
+            finally:
+                out.close()
+        finally:
+            src.close()
+        try:
+            files = sorted(f for f in os.listdir(BACKUP_DIR)
+                           if f.startswith("data-") and f.endswith(".db"))
+            for old in files[:-max(1, BACKUP_KEEP)]:
+                os.remove(os.path.join(BACKUP_DIR, old))
+        except Exception:
+            pass
+        print("[%s] 数据库已备份：%s" % (now(), dst), flush=True)
+        return dst
+    except Exception as e:
+        print("[%s] 数据库备份失败：%s: %s" % (now(), type(e).__name__, e), flush=True)
+        return ""
+
+
+def backup_loop():
+    """每 6 小时醒一次；最近备份超过 23 小时才做，避免频繁写盘。"""
+    while True:
+        try:
+            if time.time() - _backup_newest() > 23 * 3600:
+                backup_db("daily")
+        except Exception:
+            pass
+        time.sleep(6 * 3600)
+
+
 def main():
     # 兜底：唯一管理员忘了密码、网页里没人能批的时候，在服务器本机执行
     #   python server.py --reset-pwd <账号> [新口令]
@@ -3956,6 +4051,7 @@ def main():
         print("页面全关掉后 %d 秒自动退出（改 FT_IDLE_SEC 调时长，FT_IDLE_EXIT=0 关闭）。" % IDLE_SEC)
         threading.Thread(target=idle_watchdog, daemon=True).start()
     threading.Thread(target=audit_janitor, daemon=True).start()
+    threading.Thread(target=backup_loop, daemon=True).start()
     if FROZEN or os.environ.get("FT_OPEN") == "1":
         threading.Timer(1.2, open_browser, args=(url,)).start()
     try:
