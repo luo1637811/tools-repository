@@ -860,7 +860,13 @@ function renderBaseAttrs() {
     const b3 = w3 || weaponBase3(x.n, six, cdR);
     /* 文档给了系统级那一行就以文档为准（和引擎、sysDmgSum 同一口径） */
     const dv = x.n && x.n[k];
-    const base = (dv === undefined || dv === null) ? b3[idx] : Number(dv);
+    const st = (dv === undefined || dv === null) ? null : Number(dv);
+    /* 文档值是零加点口径：加点按 weaponNodeRatio 放大；没有文档值时才用现算（现算已含加点） */
+    let base = st === null ? b3[idx] : st;
+    if (st !== null && multi) {
+      const r = weaponNodeRatio(x.n, cdR, famA);
+      base *= (k === 'dmg_air' ? r[1] : r[0]);
+    }
     const oc = ownCritOf(x);
     return base * (1 + (Number(aa.dmg) || 0) / 100) * (1 + (Number(aa[k + '_pct']) || 0) / 100)
       * (oc ? oc.mul : 1);
@@ -902,10 +908,10 @@ function renderBaseAttrs() {
       if (a === '—' && b2 === '—') return '<td class="num dim">—</td>';
       return '<td class="num">' + a + (b2 === '—' ? '' : ' / ' + b2) + '</td>';
     }
-    if (c.weapon && (n[c.k] === undefined || n[c.k] === null)) {
-      /* 六字段的系统三行可能是空的：现算一格，别显示成空 */
+    if (c.weapon) {
+      /* 武器列：文档值按加点放大，没存档就现算一格 */
       const wv = weaponCellOf(x, c.k);
-      return '<td class="num">' + (wv === undefined ? '<span class="dim">—</span>' : fmtNum(wv)) + '</td>';
+      if (wv !== undefined) return '<td class="num">' + fmtNum(wv) + '</td>';
     }
     let v = n[c.k];
     if (c.k === 'spd' && v !== undefined) v = effVal('spd', v, { spd: Number(x.a.move) || 0 });
@@ -1260,6 +1266,32 @@ function weaponSum3(n, cdRed, famAdd) {
   const airOut = (n.dmg_air === undefined || n.dmg_air === null) ? air : Number(n.dmg_air);
   return [atk, airOut, Number(n.dmg_siege) || 0];
 }
+/* 存档三行是「零加点」时的游戏显示值（已经把舰船被动 fam_bonus 算进去了）。
+   节点里的族加成 / 冷却缩减 / 系统调校这些后加成，要按同一比例放大存档值，
+   但不能再乘一次 fam_bonus，否则重复。返回 [对舰比例, 对空比例]。 */
+function weaponNodeRatio(n, cdRed, famAdd) {
+  const wl = weaponListOf(n);
+  if (!wl) return [1, 1];
+  const cal = calibPctOf(n._calib) / 100;
+  let ba = 0, bair = 0, sa = 0, sair = 0;
+  wl.forEach(w => {
+    const dmg = +w.dmg || 0;
+    const vol = +w.volley || ((+w.ammo || 0) * (+w.atk || 0));
+    if (!dmg || !vol) return;
+    const dur = +w.dur || 0, cd = +w.cd || 0;
+    const cyc0 = Math.max(0.5, dur + cd);
+    const cyc = Math.max(0.5, dur + cd * (1 - (+cdRed || 0) / 100));
+    const g = (w.guns === undefined || w.guns === null) ? 1 : (+w.guns || 0);
+    if (!g) return;
+    const k = w.k === undefined ? 1 : (Number(w.k) || 1);
+    const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
+    const f = (1 + ((Number((famAdd || {})[w.family]) || 0) + cal * 100) / 100) * (cyc0 / cyc);
+    const a0 = Math.max(0, dmg - arm) * vol / cyc0 * 60 * g * k;
+    const air0 = dmg * vol / cyc0 * 60 * g * k * 0.8;
+    ba += a0; bair += air0; sa += a0 * f; sair += air0 * f;
+  });
+  return [ba ? sa / ba : 1, bair ? sair / bair : 1];
+}
 /* 节点里的「dmg_<武器族>」加成（如 脉冲炮伤害 +15%）：按族累加成 {pulse: 15} */
 function famAddOf(nodes, alloc) {
   const fam = {};
@@ -1403,19 +1435,27 @@ function sysDmgSum(ship, alloc) {
     const cmOwn = (crOwn > 0 && cdOwn > 0) ? 1 + (crOwn / 100) * (cdOwn / 100) : 1;
     /* 三行的「基础值」：多武器逐把现算；只有一套六字段就按周期公式现算；
        都没有的老数据直接用存档的三行，不猜；攻城只吃存档值 */
-    const w3 = multi ? weaponSum3(n, cdRed, famAddOf(sy.nodes, alloc)) : null;
+    const famA = multi ? famAddOf(sy.nodes, alloc) : null;
+    const w3 = multi ? weaponSum3(n, cdRed, famA) : null;
     const b3 = w3 || (six ? weaponBase3(n, six, cdRed)
       : [Number(n.dmg_atk) || 0, Number(n.dmg_air) || 0, Number(n.dmg_siege) || 0]);
-    /* 文档给了系统级三行就以文档为准（游戏显示值；近防等隐藏系数反推不出来） */
+    /* 文档给了系统级三行就以文档为准（游戏显示值；近防等隐藏系数反推不出来），
+       但节点/调校这些后加成的部分要按比例放大它，否则加点看不到变化 */
+    const r = multi ? weaponNodeRatio(n, cdRed, famA) : [1, 1];
     const dk = ['dmg_atk', 'dmg_air', 'dmg_siege'];
     const b3d = b3.map((v, i) => {
       const dv = n[dk[i]];
       return (dv === undefined || dv === null) ? v : Number(dv);
     });
+    const s3 = [
+      (n.dmg_atk === undefined || n.dmg_atk === null) ? 1 : r[0],
+      (n.dmg_air === undefined || n.dmg_air === null) ? 1 : r[1],
+      (n.dmg_siege === undefined || n.dmg_siege === null) ? 1 : r[0]
+    ];
     const p3 = [1 + pAtk / 100, 1 + pAir / 100, 1 + pSiege / 100];
-    out.dmg_atk += b3d[0] * m * p3[0] * cmOwn;
-    out.dmg_air += b3d[1] * m * p3[1] * cmOwn;
-    out.dmg_siege += b3d[2] * m * p3[2] * cmOwn;
+    out.dmg_atk += b3d[0] * s3[0] * m * p3[0] * cmOwn;
+    out.dmg_air += b3d[1] * s3[1] * m * p3[1] * cmOwn;
+    out.dmg_siege += b3d[2] * s3[2] * m * p3[2] * cmOwn;
   });
   const cm = critMulOf(ship, alloc);
   if (cm > 1) {
@@ -6665,7 +6705,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.85';
+window.__APP_VER = '2026-11-19.87';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

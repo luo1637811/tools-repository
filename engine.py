@@ -249,6 +249,10 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
     ws = nm.get("weapons")
     if isinstance(ws, list) and ws:
         tot_atk, tot_air, rows = 0.0, 0.0, []
+        # 存档三行是「零加点」时的游戏显示值，已经把舰船被动（fam_bonus）算进去了；
+        # 节点/调校这些「玩家后加的」加成要按同一比例放大，但不能再乘一次 fam_bonus。
+        # base_a/base_air = 零加成口径，node_a/node_air = 只加节点+调校+冷却缩减后的口径。
+        base_a = base_air = node_a = node_air = 0.0
         for w in ws:
             if not isinstance(w, dict):
                 continue
@@ -272,6 +276,15 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
             air = dmg * volley / cyc * 60.0 * guns * kk * p * AIR_RATIO
             tot_atk += a
             tot_air += air
+            cyc0 = max(0.5, dur + cdv)
+            a0 = max(0.0, dmg - armor) * volley / cyc0 * 60.0 * guns * kk
+            air0 = dmg * volley / cyc0 * 60.0 * guns * kk * AIR_RATIO
+            f_node = ((1 + (num(b.get("dmg_" + fam), 0) + num(g.get("dmg_" + fam), 0)
+                        + cal_pct) / 100.0) * (cyc0 / cyc))
+            base_a += a0
+            base_air += air0
+            node_a += a0 * f_node
+            node_air += air0 * f_node
             rows.append({"name": w.get("name") or fam, "family": fam, "dmg": dmg,
                          "volley": volley, "guns": guns, "armor": armor, "k": kk,
                          "cycle": round(cyc, 2), "atk": round(a, 1),
@@ -284,11 +297,15 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
         _sk = nm.get("dmg_atk")
         atk_calc = tot_atk * m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0)
         atk_src = "stored" if _sk is not None else "fields"
-        atk_v = atk_calc if _sk is None else num(_sk, 0) * m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0)
-        air_v = air_base * m * (1 + num(b.get("dmg_air_pct"), 0) / 100.0)
+        r_atk = (node_a / base_a) if base_a else 1.0
+        r_air = (node_air / base_air) if base_air else 1.0
+        atk_v = (atk_calc if _sk is None
+                 else num(_sk, 0) * m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0) * r_atk)
+        air_v = air_base * m * (1 + num(b.get("dmg_air_pct"), 0) / 100.0) \
+            * (1.0 if nm.get("dmg_air") is None else r_air)
         _ss = nm.get("dmg_siege")
         sie = num(_ss, 0)
-        sie_v = sie * m * (1 + num(b.get("dmg_siege_pct"), 0) / 100.0)
+        sie_v = sie * m * (1 + num(b.get("dmg_siege_pct"), 0) / 100.0) * (1.0 if _ss is None else r_atk)
         f0 = ws[0] if isinstance(ws[0], dict) else {}
         return {
             "id": sy["id"], "name": sy["name"], "slot": (sy.get("slot") or "").strip(),
