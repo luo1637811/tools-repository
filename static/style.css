@@ -763,3 +763,10 @@ input:-webkit-autofill:focus{
   #wizDlg .wiz-col{flex:0 0 258px}
 }
 
+/* 系统调校（问卷第 3 步）：可选加成 + 进阶加成 */
+.calbox { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--line, #333); border-radius: 8px; }
+.calbox .calh { font-size: 13px; margin-bottom: 6px; }
+.calbox .calchk { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 6px; cursor: pointer; }
+.calbox .calrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+.calbox .calrow .row > span { flex: 0 0 150px; }
+@media (max-width: 1200px) { .calbox .calrow { grid-template-columns: minmax(0, 1fr); } }

@@ -242,6 +242,8 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
     cdred = num(b.get("cd"), 0) + num(b.get("freq"), 0)
     durred = num(b.get("dur"), 0)
     fam_b = nm.get("fam_bonus") if isinstance(nm.get("fam_bonus"), dict) else {}
+    _cal = nm.get("_calib") if isinstance(nm.get("_calib"), dict) else {}
+    cal_pct = (num(_cal.get("pct"), 0) + num(_cal.get("adv"), 0)) if _cal.get("on") else 0.0
     crit = _crit_mul(own_pairs) * _crit_mul(all_pairs)
     m = 1 + num(b.get("dmg"), 0) / 100.0
     ws = nm.get("weapons")
@@ -265,7 +267,7 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
             pct = (num(fam_b.get(fam), 0)
                    + num(b.get("dmg_" + fam), 0) + num(g.get("dmg_" + fam), 0))
             cyc = max(0.5, dur * (1 - durred / 100.0) + cdv * (1 - cdred / 100.0))
-            p = 1 + pct / 100.0
+            p = 1 + (pct + cal_pct) / 100.0
             a = max(0.0, dmg - armor) * volley / cyc * 60.0 * guns * kk * p
             air = dmg * volley / cyc * 60.0 * guns * kk * p * AIR_RATIO
             tot_atk += a
@@ -331,6 +333,9 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
     _sa = nm.get("dmg_air")
     if _sa is not None:
         air_v = num(_sa, 0)
+    if cal_pct:
+        atk_v *= 1 + cal_pct / 100.0
+        air_v *= 1 + cal_pct / 100.0
     atk_v *= m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0)
     air_v *= m * (1 + num(b.get("dmg_air_pct"), 0) / 100.0)
     sie = num(nm.get("dmg_siege"), 0)

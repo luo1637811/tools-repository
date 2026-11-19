@@ -245,6 +245,9 @@ async function loadBlueprints(silent) {
   try {
     const j = await api('/api/blueprints');
     S.bp = j; S.version = j.version; S.pub = j.pub || null;
+    /* 弃用/重复的旧船不进选船下拉；数据管理里仍然看得到（shipsAll） */
+    S.bp.shipsAll = (j.ships || []).slice();
+    S.bp.ships = (j.ships || []).filter(s => !(+s.deprecated || 0));
     renderVerTag();
     const firstShip = (j.ships || [])[0];
     SLOTS.forEach(k => { if (!S.slots[k].ship) S.slots[k].ship = firstShip ? firstShip.id : ''; });
@@ -1211,6 +1214,11 @@ function weaponListOf(n) {
   const wl = n && n.weapons;
   return Array.isArray(wl) && wl.length ? wl : null;
 }
+/* 系统调校加成：问卷里勾了「启用加成」才算，返回百分数（如 5） */
+function calibPctOf(cal) {
+  if (!cal || !cal.on) return 0;
+  return (Number(cal.pct) || 0) + (Number(cal.adv) || 0);
+}
 /* 多武器三路现算：与 engine._weapon_out 的 weapons 分支同口径
    每把武器按自己的 单发 / 弹药×攻击次数 / 持续 / 冷却 / 门数 / 护甲口径 / 校准系数 算，
    再乘族加成（系统调校 + 整舰 + 节点里的 dmg_<族>），最后整系统求和对舰 / 对空。攻城只吃存档值 */
@@ -1230,7 +1238,8 @@ function weaponSum3(n, cdRed, famAdd) {
     if (!g) return;
     const k = w.k === undefined ? 1 : (Number(w.k) || 1);
     const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
-    const fb = 1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100;
+    const fb = (1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100)
+      * (1 + calibPctOf(n._calib) / 100);
     const shot = dmg * vol / cyc * 60 * g * k * fb;
     atk += Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * fb;
     air += shot * 0.8;
@@ -2198,7 +2207,7 @@ function sysName(id) {
 function rowsOf(ent) {
   if (ent === 'effects') return (S.bp && S.bp.effects) || [];
   if (ent === 'attrs') return (S.bp && S.bp.attrs) || [];
-  if (ent === 'ships') return S.bp.ships;
+  if (ent === 'ships') return (S.bp.shipsAll || S.bp.ships);
   if (ent === 'planes') return S.bp.planes;
   const out = [];
   for (const s of S.bp.ships) {
@@ -3160,8 +3169,8 @@ function wizDelNode(si, x) {
 }
 /* —— 武器表（问卷里编辑 stats_norm.weapons[]）——
    文档重建后的武器系统逐把存六字段（单发 / 弹药 / 攻击次数 / 持续 / 冷却 / 门数），
-   外加族、对舰扣甲、校准系数 k。问卷里按行编辑，改完点「按六字段重算三行」
-   把对舰 / 对空写回存档三行（攻城公式没定，仍只吃存档）。 */
+   外加族、对舰扣甲、校准系数 k。问卷里按行编辑，改完点「按六字段重算对舰存档」
+   只写对舰（对空 / 攻城有隐藏系数，保留存档值）。 */
 const WEP_FAMILIES = [['cannon', '通用火炮'], ['rail', '轨道炮'], ['pulse', '脉冲炮'],
   ['plasma', '等离子'], ['torpedo', '鱼雷'], ['missile', '导弹'], ['drone', '无人机'], ['other', '其它']];
 function wepArmor(fam) { return (fam === 'cannon' || fam === 'rail') ? 10 : 0; }
@@ -3176,6 +3185,7 @@ function wepFix(w) {
 }
 function wepCalc(sy) {
   const ws = ((sy.raw || {}).weapons) || [];
+  const cp = 1 + calibPctOf((sy.raw || {})._calib) / 100;
   let atk = 0, air = 0;
   ws.forEach(w => {
     wepFix(w);
@@ -3185,13 +3195,13 @@ function wepCalc(sy) {
     const vol = Number(w.volley) || 0;
     const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0));
     const kk = Number(w.k) || 1;
-    atk += Math.max(0, dmg - Number(w.armor)) * vol / cyc * 60 * g * kk;
-    air += dmg * vol / cyc * 60 * g * kk * 0.8;
+    atk += Math.max(0, dmg - Number(w.armor)) * vol / cyc * 60 * g * kk * cp;
+    air += dmg * vol / cyc * 60 * g * kk * 0.8 * cp;
   });
   return [atk, air];
 }
 /* 单把武器的对舰现算（和 wepCalc 同一口径，只用于表格里实时显示） */
-function wepOne(w) {
+function wepOne(w, pct) {
   const g = (w.guns === undefined || w.guns === null) ? 1 : (Number(w.guns) || 0);
   if (!g) return 0;
   const vol = Number(w.volley) || (Number(w.ammo) || 0) * (Number(w.atk) || 0) || 0;
@@ -3199,19 +3209,20 @@ function wepOne(w) {
   const dmg = Number(w.dmg) || 0;
   const arm = (w.armor === undefined || w.armor === null) ? 10 : Number(w.armor);
   const k = Number(w.k) || 1;
-  return Math.max(0, dmg - arm) * vol / cyc * 60 * g * k;
+  return Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * (1 + (Number(pct) || 0) / 100);
 }
 function wizWeaponsBox(sy, rerender) {
   const box = el('div', 'wepbox');
   if (!sy.raw) sy.raw = {};
   const ws = Array.isArray(sy.raw.weapons) ? sy.raw.weapons : [];
+  const cp = () => calibPctOf(sy.raw._calib);
   box.appendChild(el('div', 'wepnote', '武器表（' + (ws.length ? ws.length + ' 把' : '还没加武器')
     + '）：逐把填 单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却；下面只按六字段现算「对舰」用来核对，'
-    + '对空 / 攻城 有隐藏系数，以存档三行为准。改完点「按六字段重算三行」写回存档。'));
+    + '对空 / 攻城 有隐藏系数，以存档三行为准。改完点「按六字段重算对舰存档」把对舰写回存档。'));
   const total = el('div', 'weptotal');
   const updTotal = () => {
     let a = 0;
-    ws.forEach(w => { a += wepOne(w); });
+    ws.forEach(w => { a += wepOne(w, cp()); });
     total.textContent = ws.length
       ? '本系统合计（六字段现算，仅核对）：对舰 ' + fmtNum(Math.round(a * 10) / 10)
         + ' / 分（门数为 0 的武器不计；对空 / 攻城以存档为准）'
@@ -3226,7 +3237,7 @@ function wizWeaponsBox(sy, rerender) {
     if (iFam && iFam.parentNode) iFam.parentNode.classList.add('w-fam');
     const iGun = wIn(r1, '门数', w, 'guns', 'number', null, '门');
     if (iGun && iGun.parentNode) iGun.parentNode.classList.add('w-guns');
-    const del = el('button', 'btn wepdel', '删掉这把'); del.type = 'button';
+    const del = el('button', 'btn wepdel', '删除'); del.type = 'button';
     del.onclick = () => { ws.splice(i, 1); if (!ws.length) sy.raw.weapons = []; rerender(); };
     r1.appendChild(del);
 
@@ -3238,7 +3249,7 @@ function wizWeaponsBox(sy, rerender) {
 
     const sum = el('div', 'wsum');
     const updSum = () => {
-      const r = wepOne(w);
+      const r = wepOne(w, cp());
       sum.textContent = '这把现算：对舰 ' + fmtNum(Math.round(r * 10) / 10) + ' / 分';
     };
     item.appendChild(r1);
@@ -3250,7 +3261,7 @@ function wizWeaponsBox(sy, rerender) {
   });
   box.appendChild(total);
   const acts = el('div', 'row wepacts');
-  const add = el('button', 'btn', '加一把武器'); add.type = 'button';
+  const add = el('button', 'btn', '增加武器'); add.type = 'button';
   add.onclick = () => {
     if (!Array.isArray(sy.raw.weapons)) sy.raw.weapons = [];
     sy.raw.weapons.push({name: '新武器', family: 'cannon', dmg: 10, ammo: 1, atk: 1,
@@ -3258,14 +3269,14 @@ function wizWeaponsBox(sy, rerender) {
     sy.is_weapon = true;
     rerender();
   };
-  const calc = el('button', 'btn', '按六字段重算三行'); calc.type = 'button';
+  const calc = el('button', 'btn', '按六字段重算对舰存档'); calc.type = 'button';
   calc.onclick = () => {
-    if (!ws.length) return toast('先加一把武器', 'bad');
+    if (!ws.length) return toast('先增加一把武器', 'bad');
     const r = wepCalc(sy);
+    /* 只写对舰：对空/攻城在游戏里有隐藏系数，现算出来的是错的，必须保留文档存档值 */
     sy.raw.dmg_atk = Math.round(r[0] * 10) / 10;
-    sy.raw.dmg_air = Math.round(r[1] * 10) / 10;
-    toast('已按六字段算好：对舰 ' + fmtNum(sy.raw.dmg_atk) + ' · 对空 ' + fmtNum(sy.raw.dmg_air)
-      + '（攻城仍用存档值）', 'good');
+    toast('已按六字段写入对舰存档：' + fmtNum(sy.raw.dmg_atk)
+      + ' / 分（对空、攻城保持原值不动）', 'good');
     rerender();
   };
   acts.append(add, calc);
@@ -3301,8 +3312,9 @@ function wizRender() {
     const checkDup = () => {
       const v = (nameInp.value || '').trim();
       nameInp.value = v; WIZ.ship.name = v;
-      const d = v ? (S.bp.ships || []).find(x => (x.name || '').trim() === v && x.id !== (WIZ.ship.id || '')) : null;
-      dupTip.textContent = d ? '已有同名舰船「' + d.name + '」（' + d.id + '），保存时会再确认一次' : '';
+      const d = v ? (((S.bp.shipsAll || S.bp.ships) || [])).find(x => (x.name || '').trim() === v
+        && x.id !== (WIZ.ship.id || '')) : null;
+      dupTip.textContent = d ? '已有同名舰船「' + d.name + '」（' + d.id + '），保存会被拒绝：请改那一条' : '';
     };
     nameInp.oninput = checkDup;
     nameInp.onblur = checkDup;
@@ -3525,7 +3537,7 @@ function wizRender() {
         });
         card.appendChild(grid);
         if (sy.is_weapon) {
-          /* 武器表：多武器系统在这里增删改，改完点「按六字段重算三行」写回存档 */
+          /* 武器表：多武器系统在这里增删改，改完点「按六字段重算对舰存档」写回存档 */
           card.appendChild(wizWeaponsBox(sy, wizRender));
           /* 自带暴击只抬本系统的对舰/对空/攻城：三行空着就白填，输入时实时说一声 */
           const hint = el('div', 'muted');
@@ -3545,10 +3557,37 @@ function wizRender() {
         }
       }
 
-      if (sy.raw && sy.raw._calib && (sy.raw._calib.name || sy.raw._calib.text)) {
-        card.appendChild(el('div', 'muted',
-          '系统调校（只读，来自文档）：' + (sy.raw._calib.name || '')
-          + (sy.raw._calib.text ? ' — ' + sy.raw._calib.text : '')));
+      /* 系统调校：可选是否加成；进阶加成暂时留空。只对武器系统有意义 */
+      if (sy.is_weapon) {
+        const cal = Object.assign({}, sy.raw._calib || {});
+        if (typeof cal.on !== 'boolean') cal.on = false;
+        if (cal.pct === undefined) {
+          const m0 = /伤害(?:提高|提升|增加)?\s*(\d+(?:\.\d+)?)\s*%/.exec(cal.text || '');
+          cal.pct = m0 ? Number(m0[1]) : 0;
+        }
+        if (cal.adv === undefined) cal.adv = 0;
+        sy.raw._calib = cal;
+        const cbox = el('div', 'calbox');
+        const chead = el('div', 'calh');
+        chead.appendChild(el('b', '', '系统调校'));
+        if (cal.name) chead.appendChild(document.createTextNode('（' + cal.name + '）'));
+        cbox.appendChild(chead);
+        const lab = document.createElement('label');
+        lab.className = 'calchk';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = !!cal.on;
+        cb.onchange = () => { cal.on = cb.checked; wizRender(); };
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(' 启用加成（不勾就不参与计算）'));
+        cbox.appendChild(lab);
+        const crow = el('div', 'calrow');
+        wIn(crow, '本系统加成', cal, 'pct', 'number', null, '%');
+        wIn(crow, '进阶加成（可留空）', cal, 'adv', 'number', null, '%');
+        cbox.appendChild(crow);
+        cbox.appendChild(el('div', 'muted',
+          '勾上后本系统每把武器的对舰 / 对空现算值 ×（1 + 加成% + 进阶%）。'
+          + '游戏里这部分通常已含在武器面板数字里，所以默认不勾，避免重复加成。'));
+        card.appendChild(cbox);
       }
       // 模块名（可选，只对「一系统一模块」的写法有意义）
       wIn(card, '模块名（可选）', sy, 'module', 'text');
@@ -3559,8 +3598,8 @@ function wizRender() {
     tail.innerHTML = '输入框按系统类型自动裁剪：只有「装甲系统」和「动力系统」需要填船体数值，其余系统只填模块名。'
       + '<b>结构值</b>最终会按「基础值 ×（1 + 加点收益%）」算；'
       + '武器系统用下面的<b>武器表</b>逐把填：单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却，'
-      + '点「按六字段重算三行」把对舰 / 对空写回上面那三行存档；攻城公式还没定，只吃存档值。'
-      + '老数据的单武器系统仍可只填六字段（引擎会自动现算），要扩成多武器就点「加一把武器」。'
+      + '点「按六字段重算对舰存档」只把对舰写回存档（对空 / 攻城有隐藏系数，不覆盖）。'
+      + '老数据的单武器系统仍可只填六字段（引擎会自动现算），要扩成多武器就点「增加武器」。'
       + '最后两格「自带暴击率 / 自带暴击伤害」填该武器系统自带的暴击：三行各乘「1 + 暴击率% × 暴击伤害%」（如 30 与 50 → ×1.15），只作用于本系统；两格只填一格不生效。';
     b.appendChild(tail);
   } else if (st === 3) {
@@ -4181,8 +4220,13 @@ async function wizSave() {
     return;
   }
   if (!WIZ.edit) {
-    const dup = (S.bp.ships || []).find(x => (x.name || '').trim() === (p.ship.name || '').trim());
-    if (dup && !confirm('已经有同名舰船「' + dup.name + '」（' + dup.id + '）。\n\n继续会新增一条同名记录，确定要加吗？')) return;
+    const dup = (((S.bp && (S.bp.shipsAll || S.bp.ships)) || []))
+      .find(x => (x.name || '').trim() === (p.ship.name || '').trim());
+    if (dup) {
+      alert('已经有同名舰船「' + dup.name + '」（' + dup.id + '）。\n\n'
+        + '请回到第 1 步选它、用「修改」保存，不要另建一条同名船。');
+      return;
+    }
   }
   const btn = $('#wizNext'); btn.disabled = true;
   try {
@@ -6325,7 +6369,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.68';
+window.__APP_VER = '2026-11-19.69';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

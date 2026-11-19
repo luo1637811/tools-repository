@@ -183,6 +183,16 @@ def _sync_effects_seed(c, seed, force=False):
     return "效果库已按种子覆盖：%d 条（version %s）" % (len(eff), ev)
 
 
+def _gone_ship_ids(c):
+    """网页上删掉的船（记在 settings.ships_deleted，种子再导入时不要复活）。"""
+    try:
+        row = c.execute("SELECT v FROM settings WHERE k='ships_deleted'").fetchone()
+        ids = json.loads((row["v"] if row is not None else "") or "[]")
+        return [str(x) for x in ids if str(x).strip()]
+    except Exception:
+        return []
+
+
 def _import_ships_seed(c):
     """把舰船种子并入本库；同 version 直接跳过。返回提示文字（失败也只返回文字，不抛）。
 
@@ -233,6 +243,18 @@ def _import_ships_seed(c):
                 table, ",".join(keys), ",".join("?" * len(keys)))
             c.executemany(sql, [[r.get(k) for k in keys] for r in rows])
 
+        # 网页上删过的船：种子更新时也不要复活
+        gone = _gone_ship_ids(c)
+        if gone:
+            qg = ",".join("?" * len(gone))
+            gsys = [r["id"] for r in c.execute(
+                "SELECT id FROM systems WHERE ship IN (%s)" % qg, gone).fetchall()]
+            if gsys:
+                c.execute("DELETE FROM nodes WHERE sys IN (%s)" % ",".join("?" * len(gsys)), gsys)
+            c.execute("DELETE FROM systems WHERE ship IN (%s)" % qg, gone)
+            c.execute("DELETE FROM modules WHERE ship IN (%s)" % qg, gone)
+            c.execute("DELETE FROM ships WHERE id IN (%s)" % qg, gone)
+
         for r in seed.get("classes") or []:
             if isinstance(r, dict) and r.get("id"):
                 c.execute("INSERT OR IGNORE INTO classes(id,name,ord,note) VALUES(?,?,?,?)",
@@ -248,9 +270,89 @@ def _import_ships_seed(c):
         return "舰船种子导入失败：%s: %s" % (type(e).__name__, e)
 
 
+def _dedupe_duplicate_ships(c):
+    """同名舰船去重（一次性）：保留「不是 ship_* 生成的、内容最多的」那条。
+
+    另一条如果完全空（0 系统）就直接删掉；有内容就标成弃用并在备注里写明，
+    不悄悄丢数据。跑过之后写 settings.ship_dedupe_v1，不再重复执行。
+    """
+    try:
+        if c.execute("SELECT 1 FROM settings WHERE k='ship_dedupe_v1'").fetchone():
+            return ""
+        rows = c.execute("SELECT id,name,note FROM ships").fetchall()
+        groups = {}
+        for r in rows:
+            key = " ".join((r["name"] or "").split()).lower()
+            if key:
+                groups.setdefault(key, []).append(r)
+        removed, marked = [], []
+        for items in groups.values():
+            if len(items) < 2:
+                continue
+            stat = []
+            for r in items:
+                rid = str(r["id"])
+                ns = c.execute("SELECT COUNT(*) FROM systems WHERE ship=?", (rid,)).fetchone()[0]
+                nn = c.execute("SELECT COUNT(*) FROM nodes WHERE sys IN "
+                               "(SELECT id FROM systems WHERE ship=?)", (rid,)).fetchone()[0]
+                rich = 0
+                for sy in c.execute("SELECT bays,stats_norm FROM systems WHERE ship=?", (rid,)).fetchall():
+                    if (sy["bays"] or "").strip() not in ("", "[]", "null"):
+                        rich += 1
+                        continue
+                    try:
+                        d = json.loads(sy["stats_norm"]) if (sy["stats_norm"] or "").strip() else {}
+                    except Exception:
+                        d = {}
+                    if isinstance(d, dict) and (d.get("weapons") or d.get("bay_plane")
+                                                or d.get("bay_boat") or d.get("bay_drone")
+                                                or d.get("dmg_atk") or d.get("plane_dmg")):
+                        rich += 1
+                flag = 0 if not rid.startswith("ship_") else 1
+                stat.append((flag, -nn, -rich, -ns, rid, r, ns, nn, rich))
+            stat.sort(key=lambda x: x[:5])
+            keeper = stat[0][5]
+            for item in stat[1:]:
+                r, ns, nn, rich = item[5], item[6], item[7], item[8]
+                if ns == 0 or (nn == 0 and rich == 0):
+                    for sql in ("DELETE FROM nodes WHERE sys IN "
+                                "(SELECT id FROM systems WHERE ship=?)",
+                                "DELETE FROM systems WHERE ship=?",
+                                "DELETE FROM modules WHERE ship=?",
+                                "DELETE FROM ships WHERE id=?"):
+                        c.execute(sql, (r["id"],))
+                    removed.append(str(r["id"]))
+                else:
+                    tip = "重复：与 %s 同名，请核对后删除" % keeper["id"]
+                    note = r["note"] or ""
+                    if tip not in note:
+                        note = tip + ("；" + note if note else "")
+                    c.execute("UPDATE ships SET deprecated=1, note=? WHERE id=?", (note, r["id"]))
+                    marked.append(str(r["id"]))
+        if removed:
+            gone = _gone_ship_ids(c)
+            for rid in removed:
+                if rid not in gone:
+                    gone.append(rid)
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ships_deleted',?)",
+                      (json.dumps(gone, ensure_ascii=False),))
+        c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ship_dedupe_v1','1')")
+        if removed or marked:
+            parts = []
+            if removed:
+                parts.append("删掉 %d 条空记录（%s）" % (len(removed), "、".join(removed[:6])))
+            if marked:
+                parts.append("%d 条有内容已标为弃用（%s）" % (len(marked), "、".join(marked[:6])))
+            return "同名舰船清理：" + "；".join(parts)
+        return ""
+    except Exception as e:
+        return "同名舰船清理失败：%s: %s" % (type(e).__name__, e)
+
+
 def init_db():
     fresh = not os.path.exists(DB_PATH)
     _seed_msg = ""
+    _dedupe_msg = ""
     with conn() as c:
         c.executescript(SCHEMA)
         c.execute("""CREATE TABLE IF NOT EXISTS signups(
@@ -508,6 +610,7 @@ def init_db():
                   " WHERE bay_kind IS NULL OR bay_kind=''")
         # 舰船数据随代码走（deploy/ships_seed.json），按 version 幂等导入
         _seed_msg = _import_ships_seed(c)
+        _dedupe_msg = _dedupe_duplicate_ships(c)
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             ts = now()
             c.executemany(
@@ -517,6 +620,8 @@ def init_db():
                  for u, p, r, n, sq, ph, st, nt in USERS])
     if _seed_msg:
         print("[" + now() + "] " + _seed_msg, flush=True)
+    if _dedupe_msg:
+        print("[" + now() + "] " + _dedupe_msg, flush=True)
 
 
 class SSEHub:
@@ -2152,6 +2257,16 @@ class Handler(BaseHTTPRequestHandler):
                             "SELECT id FROM effects WHERE name=? AND id<>?", (_nm, row[pk])).fetchone()
                         if _dup:
                             return self.err(409, "已有同名效果「%s」（id=%s）" % (_nm, _dup["id"]))
+        if table == "ships":
+            _nm = " ".join(str(row.get("name") or "").split())
+            if _nm:
+                with conn() as _c:
+                    _dup = _c.execute(
+                        "SELECT id,name FROM ships WHERE TRIM(name)=? AND id<>?",
+                        (_nm, row[pk])).fetchone()
+                if _dup:
+                    return self.err(409, "已有同名舰船「%s」（id=%s）：请直接改那一条，不要新建同名船"
+                                    % (_dup["name"], _dup["id"]))
         if table == "ships" and (u.get("role") or "") not in ("admin", SUPER_ROLE):
             _sc = scope_of(u)
             if _sc == "org":
@@ -2201,9 +2316,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self.need_conf(rid):
             return
         with conn() as c:
+            if table == "ships":          # 删船连带删它的系统 / 节点 / 模块
+                for sql in ("DELETE FROM nodes WHERE sys IN (SELECT id FROM systems WHERE ship=?)",
+                            "DELETE FROM systems WHERE ship=?",
+                            "DELETE FROM modules WHERE ship=?"):
+                    c.execute(sql, (rid,))
+            if table == "systems":
+                c.execute("DELETE FROM nodes WHERE sys=?", (rid,))
             cur = c.execute(f"DELETE FROM {table} WHERE {pk}=?", (rid,))
             if cur.rowcount == 0:
                 return self.err(404, "记录不存在")
+            if table == "ships":          # 记住删过谁，免得下次种子更新又冒出来
+                gone = _gone_ship_ids(c)
+                if rid not in gone:
+                    gone.append(rid)
+                c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ships_deleted',?)",
+                          (json.dumps(gone, ensure_ascii=False),))
         bump_version()
         log("删除数据", u["username"], f"{table}/{rid}")
         return self.send_json({"ok": True})
