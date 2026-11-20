@@ -1464,8 +1464,10 @@ function weaponSum2(n, cdRed, famAdd) {
   let atk = 0, air = 0;
   wl.forEach(w => {
     const dmg = +w.dmg || 0;
+    const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
     const vol = +w.volley || ((+w.ammo || 0) * (+w.atk || 0));
-    if (!dmg || !vol) return;
+    /* 对舰单发为 0 的纯防空武器也要算对空，不能整把跳过 */
+    if (!vol || (!dmg && !dmgA)) return;
     const dur = +w.dur || 0, cd = +w.cd || 0, pen = +w.pen || 0;
     const cyc = Math.max(0.5, dur + cd * (1 - (+cdRed || 0) / 100) + pen);
     /* 门数 0 = 这把武器不装（文档里副炮常常是 0 门），不能按 1 门算 */
@@ -1475,9 +1477,10 @@ function weaponSum2(n, cdRed, famAdd) {
     const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
     const cm = 1 + calibPctOf(n._calib) / 100;   /* 系统调校作用于基础伤害（单发） */
     const fb = 1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100;
-    atk += Math.max(0, dmg * cm - arm) * vol / cyc * 60 * g * k * fb + (Number(w.atk_add) || 0);
+    if (dmg > 0) {
+      atk += Math.max(0, dmg * cm - arm) * vol / cyc * 60 * g * k * fb + (Number(w.atk_add) || 0);
+    }
     /* 对空单发可以和对舰不同：没填 dmg_air 才沿用对舰单发 */
-    const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
     air += dmgA * cm * vol / cyc * 60 * g * k * fb * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
@@ -3668,12 +3671,14 @@ function wepCalc(sy) {
     wepFix(w);
     const g = (w.guns === undefined || w.guns === null || w.guns === '') ? 1 : Number(w.guns);
     const dmg = Number(w.dmg) || 0;
-    if (!g || !dmg) return;
+    const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
+    if (!g || (!dmg && !dmgA)) return;
     const vol = Number(w.volley) || 0;
     const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0) + (Number(w.pen) || 0));
     const kk = Number(w.k) || 1;
-    atk += Math.max(0, dmg * cp - Number(w.armor)) * vol / cyc * 60 * g * kk + (Number(w.atk_add) || 0);
-    const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
+    if (dmg > 0) {
+      atk += Math.max(0, dmg * cp - Number(w.armor)) * vol / cyc * 60 * g * kk + (Number(w.atk_add) || 0);
+    }
     air += dmgA * cp * vol / cyc * 60 * g * kk * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
@@ -3722,7 +3727,8 @@ function wizWeaponsBox(sy, rerender) {
     if (iName && iName.parentNode) iName.parentNode.classList.add('w-name');
     const iFam = wIn(r1, '族', w, 'family', 'select', wepFamilyPairs());
     if (iFam && iFam.parentNode) iFam.parentNode.classList.add('w-fam');
-    if (iFam) iFam.onchange = () => { w.armor = wepArmor(iFam.value); rerender(); };
+    /* 族只给默认护甲口径；手动改过「护甲」之后不再被族覆盖 */
+    if (iFam) iFam.onchange = () => { if (!w.armor_manual) w.armor = wepArmor(iFam.value); rerender(); };
     const iGun = wIn(r1, '门数', w, 'guns', 'number', null, '门');
     if (iGun && iGun.parentNode) iGun.parentNode.classList.add('w-guns');
     const del = el('button', 'btn wepdel', '删除'); del.type = 'button';
@@ -3736,10 +3742,25 @@ function wizWeaponsBox(sy, rerender) {
       wIn(r2, lb, w, k, 'number', null, un);
     });
 
+    /* 护甲口径：每把武器单独选「扣 10 点 / 不扣」，与族解耦（有的同族武器不扣甲） */
+    (function () {
+      const row = el('label', 'row');
+      row.appendChild(el('span', '', '护甲'));
+      const sel = el('select', '');
+      [['10', '扣 10 点标准护甲'], ['0', '不扣护甲']].forEach(([v, t]) => {
+        const o = el('option', '', t); o.value = v; sel.appendChild(o);
+      });
+      const cur = (w.armor === undefined || w.armor === null || w.armor === '') ? wepArmor(w.family) : Number(w.armor);
+      sel.value = String(Number(cur) || 0);
+      sel.onchange = () => { w.armor = Number(sel.value) || 0; w.armor_manual = 1; rerender(); };
+      row.appendChild(sel);
+      r2.appendChild(row);
+    })();
+
     /* 公式提示：本族扣不扣甲 + 两路公式（界面里就能核对） */
     const hint = el('div', 'wepf');
     const armorNow = (w.armor === undefined || w.armor === null || w.armor === '') ? wepArmor(w.family) : Number(w.armor);
-    hint.textContent = '本族·' + (Number(armorNow) > 0 ? ('扣 ' + armorNow + ' 点标准护甲') : '不扣护甲')
+    hint.textContent = '本武器·' + (Number(armorNow) > 0 ? ('扣 ' + armorNow + ' 点标准护甲') : '不扣护甲')
       + ' ｜ 对舰 = (单发 − ' + (Number(armorNow) > 0 ? armorNow : 0) + ') × 弹药×攻击 × 60÷周期 × 门数'
       + ' ｜ 对空 = 单发（对空）× 弹药×攻击 × 60÷周期 × 门数 × 命中率 × 协同%'
       + ' ｜ 系统调校 ' + (cp() ? ('+' + cp() + '%（作用在单发上：对舰先放大单发再扣护甲）') : '未启用（不影响两路）');
@@ -7034,7 +7055,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.111';
+window.__APP_VER = '2026-11-20.113';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
