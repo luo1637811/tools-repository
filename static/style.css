@@ -1155,3 +1155,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf
 .wepf { font-size: 12px; color: var(--dim); margin-top: 6px; line-height: 1.55; }
 .wepstd { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
 .btn.tiny { height: 24px; padding: 0 9px; font-size: 12px; line-height: 1; }
+
+/* 网格卡片上的加点步进器 */
+.tnode .tstep { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 6px; }
+.tnode .tstep button { width: 22px; height: 22px; padding: 0; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel2); color: var(--ink); cursor: pointer; line-height: 1; }
+.tnode .tstep button:hover { border-color: var(--accent); color: var(--accent); }
+.tnode .tstep span { font-size: 12px; color: var(--dim); min-width: 18px; text-align: center; }
+/* 问卷里的网格：节点卡按层排成网格 */
+.tgrid-edit { display: grid; gap: 10px 16px; padding: 8px 0 2px; align-items: start; }
+.tgrid-edit .wiz-node { margin: 0; }

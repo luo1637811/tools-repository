@@ -1053,7 +1053,31 @@ function treeGridCard(nd, sl, sy, code) {
   d.appendChild(el('div', 'ticon', treeIconOf(nd)));
   d.appendChild(el('div', 'tname', nd.label || code || ''));
   d.appendChild(el('div', 'tlv', lv + ' / ' + nd.max_lv + (unlocked ? '' : ' · 🔒')));
-  d.onclick = () => toast((nd.label || '') + '：' + lv + ' / ' + nd.max_lv + '（只读原型，加点仍在列表视图）', '');
+  if (!unlocked) {
+    d.onclick = () => toast('先点「' + parents.map(p => p.label).join('」或「') + '」任一个', 'bad');
+  } else {
+    const stp = el('div', 'tstep');
+    const bM = el('button', '', '−'); bM.type = 'button';
+    const bP = el('button', '', '+'); bP.type = 'button';
+    bM.onclick = (ev) => {
+      ev.stopPropagation();
+      const cur = sl.alloc[nd.id] || 0;
+      if (cur <= 0) return;
+      if (cur === 1) delete sl.alloc[nd.id]; else sl.alloc[nd.id] = cur - 1;
+      renderTree(); recalc(S.cur);
+    };
+    bP.onclick = (ev) => {
+      ev.stopPropagation();
+      const cur = sl.alloc[nd.id] || 0;
+      if (cur >= nd.max_lv) { toast('这个节点已经满级了', ''); return; }
+      sl.alloc[nd.id] = cur + 1;
+      renderTree(); recalc(S.cur);
+    };
+    stp.appendChild(bM);
+    stp.appendChild(el('span', '', String(lv)));
+    stp.appendChild(bP);
+    d.appendChild(stp);
+  }
   return d;
 }
 
@@ -1155,7 +1179,7 @@ function treeGridEl(sy, sl) {
     const lv = sl.alloc[n.id] || 0;
     if (!lv) return;
     active++;
-    usedPts += costOf(n, lv);
+    for (let i = 0; i < lv; i++) usedPts += costOf(n, i);
     let ef = n.effect;
     if (typeof ef === 'string') { try { ef = JSON.parse(ef || '{}'); } catch (e) { ef = null; } }
     if (!ef || typeof ef !== 'object') return;
@@ -2053,24 +2077,8 @@ function renderResults() {
     });
   }
 
-  /* 其余加成（伤害% / 冷却缩减 / 命中 / 暴击 / 锁定 …）：有就显示，没有就跳过 */
-  const extraKeys = {};
-  presBySlot.forEach(p => Object.keys(p).forEach(k => { if (!CMP_USED[k]) extraKeys[k] = 1; }));
-  Object.keys(extraKeys).sort().forEach(k => {
-    const v = aggsBySlot.map(a => Number(a[k]) || 0);
-    if (!v.some(x => x)) return;
-    if (onlyDiff && Math.abs(v[0] - v[1]) < 1e-9) return;
-    const tr = el('tr', 'xrow');
-    tr.appendChild(el('td', '', '加成 · ' + effLabel(k) + '（' + (effUnit(k) || '%') + '）'));
-    const best = Math.max.apply(null, v);
-    v.forEach(x => tr.appendChild(el('td', (x === best && x) ? 'best' : '', '+' + fmt(x, 1))));
-    const d = v[1] - v[0];
-    tr.appendChild(el('td', d === 0 ? '' : (d > 0 ? 'diff-pos' : 'diff-neg'),
-      (d > 0 ? '+' : '') + fmt(d, 1)));
-    body.appendChild(tr);
-  });
-
-  $('#cmpNote').textContent = '对比这两套方案在同一艘船上的基础值与加成合计（舰载机单列，母舰加成不作用到舰载机上）。'
+  $('#cmpNote').textContent = '对比这两套方案在同一艘船上的基础值与最终数值：加点带来的加成都已经算进对舰 / 对空等数字里，'
+    + '不再单列成「加成 · xxx」行；逐条加成明细看左栏「本系统加成效果」（只列当前选中系统）。'
     + (onlyDiff ? '（只看有差异：A、B 相同的行已隐藏）' : '（绿色是两者中较高的一侧）');
 
 }
@@ -4011,16 +4019,18 @@ function wizRender() {
       return keys.filter(k => map[k]).map(k => map[k]);
     };
     const WEP_FIELDS = [
+      ['syshull', '系统结构值', '点'],
       ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'],
       /* 六字段：填齐这几个，引擎就按「单发 x 弹药 x 攻击次数 / 周期 x 门数」现算三路输出 */
       ['dmg', '单发伤害', '点'], ['ammo', '弹药数', ''], ['atk', '攻击次数', ''],
-      ['guns', '门数', '门'], ['ammo_atk', '弹药数×攻击次数（旧）', ''],
+      ['guns', '门数', '门'],
       ['dur', '持续时间', 's'], ['cd', '冷却时间', 's'], ['lock', '锁定时间', 's'],
       ['warn', '预警', '%'], ['cyc', '工作次数', '次'], ['repair', '维修量', '点'],
       ['crit_rate', '自带暴击率', '%'], ['crit', '自带暴击伤害', '%']
     ];
     /* 多武器系统只填「三路存档 + 自带暴击」；单套六字段那些格子归武器表管，避免两处打架 */
     const WEP_TOTALS = [
+      ['syshull', '系统结构值', '点'],
       ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'],
       ['crit_rate', '自带暴击率', '%'], ['crit', '自带暴击伤害', '%']
     ];
@@ -4361,16 +4371,23 @@ function wizRender() {
         const depths = Object.keys(byDepth).map(Number);
         const maxD = Math.max(-1, ...depths, draftDepth);
         if (maxD >= 0) {
-          const lane = el('div', 'wiz-lane');
-          lane.dataset.sys = sys.id || ('s' + si);   /* 每个系统各记各的横向位置 */
+          const grid = el('div', 'tgrid tgrid-edit');
+          grid.style.gridTemplateColumns = 'repeat(' + Math.max(1, maxD + 1) + ', minmax(132px, 1fr))';
           for (let d = 0; d <= maxD; d++) {
-            const col = el('div', 'wiz-col');
-            col.appendChild(el('div', 'wiz-colhead', '第 ' + (d + 1) + ' 层'));
-            (byDepth[d] || []).forEach(x => col.appendChild(nodeCardEl(si, x)));
-            if (d === draftDepth) col.appendChild(nodeCardEl(si, {code: '', draft: true}));
-            lane.appendChild(col);
+            (byDepth[d] || []).forEach((x, ri) => {
+              const c = nodeCardEl(si, x);
+              c.style.gridColumn = String(d + 1);
+              c.style.gridRow = String(ri + 1);
+              grid.appendChild(c);
+            });
+            if (d === draftDepth) {
+              const c = nodeCardEl(si, {code: '', draft: true});
+              c.style.gridColumn = String(d + 1);
+              c.style.gridRow = String((byDepth[d] || []).length + 1);
+              grid.appendChild(c);
+            }
           }
-          box.appendChild(lane);
+          box.appendChild(grid);
         }
         treeCard.appendChild(box);
       });
@@ -6883,7 +6900,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.93';
+window.__APP_VER = '2026-11-20.96';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
