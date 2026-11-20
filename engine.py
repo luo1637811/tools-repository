@@ -588,7 +588,8 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     # 3) 无基础值的命中/闪避类：只按加点加成的百分点显示
     acc_univ = num(base.get("acc")) + agg.get("acc", 0)
     # 4) 其余：系统基础值 ×（1 + 加成%）
-    hull = num(base.get("hull")) * (1 + (agg.get("hull", 0) + num(base.get("hull_bonus_pct"))
+    # 舰船结构值 = 基础值 ×（1 + 节点结构值% + 装甲系统调校%）
+    hull = num(base.get("hull")) * (1 + (agg.get("hull", 0)
                                       + _calib_hull_pct(ship)) / 100)
     volley = num(base.get("ammo")) * num(base.get("atk"))
     dmg = num(base.get("dmg")) * (1 + agg.get("dmg", 0) / 100)
@@ -745,11 +746,7 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         weapon.update({"atk": 0.0, "air": 0.0})
         for w in weapons:
             w["atk"] = w["air"] = 0.0
-    # —— 系统结构值：和「结构值」用同一套算法 ——
-    # 基数 × (1 + 整舰结构值加成% + 该系统内「系统结构值」节点/调校%)。
-    # 装甲系统的基数就是舰船结构值基数，所以它的系统结构值恒等于舰船结构值。
-    _hull_pct_all = (num(agg.get("hull", 0), 0) + num(base.get("hull_bonus_pct"), 0)
-                     + _calib_hull_pct(ship))
+    # —— 系统结构值：只吃该系统自己的「系统结构值」节点 / 调校，不吃舰船结构值加成 ——
     sys_rows = []
     for sy in ship["systems"]:
         row = {"id": sy["id"], "name": sy["name"], "slot": sy["slot"],

@@ -810,7 +810,7 @@ function renderBaseAttrs() {
     { k: 'name', t: '系统', w: 176 },
     { k: 'kind', t: '类型', w: 56 },
     { k: 'bay', t: '舱位', w: 130, bay: 1 },
-    { k: 'hull', t: '结构值', w: 100, num: 1 },
+    { k: 'hull', t: '系统结构值', w: 110, num: 1 },
     { k: 'armor', t: '抵抗伤害', w: 92, num: 1 },
     { k: 'shield', t: '护盾值', w: 84, num: 1, pct: 1 },
     { k: 'eva', t: '通用闪避', w: 92, num: 1, pct: 1 },
@@ -924,9 +924,6 @@ function renderBaseAttrs() {
   if (tiles) {
     const st = sysTotals(ship);
     const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
-    const bHull = pick('hull', base.hull);
-    const bPct = (Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0) + calibHullPctOf(ship);
-    const hullFinal = bHull ? bHull * (1 + bPct / 100) : 0;
     const armor = pick('armor', base.armor) + (Number(agg.armor) || 0);
     const shield = pick('shield', base.shield) + (Number(agg.shield) || 0);
     const ws = sys.filter(x => x.w);
@@ -934,8 +931,6 @@ function renderBaseAttrs() {
     const sum = k => wsum[k];
     const tile = (k, v, s2) => '<div class="basetile"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + (s2 || '') + '</div></div>';
     tiles.innerHTML = [
-      tile('结构值', hullFinal ? fmtNum(hullFinal) : '—',
-        bHull ? (bPct ? fmtNum(bHull) + ' ×（1+' + (Math.round(bPct * 100) / 100) + '%）' : '来自系统') : '缺装甲系统数值'),
       tile('抵抗伤害 / 护盾', fmtNum(armor) + ' / ' + ((st.has.shield || base.shield !== undefined) ? fmtNum(shield) + '%' : '—'), '物理减伤 / 能量减伤'),
       tile('巡航 / 曲率',
         fmtNum(effVal('speed', pick('cruise', base.cruise), agg)) + ' / ' + fmtNum(effVal('warp', pick('warp', base.warp), agg)),
@@ -949,9 +944,8 @@ function renderBaseAttrs() {
         const rs = pt.rows.filter(r => r.kind === kind);
         if (!rs.length) return;
         const c = rs.reduce((a, r) => a + r.count, 0)
-          , d = rs.reduce((a, r) => a + r.dpm, 0)
-          , e = rs.reduce((a, r) => a + r.ehp, 0);
-        out.push(tile(kind, c + ' 架', 'DPM ' + fmtNum(d) + ' · EHP ' + fmtNum(e)));
+          , d = rs.reduce((a, r) => a + r.dpm, 0);
+        out.push(tile(kind, c + ' 架', 'DPM ' + fmtNum(d)));
       });
       return out;
     })()).join('');
@@ -1543,7 +1537,7 @@ function sysTotals(ship) {
 
 /* 一行一个基础加成项：key 用于取值，label/unit 用于显示 */
 const CMP_ROWS = [
-  { k: 'hull',       t: '结构值',   u: '点' },
+  { k: 'hull',       t: '舰船结构值', u: '点' },
   { k: 'armor',      t: '抵抗伤害', u: '点' },
   { k: 'shield',     t: '护盾值',   u: '%' },
   { k: 'eva',        t: '通用闪避', u: '%' },
@@ -1652,7 +1646,7 @@ function slotBaseVals(slotKey) {
   const st = sysTotals(ship);
   const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
   return {
-    hull: pick('hull', base.hull) * (1 + ((Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0) + calibHullPctOf(ship)) / 100),
+    hull: (Number(pick('hull', base.hull)) || 0) * (1 + (Number(agg.hull) || 0) / 100),
     armor: effVal('armor', pick('armor', base.armor), agg),
     shield: effVal('shield', pick('shield', base.shield), agg),
     eva: effVal('eva', pick('eva', base.eva), agg),
@@ -1666,7 +1660,7 @@ function slotBaseVals(slotKey) {
 }
 
 /* 舰载机合计：与 engine.simulate 同一条公式
-   DPM = 单架基础 dpm × 架次 ×（1 + 舰载机伤害加成% / 100）；EHP = 单架 ehp × 架次
+   DPM = 单架基础 dpm × 架次 ×（1 + 舰载机伤害加成% / 100）
    母舰系统的基础加成（结构/护甲/闪避…）不作用到舰载机上，只有 plane 这个键生效。 */
 /* 只有「带舱位」的系统，加成才会作用到舰载机上 */
 function sysHasBayJs(sy) {
@@ -1828,12 +1822,11 @@ function planeTotals(key) {
     const per = planeBaseDpm(base, ownCd + carCd) * (1 + pct / 100) * cm;
     return { id: x.id, name: pf.name || x.id, kind: pf.kind || '', m: x.m, bay: x.bay,
       count: c, per: per, carPct: carPct, ownPct: ownPct, pct: pct, critMul: cm,
-      dpm: per * c, ehp: (Number(base.ehp) || 0) * c };
+      dpm: per * c };
   });
   return {
     count: rows.reduce((a, r) => a + r.count, 0),
     dpm: rows.reduce((a, r) => a + r.dpm, 0),
-    ehp: rows.reduce((a, r) => a + r.ehp, 0),
     bonus: rows.length ? (rows[0].pct || 0) : 0, rows: rows
   };
 }
@@ -1930,7 +1923,7 @@ function renderBaPlanes() {
     box.appendChild(head);
     const tbl = el('table', 'tbl planebase-tbl');
     const thead = el('thead'); const htr = el('tr');
-    ['型号', '架次', '单架 DPM', '编队 DPM', '编队 EHP', '自身 / 母舰'].forEach(t => htr.appendChild(el('th', '', t)));
+    ['型号', '架次', '单架 DPM', '编队 DPM', '自身 / 母舰'].forEach(t => htr.appendChild(el('th', '', t)));
     thead.appendChild(htr); tbl.appendChild(thead);
     const tb = el('tbody');
     rows.forEach(r => {
@@ -1939,7 +1932,6 @@ function renderBaPlanes() {
       tr.appendChild(el('td', 'num', String(r.count)));
       tr.appendChild(el('td', 'num', fmtNum(r.per)));
       tr.appendChild(el('td', 'num', fmtNum(r.dpm)));
-      tr.appendChild(el('td', 'num', fmtNum(r.ehp)));
       tr.appendChild(el('td', 'muted', (r.ownPct ? '+' + fmtNum(r.ownPct) + '%' : '—')
         + ' / ' + (r.carPct ? '+' + fmtNum(r.carPct) + '%' : '—')));
       tb.appendChild(tr);
@@ -2065,7 +2057,7 @@ function renderResults() {
   /* 舰载机：A/B 各自搭载不同，单列 3 行，避免「换了飞机但差值 0」 */
   const pls = SLOTS.map(k => planeTotals(k));
   if (pls.some(p => p.count)) {
-    [['舰载机 架次', 'count', 0], ['舰载机 DPM', 'dpm', 1], ['舰载机 EHP', 'ehp', 1]].forEach(([label, k, dec]) => {
+    [['舰载机 架次', 'count', 0], ['舰载机 DPM', 'dpm', 1]].forEach(([label, k, dec]) => {
       const v = pls.map(p => p[k] || 0);
       if (onlyDiff && Math.abs(v[0] - v[1]) < 1e-9) return;
       const tr = el('tr', 'prow');
@@ -2141,7 +2133,7 @@ function planeBP() {
         pgroup: m.pgroup || '', sysCount: nSys, nodeCount: nNd });
       return;
     }
-    /* 这里不再算 DPM / EHP：舰载机只按舱位与编组选用，数值看「基础加成」 */
+    /* 这里不算 EHP：舰船数据板块只给 DPM；舰载机只按舱位与编组选用 */
     out.push({ id: s.id, name: s.name,
       kind: (s.size === '护航艇') ? '护航艇' : '战机',
       pgroup: '', sysCount: nSys, nodeCount: nNd });
@@ -7040,7 +7032,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.100';
+window.__APP_VER = '2026-11-20.106';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
