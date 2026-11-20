@@ -599,7 +599,25 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     dpm = dmg * volley / cycle * 60 if volley else 0.0
     ehp = (hull + shield) * (1 + armor * 0.002) * (1 + eva_total / 100)
     # 维修量也按「基础值 ×（1+加成%）」；工作次数不参与，维修 DPM = 每次修复量 / 周期 × 60
-    repair = num(base.get("repair")) * (1 + agg.get("repair", 0) / 100) / cycle * 60
+    # 维修量：维修系统按「单次 × 工作量 × 60÷(持续+冷却) × 设备数 × k ×（1 + 节点维修% + 本系统调校%）」现算
+    _repair_total = 0.0
+    _repair_seen = False
+    for _sy in (ship.get("systems") or []):
+        _n = _sy.get("norm") or {}
+        _one = num(_n.get("repair"), 0)
+        if not _one:
+            continue
+        _repair_seen = True
+        _rdur = num(_n.get("dur"), num(base.get("dur"), 0))
+        _rcd = num(_n.get("cd"), num(base.get("cd"), 0))
+        _rvol = num(_n.get("volley"), 0) or (num(_n.get("ammo"), 0) * num(_n.get("atk"), 0)) or 1
+        _rguns = num(_n.get("guns"), 1) or 1
+        _rk = num(_n.get("k"), 1) or 1
+        _rc = _n.get("_calib") if isinstance(_n.get("_calib"), dict) else {}
+        _rcp = num(_rc.get("pct"), 0) if _rc.get("on") else 0
+        _repair_total += (_one * _rvol * 60.0 / max(0.5, _rdur + _rcd) * _rguns * _rk
+                          * (1 + (agg.get("repair", 0) + _rcp) / 100))
+    repair = _repair_total if _repair_seen else num(base.get("repair"), 0) * (1 + agg.get("repair", 0) / 100)
     # 巡航 / 曲率：系统基础值 ×（1 + 加成%）
     cruise_v = num(base.get("cruise")) * (1 + agg.get("speed", 0) / 100)
     warp_v = num(base.get("warp")) * (1 + agg.get("warp", 0) / 100)

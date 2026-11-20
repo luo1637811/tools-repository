@@ -905,6 +905,11 @@ function renderBaseAttrs() {
       if (wv !== undefined) return '<td class="num">' + fmtNum(wv) + '</td>';
     }
     let v = n[c.k];
+    /* 维修量：按「单次 × 工作量 × 60÷周期 × 设备数 × 调校」现算，不直接显示存档值 */
+    if (c.k === 'repair') {
+      const rd = repairDpmOf(n);
+      if (rd) v = rd; else if (v !== undefined && v !== null) v = undefined;
+    }
     if (c.k === 'spd' && v !== undefined) v = effVal('spd', v, { spd: Number(x.a.move) || 0 });
     if (v === undefined || v === null) {
       /* 命中/闪避这类没有系统基础值的：直接显示加点带来的百分点 */
@@ -1454,6 +1459,19 @@ function calibPctOf(cal) {
   if (!cal || !cal.on) return 0;
   return Number(cal.pct) || 0;  /* 进阶加成(adv)暂不参与计算 */
 }
+
+/* 维修系统：分钟维修量 = 单次 × 工作量 × 60÷(持续+冷却) × 设备数 × k ×（1 + 调校%） */
+function repairDpmOf(n) {
+  if (!n) return 0;
+  const one = Number(n.repair) || 0;
+  if (!one) return 0;
+  const dur = Number(n.dur) || 0, cd = Number(n.cd) || 0;
+  const vol = Number(n.volley) > 0 ? Number(n.volley)
+    : ((Number(n.ammo) || 0) * (Number(n.atk) || 0)) || 1;
+  const guns = Number(n.guns) || 1;
+  const k = Number(n.k) || 1;
+  return one * vol * 60 / Math.max(0.5, dur + cd) * guns * k * (1 + calibPctOf(n._calib) / 100);
+}
 /* 多武器两路现算：与 engine._weapon_out 的 weapons 分支同口径
    周期 = 持续 + 冷却 + 突防；对舰扣族护甲，对空 × 命中率 × 协同效率；
    再乘族加成（系统调校 + 整舰 + 节点里的 dmg_<族>），最后整系统求和对舰 / 对空。 */
@@ -1531,7 +1549,10 @@ function sysTotals(ship) {
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
     KEYS.forEach(k => {
       if (n[k] === undefined || n[k] === null || n[k] === '') return;
-      sum[k] += Number(n[k]) || 0;
+      let v = Number(n[k]) || 0;
+      /* 维修量按公式现算（单次 × 工作量 × 60÷周期 × 设备数 × 调校） */
+      if (k === 'repair') { const rd = repairDpmOf(n); if (!rd) return; v = rd; }
+      sum[k] += v;
       has[k] = 1;
     });
   });
@@ -4077,6 +4098,12 @@ function wizRender() {
       if (!sy.is_weapon && !fields.some(f => f[0] === 'syshull')) {
         fields = fields.concat([['syshull', '系统结构值', '点']]);
       }
+      if (!sy.is_weapon && /维修/.test(String(sy.name || ''))) {
+        /* 维修系统：单次维修量 + 时长，按公式现算分钟维修量 */
+        fields = [['repair', '单次维修量', '点'], ['dur', '持续时间', 's'], ['cd', '冷却时间', 's'],
+          ['ammo', '工作次数(弹药)', ''], ['atk', '每次次数(攻击)', ''], ['guns', '设备数', '台'],
+          ['lock', '锁定时间', 's'], ['syshull', '系统结构值', '点']];
+      }
       if (!sy.is_weapon && !fields.length) {
         card.appendChild(el('div', 'muted', '该类型不提供船体数值，只填模块名即可。'));
       } else {
@@ -4086,6 +4113,31 @@ function wizRender() {
           wIn(grid, label, sy.raw, k, 'number', null, unit);
         });
         card.appendChild(grid);
+        if (!sy.is_weapon && /维修/.test(String(sy.name || ''))) {
+          const qb = el('div', 'wepstd');
+          qb.appendChild(el('span', 'dim', '单次维修量快捷：'));
+          [['500', 500, '维修无人机'], ['375', 375, '维修设备']].forEach(([lb, v, t]) => {
+            const b = el('button', 'btn ghost tiny', lb); b.type = 'button';
+            b.title = '一键设为 ' + lb + '（' + t + '）';
+            b.onclick = () => { sy.raw.repair = v; wizRender(); };
+            qb.appendChild(b);
+          });
+          card.appendChild(qb);
+          const rh = el('div', 'muted');
+          const updR = () => {
+            const rw = sy.raw || {};
+            const dpm = repairDpmOf(rw);
+            rh.textContent = dpm
+              ? ('分钟维修量 = 单次 ' + fmtNum(rw.repair) + ' × 工作量 '
+                + fmtNum((Number(rw.ammo) || 0) * (Number(rw.atk) || 0) || rw.volley || 1)
+                + ' × 60÷(' + fmtNum(rw.dur || 0) + '+' + fmtNum(rw.cd || 0) + ') × '
+                + fmtNum(rw.guns || 1) + ' 台 ×（1+调校%） = ' + fmtNum(Math.round(dpm * 10) / 10) + ' / 分')
+              : '填了「单次维修量」就会按公式现算分钟维修量。';
+          };
+          grid.addEventListener('input', updR);
+          updR();
+          card.appendChild(rh);
+        }
         if (sy.is_weapon) {
           /* 武器表：多武器系统在这里增删改，改完点「按六字段重算对舰存档」写回存档 */
           card.appendChild(wizWeaponsBox(sy, wizRender));
@@ -7055,7 +7107,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.113';
+window.__APP_VER = '2026-11-20.115';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
