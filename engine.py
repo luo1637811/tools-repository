@@ -56,9 +56,9 @@ def _normalize_ship(d):
 
 
 def _weapon_totals(ship):
-    """武器系统的三类伤害合计（来自 systems.stats_norm 的 dmg_atk/dmg_air/dmg_siege）。"""
+    """武器系统的两路伤害合计（来自 systems.stats_norm 的 dmg_atk/dmg_air；攻城已取消）。"""
     import json as _json
-    out = {"atk": 0.0, "air": 0.0, "siege": 0.0, "systems": 0}
+    out = {"atk": 0.0, "air": 0.0, "systems": 0}
     for sy in ship.get("systems") or []:
         raw = sy.get("stats_norm")
         if not raw:
@@ -68,7 +68,7 @@ def _weapon_totals(ship):
         except Exception:
             continue
         hit = False
-        for k, key in (("dmg_atk", "atk"), ("dmg_air", "air"), ("dmg_siege", "siege")):
+        for k, key in (("dmg_atk", "atk"), ("dmg_air", "air")):
             if k in nm:
                 out[key] += float(nm[k] or 0)
                 hit = True
@@ -215,7 +215,7 @@ def _weapon_sys(sy):
     n = sy.get("norm") or {}
     if isinstance(n.get("weapons"), list) and n.get("weapons"):
         return True
-    if any(k in n for k in ("dmg_atk", "dmg_air", "dmg_siege")):
+    if any(k in n for k in ("dmg_atk", "dmg_air")):
         return True
     ammo = num(n.get("ammo"), 0)
     atk = num(n.get("atk"), 0)
@@ -224,17 +224,17 @@ def _weapon_sys(sy):
 
 
 def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
-    """把一个武器系统的六字段折算成三路输出：对舰 / 对空 / 攻城。
+    """把武器系统的字段折算成两路输出：对舰 / 对空（攻城已取消，不计算也不显示）。
 
-    多武器（stats_norm.weapons[]，文档重建后的新数据）逐把累加，每把带
-    guns（门数）、armor（对舰扣的标准护甲，火炮/轨道炮 10，其余 0）、
-    k（文档校准系数，反推不出来时让公式正好复现文档值）。
-      对舰 = (单发 − armor) × 弹药 × 攻击次数 × 60 ÷ 周期 × 门数 × k
-      对空 =  单发          × 弹药 × 攻击次数 × 60 ÷ 周期 × 门数 × k × 0.80
-      周期 = max(0.5, 持续 + 冷却 × (1 − 冷却缩减%))
-    对空有存档值时优先用存档值（每把武器有隐藏防空系数，反推不出来）；
-    攻城公式也没反推出来：有 dmg_siege 就用存档值，没有标 pending。
-    没有 weapons[] 的老数据退回单武器六字段，再退回存好的三行。
+    多武器（stats_norm.weapons[]）逐把累加，每把可带：
+      dmg 单发 / volley 弹药×攻击 / dur 持续 / cd 冷却 / pen 突防时间 / guns 门数 /
+      armor 对舰扣的族护甲（火炮、轨道炮 10，其余 0）/ k 校准系数 /
+      aa_hit 对空命中率（默认 0.8）/ aa_coop 防空协同%（默认 100）
+      周期 = max(0.5, 持续×(1−持续缩减%) + 冷却×(1−冷却缩减%) + 突防时间)
+      对舰 = max(0, 单发 − 护甲) × (弹药×攻击) × 60 ÷ 周期 × 门数 × 伤害倍率
+      对空 = 单发 × (弹药×攻击) × 60 ÷ 周期 × 门数 × 命中率 × 协同% ÷ 100 × 对空倍率
+    面板值不含暴击：暴击系数单独放在 crit 里，由调用方决定是否乘。
+    没有 weapons[] 的老数据退回单武器字段，字段也不全时退回存好的两行。
     """
     nm = sy.get("norm") or {}
     b = b or {}
@@ -246,131 +246,92 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
     cal_pct = num(_cal.get("pct"), 0) if _cal.get("on") else 0.0  # 进阶加成(adv)先只保存，不参与计算
     crit = _crit_mul(own_pairs) * _crit_mul(all_pairs)
     m = 1 + num(b.get("dmg"), 0) / 100.0
+    pct_atk = 1 + num(b.get("dmg_atk_pct"), 0) / 100.0
+    pct_air = 1 + num(b.get("dmg_air_pct"), 0) / 100.0
+
+    def _hit(v):
+        v = num(v, 0.8)
+        return v / 100.0 if v > 1 else v
+
+    def _coop(v):
+        v = num(v, 100)
+        return v / 100.0 if v > 1 else v
+
+    def _calc(p):
+        dmg = num(p.get("dmg"), 0)
+        volley = num(p.get("volley"), 0)
+        if not volley:
+            volley = num(p.get("ammo"), 1) * num(p.get("atk"), 1)
+        dur = num(p.get("dur"), 0)
+        cdv = num(p.get("cd"), 0)
+        pen = num(p.get("pen"), 0)
+        guns = num(p.get("guns"), 0)
+        armor = num(p.get("armor"), STD_ARMOR)
+        kk = num(p.get("k"), 1) or 1.0
+        fam = str(p.get("family") or "")
+        pct = (num(fam_b.get(fam), 0)
+               + num(b.get("dmg_" + fam), 0) + num(g.get("dmg_" + fam), 0))
+        mult = 1 + (pct + cal_pct) / 100.0
+        cyc = max(0.5, dur * (1 - durred / 100.0)
+                  + cdv * (1 - cdred / 100.0) + pen)
+        atk = (max(0.0, dmg - armor) * volley / cyc * 60.0 * guns * kk * mult * m * pct_atk
+               + num(p.get("atk_add"), 0))
+        air = (dmg * volley / cyc * 60.0 * guns * kk * mult * m * pct_air
+               * _hit(p.get("aa_hit")) * _coop(p.get("aa_coop")))
+        return {"name": p.get("name") or fam, "family": fam, "dmg": dmg,
+                "volley": volley, "guns": guns, "armor": armor, "k": kk,
+                "pen": pen, "hit": round(_hit(p.get("aa_hit")), 3),
+                "coop": round(_coop(p.get("aa_coop")), 3),
+                "cycle": round(cyc, 2), "atk": round(atk, 1), "air": round(air, 1)}
+
+    bonus = {k: round(num(b.get(k), 0), 2) for k in
+             ("dmg", "dmg_atk_pct", "dmg_air_pct", "cd", "freq", "crit_rate", "crit")
+             if num(b.get(k), 0)}
     ws = nm.get("weapons")
     if isinstance(ws, list) and ws:
-        tot_atk, tot_air, rows = 0.0, 0.0, []
-        # 存档三行是「零加点」时的游戏显示值，已经把舰船被动（fam_bonus）算进去了；
-        # 节点/调校这些「玩家后加的」加成要按同一比例放大，但不能再乘一次 fam_bonus。
-        # base_a/base_air = 零加成口径，node_a/node_air = 只加节点+调校+冷却缩减后的口径。
-        base_a = base_air = node_a = node_air = 0.0
-        for w in ws:
-            if not isinstance(w, dict):
-                continue
-            dmg = num(w.get("dmg"), 0)
-            volley = num(w.get("volley"), 0)
-            if not volley:
-                volley = num(w.get("ammo"), 1) * num(w.get("atk"), 1)
-            dur = num(w.get("dur"), 0)
-            cdv = num(w.get("cd"), 0)
-            guns = num(w.get("guns"), 0)
-            armor = num(w.get("armor"), STD_ARMOR)
-            kk = num(w.get("k"), 1) or 1.0
-            fam = str(w.get("family") or "")
-            # 伤害加成：系统调校/系统内节点（dmg_<族>）+ 整舰被动/节点（dmg_<族>）
-            # 系统内 dmg（pct，整系统）统一在下面按 m 乘一次，和单武器/前端保持同一口径
-            pct = (num(fam_b.get(fam), 0)
-                   + num(b.get("dmg_" + fam), 0) + num(g.get("dmg_" + fam), 0))
-            cyc = max(0.5, dur * (1 - durred / 100.0) + cdv * (1 - cdred / 100.0))
-            p = 1 + (pct + cal_pct) / 100.0
-            a = max(0.0, dmg - armor) * volley / cyc * 60.0 * guns * kk * p
-            air = dmg * volley / cyc * 60.0 * guns * kk * p * AIR_RATIO
-            tot_atk += a
-            tot_air += air
-            cyc0 = max(0.5, dur + cdv)
-            a0 = max(0.0, dmg - armor) * volley / cyc0 * 60.0 * guns * kk
-            air0 = dmg * volley / cyc0 * 60.0 * guns * kk * AIR_RATIO
-            f_node = ((1 + (num(b.get("dmg_" + fam), 0) + num(g.get("dmg_" + fam), 0)
-                        + cal_pct) / 100.0) * (cyc0 / cyc))
-            base_a += a0
-            base_air += air0
-            node_a += a0 * f_node
-            node_air += air0 * f_node
-            rows.append({"name": w.get("name") or fam, "family": fam, "dmg": dmg,
-                         "volley": volley, "guns": guns, "armor": armor, "k": kk,
-                         "cycle": round(cyc, 2), "atk": round(a, 1),
-                         "air": round(air, 1)})
-        _sa = nm.get("dmg_air")
-        air_base = num(_sa, 0) if _sa is not None else tot_air
-        air_src = "stored" if _sa is not None else "fields"
-        # 对舰：文档（游戏显示值）给了系统级对舰就以它为准——近防/隐藏系数
-        # 反推不出来（雨海 B 单发 10 算出 0，游戏写 80），现算只作核对。
-        _sk = nm.get("dmg_atk")
-        atk_calc = tot_atk * m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0)
-        atk_src = "stored" if _sk is not None else "fields"
-        r_atk = (node_a / base_a) if base_a else 1.0
-        r_air = (node_air / base_air) if base_air else 1.0
-        atk_v = (atk_calc if _sk is None
-                 else num(_sk, 0) * m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0) * r_atk)
-        air_v = air_base * m * (1 + num(b.get("dmg_air_pct"), 0) / 100.0) \
-            * (1.0 if nm.get("dmg_air") is None else r_air)
-        _ss = nm.get("dmg_siege")
-        sie = num(_ss, 0)
-        sie_v = sie * m * (1 + num(b.get("dmg_siege_pct"), 0) / 100.0) * (1.0 if _ss is None else r_atk)
+        rows = [_calc(w) for w in ws if isinstance(w, dict)]
         f0 = ws[0] if isinstance(ws[0], dict) else {}
         return {
             "id": sy["id"], "name": sy["name"], "slot": (sy.get("slot") or "").strip(),
-            "src": "weapons", "air_src": air_src, "atk_src": atk_src,
-            "atk_calc": round(atk_calc * crit, 1),
-            "cycle": rows[0]["cycle"] if rows else 0.0,
+            "src": "weapons", "cycle": rows[0]["cycle"] if rows else 0.0,
             "volley": num(f0.get("volley"), 0), "guns": num(f0.get("guns"), 0),
             "fields": {"dmg": num(f0.get("dmg"), 0), "ammo": num(f0.get("ammo"), 0),
                        "atk": num(f0.get("atk"), 0), "dur": num(f0.get("dur"), 0),
-                       "cd": num(f0.get("cd"), 0)},
+                       "cd": num(f0.get("cd"), 0), "pen": num(f0.get("pen"), 0)},
             "rows": rows,
-            "atk": round(atk_v * crit, 1), "air": round(air_v * crit, 1),
-            "siege": round(sie_v * crit, 1) if _ss is not None else None,
-            "siege_src": "stored" if _ss is not None else "pending",
-            "crit": round(crit, 3),
-            "bonus": {k: round(num(b.get(k), 0), 2) for k in
-                      ("dmg", "dmg_atk_pct", "dmg_air_pct", "dmg_siege_pct",
-                       "cd", "freq", "crit_rate", "crit") if num(b.get(k), 0)},
+            "atk": round(sum(r["atk"] for r in rows), 1),
+            "air": round(sum(r["air"] for r in rows), 1),
+            "stored_atk": None if nm.get("dmg_atk") is None else round(num(nm.get("dmg_atk"), 0), 1),
+            "stored_air": None if nm.get("dmg_air") is None else round(num(nm.get("dmg_air"), 0), 1),
+            "crit": round(crit, 3), "bonus": bonus,
         }
-    dmg = num(nm.get("dmg"), 0)
-    ammo = num(nm.get("ammo"), 0)
-    atk = num(nm.get("atk"), 0)
-    volley = ammo * atk if (ammo and atk) else num(nm.get("ammo_atk"), 0)
-    dur = num(nm.get("dur"), 0)
-    cdv = num(nm.get("cd"), 0)
-    guns = num(nm.get("guns"), 0) or 1.0
-    cycle = max(0.5, dur * (1 - durred / 100.0) + cdv * (1 - cdred / 100.0))
-    if dmg and volley and (dur or cdv):
-        shot = dmg * volley / cycle * 60.0 * guns
-        atk_v = max(0.0, dmg - STD_ARMOR) * volley / cycle * 60.0 * guns
-        air_v = shot * AIR_RATIO
+    one = {"name": nm.get("name") or sy["name"], "family": nm.get("family") or "",
+           "dmg": nm.get("dmg"), "dur": nm.get("dur"), "cd": nm.get("cd"),
+           "pen": nm.get("pen"), "guns": nm.get("guns") or 1,
+           "atk_add": nm.get("atk_add"),
+           "armor": nm.get("armor"), "k": nm.get("k"),
+           "aa_hit": nm.get("aa_hit"), "aa_coop": nm.get("aa_coop")}
+    if nm.get("ammo") and nm.get("atk"):
+        one["volley"] = num(nm.get("ammo"), 0) * num(nm.get("atk"), 0)
+    else:
+        one["volley"] = nm.get("ammo_atk")
+    r = _calc(one)
+    if r["dmg"] and r["volley"] and (num(nm.get("dur"), 0) or num(nm.get("cd"), 0)):
         src = "fields"
     else:
-        atk_v = num(nm.get("dmg_atk"), 0)
-        air_v = num(nm.get("dmg_air"), 0)
         src = "stored"
-    atk_calc = atk_v
-    _sk = nm.get("dmg_atk")
-    if _sk is not None:
-        atk_v = num(_sk, 0)
-        src = "stored"
-    _sa = nm.get("dmg_air")
-    if _sa is not None:
-        air_v = num(_sa, 0)
-    if cal_pct:
-        atk_v *= 1 + cal_pct / 100.0
-        air_v *= 1 + cal_pct / 100.0
-    atk_v *= m * (1 + num(b.get("dmg_atk_pct"), 0) / 100.0)
-    air_v *= m * (1 + num(b.get("dmg_air_pct"), 0) / 100.0)
-    sie = num(nm.get("dmg_siege"), 0)
-    sie_v = sie * m * (1 + num(b.get("dmg_siege_pct"), 0) / 100.0)
-    cm = _crit_mul(own_pairs) * _crit_mul(all_pairs)
+        r = dict(r, atk=round(num(nm.get("dmg_atk"), 0), 1),
+                 air=round(num(nm.get("dmg_air"), 0), 1))
     return {
         "id": sy["id"], "name": sy["name"], "slot": (sy.get("slot") or "").strip(),
-        "src": src, "cycle": round(cycle, 2), "volley": volley, "guns": guns,
-        "atk_src": "stored" if _sk is not None else "fields",
-        "atk_calc": round(atk_calc * cm, 1),
-        "fields": {"dmg": dmg, "ammo": ammo, "atk": atk, "dur": dur, "cd": cdv},
-        "atk": round(atk_v * cm, 1), "air": round(air_v * cm, 1),
-        "siege": round(sie_v * cm, 1) if sie else None,
-        "siege_src": "stored" if sie else "pending",
-        "crit": round(cm, 3),
-        "bonus": {k: round(num(b.get(k), 0), 2) for k in
-                  ("dmg", "dmg_atk_pct", "dmg_air_pct", "dmg_siege_pct",
-                   "cd", "freq", "crit_rate", "crit") if num(b.get(k), 0)},
+        "src": src, "cycle": r["cycle"], "volley": r["volley"], "guns": r["guns"],
+        "fields": {"dmg": num(nm.get("dmg"), 0), "ammo": num(nm.get("ammo"), 0),
+                   "atk": num(nm.get("atk"), 0), "dur": num(nm.get("dur"), 0),
+                   "cd": num(nm.get("cd"), 0), "pen": num(nm.get("pen"), 0)},
+        "rows": [r], "atk": r["atk"], "air": r["air"],
+        "stored_atk": None if nm.get("dmg_atk") is None else round(num(nm.get("dmg_atk"), 0), 1),
+        "stored_air": None if nm.get("dmg_air") is None else round(num(nm.get("dmg_air"), 0), 1),
+        "crit": round(crit, 3), "bonus": bonus,
     }
 
 
@@ -456,7 +417,7 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     bay_pairs = {}
     sys_agg = {}        # 系统内加成：{slot: {效果键: 合计}}（scope=system/weapon）
     crit_show = {}      # 暴击展示值：系统自带 + 系统内节点（整舰口径的暴击在 agg 里）
-    node_pairs = []     # 整舰所有节点的暴击对，武器三路出数要乘它
+    node_pairs = []     # 整舰所有节点的暴击对，武器两路出数要乘它
     disp = {}           # 系统内 / 舰载机口径的展示值（命中、突防等不进计算的键）
     for sy in ship["systems"]:
         # 系统自带暴击（建船向导填的「自带暴击率 / 自带暴击伤害」）：计入整舰暴击展示值
@@ -568,9 +529,9 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     if _tt and tech_total > _tt:
         violations.append(f"技术值 {tech_total} 超出整舰上限 {_tt}")
 
-    # —— 武器三路出数（对舰 / 对空 / 攻城）——
-    # scope 把「系统内」加成收进 sys_agg，这里按系统逐个折算：六字段填齐就现算，
-    # 没填齐（老数据）退回存好的三行，攻城没有公式只能吃存档值。
+    # —— 武器两路出数（对舰 / 对空；攻城已取消，不计算也不显示）——
+    # scope 把「系统内」加成收进 sys_agg，这里按系统逐个折算：字段齐就现算，
+    # 不齐（老数据）退回存好的两行，文档值只作为对照写在详情里。
     weapons = []
     for sy in ship["systems"]:
         if not _weapon_sys(sy):
@@ -580,27 +541,20 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         _op = [(num(_sn.get("crit_rate"), 0), num(_sn.get("crit"), 0))]
         w = _weapon_out(sy, sys_agg.get(_slot, {}), _op, node_pairs, agg)
         weapons.append(w)
-        _src_txt = "文档值" if w.get("atk_src") == "stored" else (
-            "多武器现算" if w["src"] == "weapons" else
-            {"fields": "六字段", "stored": "存档三行"}.get(w["src"], w["src"]))
-        _wtxt = "对舰 %s · 对空 %s · 攻城 %s（%s）" % (
-            _fmt_num(w["atk"]), _fmt_num(w["air"]),
-            _fmt_num(w["siege"]) if w["siege"] is not None else "待定", _src_txt)
-        _ac = w.get("atk_calc")
-        if _ac is not None and abs(_ac - w["atk"]) > max(1.0, abs(w["atk"]) * 0.0005):
-            _wtxt += "，六字段现算 %s（差 %s）" % (
-                _fmt_num(_ac), _fmt_num(round(_ac - w["atk"], 1)))
+        _src_txt = {"weapons": "多武器现算", "fields": "六字段现算",
+                    "stored": "存档值"}.get(w["src"], w["src"])
+        _wtxt = "对舰 %s · 对空 %s（%s）" % (
+            _fmt_num(w["atk"]), _fmt_num(w["air"]), _src_txt)
+        if w.get("stored_atk") is not None:
+            _wtxt += "，文档值 对舰 %s · 对空 %s" % (
+                _fmt_num(w["stored_atk"]), _fmt_num(w.get("stored_air") or 0))
         detail.append({"from": f"武器 {sy['name']}（{_slot or '—'}）", "text": _wtxt})
-    weapon = {"atk": 0.0, "air": 0.0, "siege": 0.0, "systems": len(weapons),
-              "siege_pending": 0, "stored": _weapon_totals(ship)}
+    weapon = {"atk": 0.0, "air": 0.0, "systems": len(weapons),
+              "stored": _weapon_totals(ship)}
     for w in weapons:
         weapon["atk"] += w["atk"]
         weapon["air"] += w["air"]
-        if w["siege"] is None:
-            weapon["siege_pending"] += 1
-        else:
-            weapon["siege"] += w["siege"]
-    for _k in ("atk", "air", "siege"):
+    for _k in ("atk", "air"):
         weapon[_k] = round(weapon[_k], 1)
 
     # —— 统一口径（与「基础加成」页展示一致）——
@@ -769,11 +723,9 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         dpm = ehp = repair = plane_dpm = 0.0
         for r in rows:
             r["dpm"] = 0.0
-        weapon.update({"atk": 0.0, "air": 0.0, "siege": 0.0})
+        weapon.update({"atk": 0.0, "air": 0.0})
         for w in weapons:
             w["atk"] = w["air"] = 0.0
-            if w["siege"] is not None:
-                w["siege"] = 0.0
     # —— 系统结构值：和「结构值」用同一套算法 ——
     # 基数 × (1 + 整舰结构值加成% + 该系统内「系统结构值」节点/调校%)。
     # 装甲系统的基数就是舰船结构值基数，所以它的系统结构值恒等于舰船结构值。

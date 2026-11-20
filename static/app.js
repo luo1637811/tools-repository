@@ -498,7 +498,7 @@ function nodeById(id) {
    自定义效果仍用效果库里的 unit。 */
 const UNIT_OF = {
   hull: '%', shield: '%', eva: '%', eva_missile: '%', eva_torp: '%',
-  dmg: '%', dmg_atk_pct: '%', dmg_air_pct: '%', dmg_siege_pct: '%',
+  dmg: '%', dmg_atk_pct: '%', dmg_air_pct: '%',
   crit: '%', crit_rate: '%', cd: '%', freq: '%', dur: '%', cast: '%',
   acc: '%', acc_plane: '%', acc_small: '%', acc_large: '%',
   speed: '%', warp: '%', move: '%', lock: '%', intc: '%', critres: '%',
@@ -739,7 +739,7 @@ function renderBaseAttrs() {
     let n = {};
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
     return { sy: sy, n: n, a: sysAggOf(sy),
-      w: (n.dmg_atk !== undefined || n.dmg_air !== undefined || n.dmg_siege !== undefined
+      w: (n.dmg_atk !== undefined || n.dmg_air !== undefined
         || !!weaponSixOf(n) || !!weaponListOf(n)) };
   });
   const hasWeapon = sys.some(x => x.w);
@@ -819,7 +819,6 @@ function renderBaseAttrs() {
     { k: 'repair', t: '维修量', w: 86, num: 1 },
     { k: 'dmg_atk', t: '对舰', w: 94, num: 1, weapon: 1 },
     { k: 'dmg_air', t: '对空', w: 86, num: 1, weapon: 1 },
-    { k: 'dmg_siege', t: '攻城', w: 86, num: 1, weapon: 1 }
   ].filter(c => {
     if (c.weapon && !hasWeapon) return false;
     if (c.bay && !hasBay) return false;
@@ -833,7 +832,7 @@ function renderBaseAttrs() {
 
   /* 「其他加成」列：本表没单列的加成键（命中 / 暴击 / 锁定 / 自定义效果…），有就显示 */
   const EXTRA_USED = { hull:1, armor:1, shield:1, eva:1, speed:1, warp:1, spd:1, move:1,
-    repair:1, dmg_atk:1, dmg_air:1, dmg_siege:1, dmg:1 };
+    repair:1, dmg_atk:1, dmg_air:1, dmg:1 };
   const extraOf = (x) => Object.keys(x.a || {}).filter(k => !EXTRA_USED[k] && Number(x.a[k]));
   /* 系统自带的暴击（向导弹里填的「自带暴击率 / 自带暴击伤害」）不挂在节点上，
      这里单独取出来，保证填了就能在表里看见，没生效也说清原因 */
@@ -842,34 +841,26 @@ function renderBaseAttrs() {
     if (!(r > 0 || d > 0)) return null;
     return { r: r, d: d, mul: (r > 0 && d > 0) ? 1 + (r / 100) * (d / 100) : 1 };
   };
-  /* 六字段的系统：三行没存数就现算一格（与 sysDmgSum 同口径，含本系统加点与自带暴击） */
+  /* 武器列：按公式现算（与 sysDmgSum / 引擎同口径，含本系统加点与自带暴击） */
   const weaponCellOf = (x, k) => {
     const six = weaponSixOf(x.n);
     const multi = weaponListOf(x.n);
     if (!six && !multi) return undefined;
     const aa = x.a || {};
-    const idx = k === 'dmg_atk' ? 0 : (k === 'dmg_air' ? 1 : 2);
     const famA = {};
     Object.keys(aa).forEach(kk => {
       if (kk.indexOf('dmg_') !== 0) return;
-      if (kk === 'dmg_atk_pct' || kk === 'dmg_air_pct' || kk === 'dmg_siege_pct') return;
+      if (kk === 'dmg_atk_pct' || kk === 'dmg_air_pct') return;
       famA[kk.slice(4)] = Number(aa[kk]) || 0;
     });
     const cdR = (Number(aa.cd) || 0) + (Number(aa.freq) || 0);
-    const w3 = multi ? weaponSum3(x.n, cdR, famA) : null;
-    const b3 = w3 || weaponBase3(x.n, six, cdR);
-    /* 文档给了系统级那一行就以文档为准（和引擎、sysDmgSum 同一口径） */
-    const dv = x.n && x.n[k];
-    const st = (dv === undefined || dv === null) ? null : Number(dv);
-    /* 文档值是零加点口径：加点按 weaponNodeRatio 放大；没有文档值时才用现算（现算已含加点） */
-    let base = st === null ? b3[idx] : st;
-    if (st !== null && multi) {
-      const r = weaponNodeRatio(x.n, cdR, famA);
-      base *= (k === 'dmg_air' ? r[1] : r[0]);
-    }
+    const w2 = multi ? weaponSum2(x.n, cdR, famA) : null;
+    const b2 = w2 || weaponBase2(x.n, six, cdR);
+    const base = (k === 'dmg_air') ? b2[1] : b2[0];
     const oc = ownCritOf(x);
-    return base * (1 + (Number(aa.dmg) || 0) / 100) * (1 + (Number(aa[k + '_pct']) || 0) / 100)
+    const v = base * (1 + (Number(aa.dmg) || 0) / 100) * (1 + (Number(aa[k + '_pct']) || 0) / 100)
       * (oc ? oc.mul : 1);
+    return Math.round(v * 10) / 10;
   };
   if (rows.some(x => extraOf(x).length || ownCritOf(x))) COLS.push({ k: '__extra', t: '其他加成', w: 190 });
 
@@ -895,7 +886,7 @@ function renderBaseAttrs() {
       if (oc) {
         /* 只给一个「暴击系数」：具体两格数值在录入页已经写清，表里不复述 */
         if (!(oc.r > 0 && oc.d > 0)) bits.push('暴击系数（只填了一格，不生效）');
-        else if (!x.w) bits.push('暴击系数（×' + fmtNum(oc.mul) + '）· 没填对舰 / 对空 / 攻城，暂不生效');
+        else if (!x.w) bits.push('暴击系数（×' + fmtNum(oc.mul) + '）· 没填对舰 / 对空，暂不生效');
         else bits.push('暴击系数（×' + fmtNum(oc.mul) + '）');
       }
       if (!bits.length) return '<td class="dim">—</td>';
@@ -949,7 +940,7 @@ function renderBaseAttrs() {
       tile('巡航 / 曲率',
         fmtNum(effVal('speed', pick('cruise', base.cruise), agg)) + ' / ' + fmtNum(effVal('warp', pick('warp', base.warp), agg)),
         (Number(agg.speed) || Number(agg.warp)) ? '已含加点加成' : 'jm'),
-      tile('武器系统', ws.length + ' 个', ws.length ? ('对舰 ' + fmtNum(sum('dmg_atk')) + ' · 对空 ' + fmtNum(sum('dmg_air')) + ' · 攻城 ' + fmtNum(sum('dmg_siege'))) : '没有武器系统'),
+      tile('武器系统', ws.length + ' 个', ws.length ? ('对舰 ' + fmtNum(sum('dmg_atk')) + ' · 对空 ' + fmtNum(sum('dmg_air'))) : '没有武器系统'),
     ].concat((function () {
       /* 舰载机：只在真的有搭载时才出现；战机 / 护航艇各一块，只给加成后的结果，不写公式 */
       const pt = planeTotals(S.cur);
@@ -969,7 +960,7 @@ function renderBaseAttrs() {
   if (warn) {
     const msgs = [];
     if (base.hull === undefined) msgs.push('缺少装甲系统数值（结构值 / 抵抗伤害）');
-    if (!hasWeapon) msgs.push('没有武器系统，所以对舰 / 对空 / 攻城三列为空（靠舰载机输出时属正常）');
+    if (!hasWeapon) msgs.push('没有武器系统，所以对舰 / 对空两列为空（靠舰载机输出时属正常）');
     warn.innerHTML = msgs.length ? ('⚠ ' + msgs.join('；') + '。缺的数据在「数据管理 → 系统」里补。') : '';
     warn.classList.toggle('hide', !msgs.length);
   }
@@ -1023,6 +1014,133 @@ function treeCols(nodes) {
   return cols.filter(c => c && c.length);
 }
 
+/* ---------- 网格树（只读原型）：按前置层级排成列，SVG 画前置连线 ---------- */
+const TREE_ICONS = {
+  dmg: '💥', dmg_cannon: '💥', dmg_rail: '⚡', dmg_pulse: '⚛', dmg_plasma: '🔥',
+  dmg_missile: '🚀', dmg_torpedo: '🐟', dmg_drone: '🛩', dmg_atk_pct: '📈',
+  repair: '🔧', repair_bonus_pct: '🔧', freq: '⏱', cd: '⏱', dur: '🕒', lock: '🔒',
+  acc: '🎯', acc_small: '🎯', acc_large: '🎯', acc_plane: '✈', warn: '⚠',
+  armor: '🛡', shield: '🔵', hull: '❤', syshull: '🧱', eva: '💨', eva_missile: '💨', eva_torp: '💨',
+  speed: '🚀', warp: '🌌', crit: '✦', crit_rate: '✦', critres: '◇',
+  move: '🕹', plane: '✈', cargo: '📦', intc: '🛰', intc_torp: '🛰', range: '📡', lockres: '🔒'
+};
+
+function treeEffKey(nd) {
+  let ef = nd && nd.effect;
+  if (typeof ef === 'string') { try { ef = JSON.parse(ef || '{}'); } catch (e) { ef = null; } }
+  return (ef && typeof ef === 'object') ? (Object.keys(ef)[0] || '') : '';
+}
+
+function treeIconOf(nd) {
+  const k = treeEffKey(nd);
+  return TREE_ICONS[k] || (nd && nd.label ? String(nd.label).slice(0, 1) : '◆');
+}
+
+function treeGridCard(nd, sl, sy, code) {
+  const lv = sl.alloc[nd.id] || 0;
+  const parents = parList(nd.parent).map(id => sy.nodes.find(x => x.id === id)).filter(Boolean);
+  const unlocked = !parents.length || parents.some(p => (sl.alloc[p.id] || 0) > 0);
+  const maxed = nd.max_lv > 0 && lv >= nd.max_lv;
+  const d = el('div', 'tnode' + (unlocked ? '' : ' locked') + (maxed ? ' maxed' : ''));
+  d.title = (nd.label || code || '') + '　' + lv + ' / ' + nd.max_lv
+    + (parents.length ? '\n前置：' + parents.map(p => p.label).join(' 或 ') : '')
+    + (nd.note ? '\n' + nd.note : '');
+  if (perLvOf(nd, treeEffKey(nd))) {
+    const b = el('span', 'tbadge', '橙');
+    b.title = '分段成长：逐级数值不同';
+    d.appendChild(b);
+  }
+  d.appendChild(el('div', 'ticon', treeIconOf(nd)));
+  d.appendChild(el('div', 'tname', nd.label || code || ''));
+  d.appendChild(el('div', 'tlv', lv + ' / ' + nd.max_lv + (unlocked ? '' : ' · 🔒')));
+  d.onclick = () => toast((nd.label || '') + '：' + lv + ' / ' + nd.max_lv + '（只读原型，加点仍在列表视图）', '');
+  return d;
+}
+
+function round2(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+
+function treeGridEl(sy, sl) {
+  const cols = treeCols(sy.nodes);
+  const wrap = el('div', 'tgridwrap');
+  const grid = el('div', 'tgrid');
+  grid.style.gridTemplateColumns = 'repeat(' + Math.max(1, cols.length) + ', minmax(112px, 126px))';
+  const cardOf = {};
+  cols.forEach((col, ci) => col.forEach(({ code, node }, ri) => {
+    const c = treeGridCard(node, sl, sy, code);
+    c.style.gridColumn = String(ci + 1);
+    c.style.gridRow = String(ri + 1);
+    c.dataset.nid = node.id;
+    cardOf[node.id] = c;
+    grid.appendChild(c);
+  }));
+  wrap.appendChild(grid);
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'tgridlines');
+  wrap.appendChild(svg);
+
+  /* 汇总：本系统加成效果（只读原型，按当前加点直接算） */
+  const box = el('div', 'tgridsum');
+  box.appendChild(el('b', '', '本系统加成效果'));
+  const sums = {};
+  let usedPts = 0, active = 0;
+  sy.nodes.forEach(n => {
+    const lv = sl.alloc[n.id] || 0;
+    if (!lv) return;
+    active++;
+    usedPts += costOf(n, lv);
+    let ef = n.effect;
+    if (typeof ef === 'string') { try { ef = JSON.parse(ef || '{}'); } catch (e) { ef = null; } }
+    if (!ef || typeof ef !== 'object') return;
+    Object.keys(ef).forEach(k => {
+      const v = Number(ef[k]) || 0;
+      const amt = (typeof nodeLvAmt === 'function')
+        ? nodeLvAmt(n, k, lv, v) : v * lv;
+      sums[k] = (sums[k] || 0) + (Number(amt) || 0);
+    });
+  });
+  const keys = Object.keys(sums).filter(k => sums[k]);
+  if (!keys.length) {
+    box.appendChild(el('div', 'muted', active ? '已点 ' + active + ' 个节点（' + usedPts + ' 技术值），但没有可汇总的数值效果。' : '尚未激活任何技能'));
+  } else {
+    keys.forEach(k => {
+      const v = Math.round(sums[k] * 100) / 100;
+      box.appendChild(el('div', '', (typeof effName === 'function' ? effName(k) : k) + ' +' + v));
+    });
+    box.appendChild(el('div', 'muted', '共 ' + active + ' 个节点点亮、消耗 ' + usedPts + ' 技术值'));
+  }
+  wrap.appendChild(box);
+
+  const draw = () => {
+    const wr = wrap.getBoundingClientRect();
+    svg.setAttribute('width', String(grid.scrollWidth + 10));
+    svg.setAttribute('height', String(grid.scrollHeight + 10));
+    let d = '';
+    sy.nodes.forEach(n => {
+      const c = cardOf[n.id];
+      if (!c) return;
+      const cr = c.getBoundingClientRect();
+      const cx = cr.left - wr.left + wrap.scrollLeft;
+      const cy = cr.top - wr.top + wrap.scrollTop + cr.height / 2;
+      parList(n.parent).filter(pid => cardOf[pid]).forEach(pid => {
+        const pr = cardOf[pid].getBoundingClientRect();
+        const px = pr.right - wr.left + wrap.scrollLeft;
+        const py = pr.top - wr.top + wrap.scrollTop + pr.height / 2;
+        const mx = px + Math.max(12, (cx - px) / 2);
+        d += 'M ' + px.toFixed(1) + ' ' + py.toFixed(1) + ' H ' + mx.toFixed(1)
+          + ' V ' + cy.toFixed(1) + ' H ' + cx.toFixed(1) + ' ';
+      });
+    });
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d || 'M 0 0');
+    svg.appendChild(path);
+  };
+  requestAnimationFrame(draw);
+  setTimeout(draw, 80);
+  return wrap;
+}
+
 function renderTree() {
   renderBaseAttrs();
   renderPlaneTrees();
@@ -1043,7 +1161,10 @@ function renderTree() {
   /* 无加点项的纯被动系统：留空，不显示任何提示 */
   /* 横向分层：一层一列，列内按录入顺序往下排（与「数据管理 → 加点」里的顺序一致） */
   const cols = treeCols(sy.nodes);
-  if (cols.length) {
+  if (cols.length && S.treeView === 'grid') {
+    host.appendChild(treeGridEl(sy, sl));
+    host.dataset.laneKey = laneKey;
+  } else if (cols.length) {
     const lane = el('div', 'wiz-lane');
     cols.forEach((col, ci) => {
       const box = el('div', 'wiz-col');
@@ -1220,12 +1341,21 @@ function weaponSixOf(n) {
   if (!dmg || !volley || !((+n.dur || 0) || (+n.cd || 0))) return null;
   return { dmg: dmg, volley: volley, guns: +n.guns || 1 };
 }
-/* 三路基础值：对舰扣 10 点标准护甲，对空 × 0.80，攻城没有公式只吃存档值 */
-function weaponBase3(n, six, cdRed) {
-  const cyc = Math.max(0.5, (+n.dur || 0) + (+n.cd || 0) * (1 - (+cdRed || 0) / 100));
+/* 命中率 / 协同效率：支持 0.15 与 15 两种写法，缺省 0.8 / 100% */
+function wepHitOf(o) {
+  const v = (o.aa_hit === undefined || o.aa_hit === null || o.aa_hit === '') ? 0.8 : Number(o.aa_hit);
+  return v > 1 ? v / 100 : v;
+}
+function wepCoopOf(o) {
+  const v = (o.aa_coop === undefined || o.aa_coop === null || o.aa_coop === '') ? 100 : Number(o.aa_coop);
+  return v > 1 ? v / 100 : v;
+}
+/* 两路基础值：对舰扣族护甲，对空 × 命中率 × 协同效率 */
+function weaponBase2(n, six, cdRed) {
+  const cyc = Math.max(0.5, (+n.dur || 0) + (+n.cd || 0) * (1 - (+cdRed || 0) / 100) + (+n.pen || 0));
   const shot = six.dmg * six.volley / cyc * 60 * six.guns;
-  return [Math.max(0, six.dmg - 10) * six.volley / cyc * 60 * six.guns, shot * 0.8,
-    (Number(n.dmg_siege) || 0)];
+  return [Math.max(0, six.dmg - 10) * six.volley / cyc * 60 * six.guns,
+    shot * wepHitOf(n) * wepCoopOf(n)];
 }
 /* 一个系统挂多把武器（新数据：stats_norm.weapons[]）时返回数组，否则 null */
 function weaponListOf(n) {
@@ -1237,10 +1367,10 @@ function calibPctOf(cal) {
   if (!cal || !cal.on) return 0;
   return Number(cal.pct) || 0;  /* 进阶加成(adv)暂不参与计算 */
 }
-/* 多武器三路现算：与 engine._weapon_out 的 weapons 分支同口径
-   每把武器按自己的 单发 / 弹药×攻击次数 / 持续 / 冷却 / 门数 / 护甲口径 / 校准系数 算，
-   再乘族加成（系统调校 + 整舰 + 节点里的 dmg_<族>），最后整系统求和对舰 / 对空。攻城只吃存档值 */
-function weaponSum3(n, cdRed, famAdd) {
+/* 多武器两路现算：与 engine._weapon_out 的 weapons 分支同口径
+   周期 = 持续 + 冷却 + 突防；对舰扣族护甲，对空 × 命中率 × 协同效率；
+   再乘族加成（系统调校 + 整舰 + 节点里的 dmg_<族>），最后整系统求和对舰 / 对空。 */
+function weaponSum2(n, cdRed, famAdd) {
   const wl = weaponListOf(n);
   if (!wl) return null;
   const fam0 = n.fam_bonus || {};
@@ -1249,8 +1379,8 @@ function weaponSum3(n, cdRed, famAdd) {
     const dmg = +w.dmg || 0;
     const vol = +w.volley || ((+w.ammo || 0) * (+w.atk || 0));
     if (!dmg || !vol) return;
-    const dur = +w.dur || 0, cd = +w.cd || 0;
-    const cyc = Math.max(0.5, dur + cd * (1 - (+cdRed || 0) / 100));
+    const dur = +w.dur || 0, cd = +w.cd || 0, pen = +w.pen || 0;
+    const cyc = Math.max(0.5, dur + cd * (1 - (+cdRed || 0) / 100) + pen);
     /* 门数 0 = 这把武器不装（文档里副炮常常是 0 门），不能按 1 门算 */
     const g = (w.guns === undefined || w.guns === null) ? 1 : (+w.guns || 0);
     if (!g) return;
@@ -1258,39 +1388,10 @@ function weaponSum3(n, cdRed, famAdd) {
     const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
     const fb = (1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100)
       * (1 + calibPctOf(n._calib) / 100);
-    const shot = dmg * vol / cyc * 60 * g * k * fb;
-    atk += Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * fb;
-    air += shot * 0.8;
+    atk += Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * fb + (Number(w.atk_add) || 0);
+    air += dmg * vol / cyc * 60 * g * k * fb * wepHitOf(w) * wepCoopOf(w);
   });
-  /* 对空 / 攻城都优先吃文档存档值（每把武器有隐藏的防空系数，0.8 只是通用火炮的巧合） */
-  const airOut = (n.dmg_air === undefined || n.dmg_air === null) ? air : Number(n.dmg_air);
-  return [atk, airOut, Number(n.dmg_siege) || 0];
-}
-/* 存档三行是「零加点」时的游戏显示值（已经把舰船被动 fam_bonus 算进去了）。
-   节点里的族加成 / 冷却缩减 / 系统调校这些后加成，要按同一比例放大存档值，
-   但不能再乘一次 fam_bonus，否则重复。返回 [对舰比例, 对空比例]。 */
-function weaponNodeRatio(n, cdRed, famAdd) {
-  const wl = weaponListOf(n);
-  if (!wl) return [1, 1];
-  const cal = calibPctOf(n._calib) / 100;
-  let ba = 0, bair = 0, sa = 0, sair = 0;
-  wl.forEach(w => {
-    const dmg = +w.dmg || 0;
-    const vol = +w.volley || ((+w.ammo || 0) * (+w.atk || 0));
-    if (!dmg || !vol) return;
-    const dur = +w.dur || 0, cd = +w.cd || 0;
-    const cyc0 = Math.max(0.5, dur + cd);
-    const cyc = Math.max(0.5, dur + cd * (1 - (+cdRed || 0) / 100));
-    const g = (w.guns === undefined || w.guns === null) ? 1 : (+w.guns || 0);
-    if (!g) return;
-    const k = w.k === undefined ? 1 : (Number(w.k) || 1);
-    const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
-    const f = (1 + ((Number((famAdd || {})[w.family]) || 0) + cal * 100) / 100) * (cyc0 / cyc);
-    const a0 = Math.max(0, dmg - arm) * vol / cyc0 * 60 * g * k;
-    const air0 = dmg * vol / cyc0 * 60 * g * k * 0.8;
-    ba += a0; bair += air0; sa += a0 * f; sair += air0 * f;
-  });
-  return [ba ? sa / ba : 1, bair ? sair / bair : 1];
+  return [atk, air];
 }
 /* 节点里的「dmg_<武器族>」加成（如 脉冲炮伤害 +15%）：按族累加成 {pulse: 15} */
 function famAddOf(nodes, alloc) {
@@ -1302,7 +1403,7 @@ function famAddOf(nodes, alloc) {
     if (typeof e === 'string') { try { e = JSON.parse(e || '{}'); } catch (x) { e = {}; } }
     Object.keys(e || {}).forEach(k => {
       if (k.indexOf('dmg_') !== 0) return;
-      if (k === 'dmg_atk_pct' || k === 'dmg_air_pct' || k === 'dmg_siege_pct') return;
+      if (k === 'dmg_atk_pct' || k === 'dmg_air_pct') return;
       const f = k.slice(4);
       fam[f] = (fam[f] || 0) + nodeLvAmt(nd, k, lv, e[k]);
     });
@@ -1356,11 +1457,10 @@ const CMP_ROWS = [
   { k: 'spd',        t: '突防速度', u: 's' },
   { k: 'repair',     t: '维修量',   u: '点' },
   { k: 'dmg_atk',    t: '对舰',     u: '/分' },
-  { k: 'dmg_air',    t: '对空',     u: '/分' },
-  { k: 'dmg_siege',  t: '攻城',     u: '/分' }
+  { k: 'dmg_air',    t: '对空',     u: '/分' }
 ];
 
-/* 对舰/对空/攻城 = 该系统展示的基础值 ×（1 + 该系统的伤害加成%）
+/* 对舰/对空 = 该系统页面上的基础值 ×（1 + 该系统的伤害加成%）
    要点：只对「基础值」与「加成」做计算，不引入周期/冷却等换算；
    伤害节点挂在哪个系统上，就只抬哪个系统的三行（装甲系统的伤害节点不会串到武器上）。 */
 /* 暴击期望倍率 = 1 + [Σ(概率×暴伤) + 全局暴伤×概率之和]/10000（与 engine._crit_mul 同口径）
@@ -1410,14 +1510,14 @@ function critMulOf(ship, alloc) {
 }
 
 function sysDmgSum(ship, alloc) {
-  const out = { dmg_atk: 0, dmg_air: 0, dmg_siege: 0 };
+  const out = { dmg_atk: 0, dmg_air: 0 };
   ((ship && ship.systems) || []).forEach(sy => {
     let n = {};
     try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; }
     const six = weaponSixOf(n);
     const multi = weaponListOf(n);
-    if (!six && !multi && n.dmg_atk === undefined && n.dmg_air === undefined && n.dmg_siege === undefined) return;
-    let pct = 0, pAtk = 0, pAir = 0, pSiege = 0, cdRed = 0;
+    if (!six && !multi && n.dmg_atk === undefined && n.dmg_air === undefined) return;
+    let pct = 0, pAtk = 0, pAir = 0, cdRed = 0;
     (sy.nodes || []).forEach(nd => {
       const lv = Number((alloc || {})[nd.id] || 0);
       if (!lv) return;
@@ -1427,40 +1527,22 @@ function sysDmgSum(ship, alloc) {
       pct += nodeLvAmt(nd, 'dmg', lv, e.dmg);
       pAtk += nodeLvAmt(nd, 'dmg_atk_pct', lv, e.dmg_atk_pct);
       pAir += nodeLvAmt(nd, 'dmg_air_pct', lv, e.dmg_air_pct);
-      pSiege += nodeLvAmt(nd, 'dmg_siege_pct', lv, e.dmg_siege_pct);
       cdRed += nodeLvAmt(nd, 'cd', lv, e.cd) + nodeLvAmt(nd, 'freq', lv, e.freq);
     });
     const m = 1 + pct / 100;
     const crOwn = Number(n.crit_rate) || 0, cdOwn = Number(n.crit) || 0;
     const cmOwn = (crOwn > 0 && cdOwn > 0) ? 1 + (crOwn / 100) * (cdOwn / 100) : 1;
-    /* 三行的「基础值」：多武器逐把现算；只有一套六字段就按周期公式现算；
-       都没有的老数据直接用存档的三行，不猜；攻城只吃存档值 */
     const famA = multi ? famAddOf(sy.nodes, alloc) : null;
-    const w3 = multi ? weaponSum3(n, cdRed, famA) : null;
-    const b3 = w3 || (six ? weaponBase3(n, six, cdRed)
-      : [Number(n.dmg_atk) || 0, Number(n.dmg_air) || 0, Number(n.dmg_siege) || 0]);
-    /* 文档给了系统级三行就以文档为准（游戏显示值；近防等隐藏系数反推不出来），
-       但节点/调校这些后加成的部分要按比例放大它，否则加点看不到变化 */
-    const r = multi ? weaponNodeRatio(n, cdRed, famA) : [1, 1];
-    const dk = ['dmg_atk', 'dmg_air', 'dmg_siege'];
-    const b3d = b3.map((v, i) => {
-      const dv = n[dk[i]];
-      return (dv === undefined || dv === null) ? v : Number(dv);
-    });
-    const s3 = [
-      (n.dmg_atk === undefined || n.dmg_atk === null) ? 1 : r[0],
-      (n.dmg_air === undefined || n.dmg_air === null) ? 1 : r[1],
-      (n.dmg_siege === undefined || n.dmg_siege === null) ? 1 : r[0]
-    ];
-    const p3 = [1 + pAtk / 100, 1 + pAir / 100, 1 + pSiege / 100];
-    out.dmg_atk += b3d[0] * s3[0] * m * p3[0] * cmOwn;
-    out.dmg_air += b3d[1] * s3[1] * m * p3[1] * cmOwn;
-    out.dmg_siege += b3d[2] * s3[2] * m * p3[2] * cmOwn;
+    const w2 = multi ? weaponSum2(n, cdRed, famA) : null;
+    const b2 = w2 || (six ? weaponBase2(n, six, cdRed)
+      : [Number(n.dmg_atk) || 0, Number(n.dmg_air) || 0]);
+    out.dmg_atk += b2[0] * m * (1 + pAtk / 100) * cmOwn;
+    out.dmg_air += b2[1] * m * (1 + pAir / 100) * cmOwn;
   });
   const cm = critMulOf(ship, alloc);
-  if (cm > 1) {
-    out.dmg_atk *= cm; out.dmg_air *= cm; out.dmg_siege *= cm;
-  }
+  if (cm > 1) { out.dmg_atk *= cm; out.dmg_air *= cm; }
+  out.dmg_atk = Math.round(out.dmg_atk * 10) / 10;
+  out.dmg_air = Math.round(out.dmg_air * 10) / 10;
   return out;
 }
 
@@ -1470,7 +1552,7 @@ function slotBaseVals(slotKey) {
   if (!ship) return null;
   const base = ship.base || {};
   const agg = slotAgg(slotKey);
-  /* 对舰/对空/攻城：逐系统按「周期比」折算，各系统 持续/冷却 不同，不能全局乘一个系数 */
+  /* 对舰/对空：逐系统按各自周期现算，各系统 持续/冷却/突防 不同，不能全局乘一个系数 */
   const sum = sysDmgSum(ship, sl.alloc);
   const st = sysTotals(ship);
   const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
@@ -1484,8 +1566,7 @@ function slotBaseVals(slotKey) {
     spd: effVal('spd', pick('spd', base.spd), { spd: Number(agg.move) || 0 }),
     repair: effVal('repair', pick('repair', base.repair), agg),
     dmg_atk: sum.dmg_atk,
-    dmg_air: sum.dmg_air,
-    dmg_siege: sum.dmg_siege
+    dmg_air: sum.dmg_air
   };
 }
 
@@ -1843,7 +1924,7 @@ function slotPresence(slotKey) {
 
 /* 效果键 → 中文名（新加的效果若不在表里，直接显示键名，保证看得见） */
 const EFF_CN = {
-  dmg: '伤害', dmg_atk_pct: '对舰伤害', dmg_air_pct: '防空伤害', dmg_siege_pct: '攻城伤害',
+  dmg: '伤害', dmg_atk_pct: '对舰伤害', dmg_air_pct: '防空伤害',
   cd: '冷却缩减', freq: '频率', dur: '持续缩短', cast: '持续缩短',
   acc: '通用命中', acc_plane: '舰载机命中', acc_small: '小型命中', acc_large: '大型命中',
   crit: '暴击伤害', crit_rate: '暴击率', critres: '抗暴', lock: '锁定', lockeff_pct: '锁敌效率',
@@ -1856,8 +1937,7 @@ const EFF_CN = {
 const CMP_SRC = {
   hull: ['hull'], armor: ['armor'], shield: ['shield'], eva: ['eva'],
   cruise: ['cruise', 'speed'], warp: ['warp'], spd: ['spd', 'move'], repair: ['repair'],
-  dmg_atk: ['dmg_atk', 'dmg', 'dmg_atk_pct'], dmg_air: ['dmg_air', 'dmg', 'dmg_air_pct'],
-  dmg_siege: ['dmg_siege', 'dmg', 'dmg_siege_pct']
+  dmg_atk: ['dmg_atk', 'dmg', 'dmg_atk_pct'], dmg_air: ['dmg_air', 'dmg', 'dmg_air_pct']
 };
 const CMP_USED = {};
 Object.keys(CMP_SRC).forEach(k => CMP_SRC[k].forEach(s => { CMP_USED[s] = 1; }));
@@ -3482,8 +3562,8 @@ function wizDelNode(si, x) {
 }
 /* —— 武器表（问卷里编辑 stats_norm.weapons[]）——
    文档重建后的武器系统逐把存六字段（单发 / 弹药 / 攻击次数 / 持续 / 冷却 / 门数），
-   外加族、对舰扣甲、校准系数 k。问卷里按行编辑，改完点「按六字段重算对舰存档」
-   只写对舰（对空 / 攻城有隐藏系数，保留存档值）。 */
+   外加族、对舰扣甲、校准系数 k、突防时间、对空命中率与协同效率。问卷里按行编辑，
+   改完点「按公式重算并写回」把对舰、对空两行存档刷新（存档只作对照，引擎按公式现算）。 */
 const WEP_FAMILIES = [['cannon', '通用火炮'], ['rail', '轨道炮'], ['pulse', '脉冲炮'],
   ['plasma', '等离子'], ['torpedo', '鱼雷'], ['missile', '导弹'], ['drone', '无人机'], ['other', '其它']];
 function wepArmor(fam) { return (fam === 'cannon' || fam === 'rail') ? 10 : 0; }
@@ -3506,39 +3586,42 @@ function wepCalc(sy) {
     const dmg = Number(w.dmg) || 0;
     if (!g || !dmg) return;
     const vol = Number(w.volley) || 0;
-    const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0));
+    const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0) + (Number(w.pen) || 0));
     const kk = Number(w.k) || 1;
-    atk += Math.max(0, dmg - Number(w.armor)) * vol / cyc * 60 * g * kk * cp;
-    air += dmg * vol / cyc * 60 * g * kk * 0.8 * cp;
+    atk += Math.max(0, dmg - Number(w.armor)) * vol / cyc * 60 * g * kk * cp + (Number(w.atk_add) || 0);
+    air += dmg * vol / cyc * 60 * g * kk * cp * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
 }
-/* 单把武器的对舰现算（和 wepCalc 同一口径，只用于表格里实时显示） */
+/* 单把武器的对舰 / 对空现算（和 wepCalc 同一口径，只用于卡片里实时显示） */
 function wepOne(w, pct) {
   const g = (w.guns === undefined || w.guns === null) ? 1 : (Number(w.guns) || 0);
-  if (!g) return 0;
+  if (!g) return [0, 0];
   const vol = Number(w.volley) || (Number(w.ammo) || 0) * (Number(w.atk) || 0) || 0;
-  const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0));
+  const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0) + (Number(w.pen) || 0));
   const dmg = Number(w.dmg) || 0;
   const arm = (w.armor === undefined || w.armor === null) ? 10 : Number(w.armor);
   const k = Number(w.k) || 1;
-  return Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * (1 + (Number(pct) || 0) / 100);
+  const f = 1 + (Number(pct) || 0) / 100;
+  return [Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * f + (Number(w.atk_add) || 0),
+    dmg * vol / cyc * 60 * g * k * f * wepHitOf(w) * wepCoopOf(w)];
 }
+
 function wizWeaponsBox(sy, rerender) {
   const box = el('div', 'wepbox');
   if (!sy.raw) sy.raw = {};
   const ws = Array.isArray(sy.raw.weapons) ? sy.raw.weapons : [];
   const cp = () => calibPctOf(sy.raw._calib);
   box.appendChild(el('div', 'wepnote', '武器表（' + (ws.length ? ws.length + ' 把' : '还没加武器')
-    + '）：逐把填 单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却；下面只按六字段现算「对舰」用来核对，'
-    + '对空 / 攻城 有隐藏系数，以存档三行为准。改完点「按六字段重算对舰存档」把对舰写回存档。'));
+    + '）：逐把填 单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却 / 突防，对空再填 命中率 与 协同效率；'
+    + '下面按公式实时算对舰 / 对空。改完点「按公式重算并写回」把两行存档刷新（存档只作对照）。'));
   const total = el('div', 'weptotal');
   const updTotal = () => {
-    let a = 0;
-    ws.forEach(w => { a += wepOne(w, cp()); });
+    let a = 0, b = 0;
+    ws.forEach(w => { const r = wepOne(w, cp()); a += r[0]; b += r[1]; });
     total.textContent = ws.length
-      ? '本系统合计（六字段现算，仅核对）：对舰 ' + fmtNum(Math.round(a * 10) / 10)
-        + ' / 分（门数为 0 的武器不计；对空 / 攻城以存档为准）'
+      ? '本系统合计（公式现算）：对舰 ' + fmtNum(Math.round(a * 10) / 10)
+        + ' / 分 · 对空 ' + fmtNum(Math.round(b * 10) / 10) + ' / 分（门数为 0 的武器不计）'
       : '';
   };
   ws.forEach((w, i) => {
@@ -3556,14 +3639,16 @@ function wizWeaponsBox(sy, rerender) {
 
     const r2 = el('div', 'wrow2');
     [['单发', 'dmg', '点'], ['弹药', 'ammo', ''], ['攻击次数', 'atk', ''],
-      ['持续', 'dur', 's'], ['冷却', 'cd', 's'], ['锁定', 'lock', 's']].forEach(([lb, k, un]) => {
+      ['持续', 'dur', 's'], ['冷却', 'cd', 's'], ['突防', 'pen', 's'],
+      ['命中率', 'aa_hit', ''], ['协同效率', 'aa_coop', '%'], ['锁定', 'lock', 's']].forEach(([lb, k, un]) => {
       wIn(r2, lb, w, k, 'number', null, un);
     });
 
     const sum = el('div', 'wsum');
     const updSum = () => {
       const r = wepOne(w, cp());
-      sum.textContent = '这把现算：对舰 ' + fmtNum(Math.round(r * 10) / 10) + ' / 分';
+      sum.textContent = '这把现算：对舰 ' + fmtNum(Math.round(r[0] * 10) / 10)
+        + ' / 分 · 对空 ' + fmtNum(Math.round(r[1] * 10) / 10) + ' / 分';
     };
     item.appendChild(r1);
     item.appendChild(r2);
@@ -3578,18 +3663,18 @@ function wizWeaponsBox(sy, rerender) {
   add.onclick = () => {
     if (!Array.isArray(sy.raw.weapons)) sy.raw.weapons = [];
     sy.raw.weapons.push({name: '新武器', family: 'cannon', dmg: 10, ammo: 1, atk: 1,
-      dur: 0, cd: 3, guns: 1, lock: 3, armor: 10, k: 1});
+      dur: 0, cd: 3, pen: 0, guns: 1, lock: 3, armor: 10, k: 1, aa_hit: 0.8, aa_coop: 100});
     sy.is_weapon = true;
     rerender();
   };
-  const calc = el('button', 'btn ghost', '按六字段重算对舰存档'); calc.type = 'button';
+  const calc = el('button', 'btn ghost', '按公式重算并写回'); calc.type = 'button';
   calc.onclick = () => {
     if (!ws.length) return toast('先增加一把武器', 'bad');
     const r = wepCalc(sy);
-    /* 只写对舰：对空/攻城在游戏里有隐藏系数，现算出来的是错的，必须保留文档存档值 */
     sy.raw.dmg_atk = Math.round(r[0] * 10) / 10;
-    toast('已按六字段写入对舰存档：' + fmtNum(sy.raw.dmg_atk)
-      + ' / 分（对空、攻城保持原值不动）', 'good');
+    sy.raw.dmg_air = Math.round(r[1] * 10) / 10;
+    toast('已写回存档：对舰 ' + fmtNum(sy.raw.dmg_atk) + ' / 分 · 对空 '
+      + fmtNum(sy.raw.dmg_air) + ' / 分', 'good');
     rerender();
   };
   acts.append(add, calc);
@@ -3770,7 +3855,7 @@ function wizRender() {
   } else if (st === 2) {
     const head = el('div', 'muted');
     head.innerHTML = '舰船本身没有基础属性：<b>结构值 / 抵抗伤害 / 护盾 / 速度</b> 都由系统提供；'
-      + '<b>对舰 / 对空 / 攻城</b> 只有「武器」类系统才有。这里填的是<b>系统基础值</b>，加点收益在第 4 步。';
+      + '<b>对舰 / 对空</b> 只有「武器」类系统才有。这里填的是<b>系统基础值</b>，加点收益在第 4 步。';
     b.appendChild(head);
     const sysgrid = el('div', 'wiz-sysgrid');
     b.appendChild(sysgrid);
@@ -3808,7 +3893,7 @@ function wizRender() {
       return keys.filter(k => map[k]).map(k => map[k]);
     };
     const WEP_FIELDS = [
-      ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'], ['dmg_siege', '攻城', '/分'],
+      ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'],
       /* 六字段：填齐这几个，引擎就按「单发 x 弹药 x 攻击次数 / 周期 x 门数」现算三路输出 */
       ['dmg', '单发伤害', '点'], ['ammo', '弹药数', ''], ['atk', '攻击次数', ''],
       ['guns', '门数', '门'], ['ammo_atk', '弹药数×攻击次数（旧）', ''],
@@ -3818,7 +3903,7 @@ function wizRender() {
     ];
     /* 多武器系统只填「三路存档 + 自带暴击」；单套六字段那些格子归武器表管，避免两处打架 */
     const WEP_TOTALS = [
-      ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'], ['dmg_siege', '攻城', '/分'],
+      ['dmg_atk', '对舰', '/分'], ['dmg_air', '对空', '/分'],
       ['crit_rate', '自带暴击率', '%'], ['crit', '自带暴击伤害', '%']
     ];
 
@@ -3829,7 +3914,7 @@ function wizRender() {
       const title = el('div', 'wiz-head');
       title.appendChild(el('b', '', '系统 ' + (si + 1) + '：' + (sy.name || '（未命名）')));
       const typeSel = el('select');
-      [['0', '功能系统（结构 / 护甲 / 动力…）'], ['1', '武器系统（对舰 / 对空 / 攻城）']].forEach(([v, t]) => {
+      [['0', '功能系统（结构 / 护甲 / 动力…）'], ['1', '武器系统（对舰 / 对空）']].forEach(([v, t]) => {
         const o = el('option', '', t); o.value = v; typeSel.appendChild(o);
       });
       typeSel.value = sy.is_weapon ? '1' : '0';
@@ -3852,17 +3937,17 @@ function wizRender() {
         if (sy.is_weapon) {
           /* 武器表：多武器系统在这里增删改，改完点「按六字段重算对舰存档」写回存档 */
           card.appendChild(wizWeaponsBox(sy, wizRender));
-          /* 自带暴击只抬本系统的对舰/对空/攻城：三行空着就白填，输入时实时说一声 */
+          /* 自带暴击只抬本系统的对舰/对空：两行空着就白填，输入时实时说一声 */
           const hint = el('div', 'muted');
           const upd = () => {
             const rw = sy.raw || {};
             const r = Number(rw.crit_rate) || 0, d = Number(rw.crit) || 0;
-            const hasDmg = rw.dmg_atk !== undefined || rw.dmg_air !== undefined || rw.dmg_siege !== undefined
+            const hasDmg = rw.dmg_atk !== undefined || rw.dmg_air !== undefined
               || !!weaponSixOf(rw) || !!weaponListOf(rw);
             if (!(r > 0 || d > 0)) { hint.textContent = ''; return; }
             if (!(r > 0 && d > 0)) { hint.textContent = '自带暴击只填了一格：暴击率和暴击伤害要都填才生效。'; return; }
-            if (!hasDmg) { hint.textContent = '自带暴击已填（×' + (1 + r * d / 10000).toFixed(2) + '），但对舰 / 对空 / 攻城都是空的：这三行没有数字可抬，先填伤害才看得到效果。'; return; }
-            hint.textContent = '自带暴击生效：本系统对舰 / 对空 / 攻城各 ×' + (1 + r * d / 10000).toFixed(2) + '。';
+            if (!hasDmg) { hint.textContent = '自带暴击已填（×' + (1 + r * d / 10000).toFixed(2) + '），但对舰 / 对空都是空的：这两行没有数字可抬，先填伤害才看得到效果。'; return; }
+            hint.textContent = '自带暴击生效：本系统对舰 / 对空各 ×' + (1 + r * d / 10000).toFixed(2) + '。';
           };
           grid.addEventListener('input', upd);
           upd();
@@ -3908,7 +3993,7 @@ function wizRender() {
     tail.innerHTML = '输入框按系统类型自动裁剪：只有「装甲系统」和「动力系统」需要填船体数值，其余系统只填模块名。'
       + '<b>结构值</b>最终会按「基础值 ×（1 + 加点收益%）」算；'
       + '武器系统用下面的<b>武器表</b>逐把填：单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却，'
-      + '点「按六字段重算对舰存档」只把对舰写回存档（对空 / 攻城有隐藏系数，不覆盖）。'
+      + '点「按公式重算并写回」把对舰、对空两行存档一起刷新（存档只作对照）。'
       + '老数据的单武器系统仍可只填六字段（引擎会自动现算），要扩成多武器就点「增加武器」。'
       + '最后两格「自带暴击率 / 自带暴击伤害」填该武器系统自带的暴击：三行各乘「1 + 暴击率% × 暴击伤害%」（如 30 与 50 → ×1.15），只作用于本系统；两格只填一格不生效。';
     b.appendChild(tail);
@@ -3941,7 +4026,7 @@ function wizRender() {
         'armor', 'crit_rate', 'crit', 'eff7587', 'eva', 'eva_missile', 'eva_torp',
         'lock', 'lockres', 'hull', 'move', 'repair', 'shield', 'warp', 'speed',
         'syshull', 'dmg_cannon', 'dmg_rail', 'dmg_pulse', 'dmg_missile', 'dmg_plasma',
-        'dmg_drone', 'dmg_atk_pct', 'dmg_air_pct', 'dmg_siege_pct', 'dur', 'warn', 'cd',
+        'dmg_drone', 'dmg_atk_pct', 'dmg_air_pct', 'dur', 'warn', 'cd',
         'cargo', 'repair_bonus_pct', 'intc', 'intc_torp', 'critres', 'plane',
         'p_acc', 'p_move', 'p_lock', 'p_freq', 'p_eva_missile'];
       /* 作用域 → 分组标题（顺序固定；引擎按 scope 决定这条加成加到哪） */
@@ -4478,7 +4563,7 @@ function wizEditOpen(sh) {
       name: sy.name, slot: sy.slot || '', tech_cap: +sy.tech_cap || 0,
       raw: raw,
       is_weapon: !!(sy.is_weapon || (raw.dmg_atk !== undefined || raw.dmg_air !== undefined
-        || raw.dmg_siege !== undefined || !!weaponSixOf(raw) || !!weaponListOf(raw))),
+        || !!weaponSixOf(raw) || !!weaponListOf(raw))),
       module: (sy.stats && sy.stats['模块']) || '',
       bays: wizBaysOf(sy, mod)});
     WIZ.orig.systems.push(sy.id);
@@ -6154,6 +6239,15 @@ $('#delBuild').onclick = async () => {
 };
 
 $('#undoBtn').onclick = undoStep;
+const _tvBtn = $('#treeViewBtn');
+if (_tvBtn) {
+  _tvBtn.onclick = () => {
+    S.treeView = (S.treeView === 'grid') ? 'list' : 'grid';
+    _tvBtn.textContent = (S.treeView === 'grid') ? '列表视图' : '网格预览';
+    toast(S.treeView === 'grid' ? '网格视图（只读原型）' : '列表视图', '');
+    renderTree();
+  };
+}
 
 ['click', 'change', 'input'].forEach(ev => {
   document.addEventListener(ev, e => {
@@ -6705,7 +6799,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.87';
+window.__APP_VER = '2026-11-19.90';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
