@@ -1040,10 +1040,17 @@ function treeGridCard(nd, sl, sy, code) {
   const parents = parList(nd.parent).map(id => sy.nodes.find(x => x.id === id)).filter(Boolean);
   const unlocked = !parents.length || parents.some(p => (sl.alloc[p.id] || 0) > 0);
   const maxed = nd.max_lv > 0 && lv >= nd.max_lv;
-  const d = el('div', 'tnode' + (unlocked ? '' : ' locked') + (maxed ? ' maxed' : ''));
+  const capN = Number(sy.tech_cap) || 0;
+  const activeN = sysActive(sy, sl);
+  const capped = capN > 0 && lv === 0 && activeN >= capN;
+  const invalid = lv > 0 && !unlocked;
+  const d = el('div', 'tnode' + (unlocked ? '' : ' locked') + (maxed ? ' maxed' : '')
+    + (capped ? ' capped' : '') + (invalid ? ' invalid' : ''));
   d.title = (nd.label || code || '') + '　' + lv + ' / ' + nd.max_lv
     + (parents.length ? '\n前置：' + parents.map(p => p.label).join(' 或 ') : '')
-    + (nd.note ? '\n' + nd.note : '');
+    + (nd.note ? '\n' + nd.note : '')
+    + (capped ? '\n可用节点已满：' + activeN + ' / ' + capN + '（先把某个节点减到 0）' : '')
+    + (invalid ? '\n⚠ 前置还没点，这一点现在不计入' : '');
   if (perLvOf(nd, treeEffKey(nd))) {
     const b = el('span', 'tbadge', '橙');
     b.title = '分段成长：逐级数值不同';
@@ -1068,7 +1075,26 @@ function treeGridCard(nd, sl, sy, code) {
     bP.onclick = (ev) => {
       ev.stopPropagation();
       const cur = sl.alloc[nd.id] || 0;
+      /* 前置：按当前加点实时判断（渲染后加点可能变了） */
+      const pars = parList(nd.parent).map(x => sy.nodes.find(y => y.id === x)).filter(Boolean);
+      if (pars.length && !pars.some(x => (sl.alloc[x.id] || 0) > 0)) {
+        return toast('先点「' + pars.map(x => x.label).join('」或「') + '」任一个', 'bad');
+      }
       if (cur >= nd.max_lv) { toast('这个节点已经满级了', ''); return; }
+      /* 可用节点：系统最多点亮 N 个节点（lv>0 的个数），不是技术值 */
+      if (cur === 0 && capN > 0 && activeN >= capN) {
+        return toast('「' + sy.name + '」可用节点 ' + capN + ' 个，已点亮 ' + activeN
+          + ' 个。先把不用的节点减到 0，再点新的。', 'bad');
+      }
+      /* 变形技术值（未填上限就不拦） */
+      const shp = shipOf(sl.ship);
+      if (shp && Number(shp.tech_total) > 0) {
+        const total = (shp.systems || []).reduce((a, x) => a + sysUsed(x, sl), 0);
+        const delta = costOf(nd, cur);
+        if (total + delta > Number(shp.tech_total)) {
+          return toast('变形技术值不够：还要 ' + delta + '，只剩 ' + (Number(shp.tech_total) - total), 'bad');
+        }
+      }
       sl.alloc[nd.id] = cur + 1;
       renderTree(); recalc(S.cur);
     };
@@ -1152,7 +1178,14 @@ function treeGridEl(sy, sl) {
   const bL = el('button', 'btn ghost tiny', '◀'); bL.type = 'button'; bL.title = '向左'; 
   const bR = el('button', 'btn ghost tiny', '▶'); bR.type = 'button'; bR.title = '向右'; 
   bar.appendChild(bL); bar.appendChild(bR);
-  bar.appendChild(el('span', 'dim', '共 ' + Math.max(1, cols.length) + ' 层：可拖动 / 滚轮横向查看'));
+  const _capN = Number(sy.tech_cap) || 0;
+  const _actN = sysActive(sy, sl);
+  const _capTxt = _capN
+    ? ' · 可用节点 ' + _actN + '/' + _capN
+      + (_actN > _capN ? '（超出 ' + (_actN - _capN) + '）' : (_actN >= _capN ? '（已满）' : ''))
+    : '';
+  bar.appendChild(el('span', 'dim' + (_capN && _actN > _capN ? ' capbad' : ''),
+    '共 ' + Math.max(1, cols.length) + ' 层：可拖动 / 滚轮横向查看' + _capTxt));
   outer.appendChild(bar);
   const wrap = el('div', 'tgridwrap');
   outer.appendChild(wrap);
@@ -1353,12 +1386,19 @@ function nodeCard(nd, sl, sy, code) {
   const lv = sl.alloc[nd.id] || 0;
   const parents = parList(nd.parent).map(id => sy.nodes.find(x => x.id === id)).filter(Boolean);
   const unlocked = !parents.length || parents.some(p => (sl.alloc[p.id] || 0) > 0);
-  const d = el('div', 'node' + (unlocked ? '' : ' locked'));
+  const capN = Number(sy.tech_cap) || 0;
+  const activeN = sysActive(sy, sl);
+  const capped = capN > 0 && lv === 0 && activeN >= capN;
+  const invalid = lv > 0 && !unlocked;
+  const d = el('div', 'node' + (unlocked ? '' : ' locked') + (capped ? ' capped' : '')
+    + (invalid ? ' invalid' : ''));
   const top = el('div', 'nm');
   if (code) top.appendChild(el('span', 'wiz-code', code + ' '));
   top.appendChild(el('span', '', nd.label));
   top.appendChild(el('span', 'muted', lv + '/' + nd.max_lv));
   d.appendChild(top);
+  if (capped) d.title = '可用节点已满：' + activeN + ' / ' + capN + '（先把某个节点减到 0 再点新节点）';
+  if (invalid) d.title = '⚠ 前置还没点，这一点现在不计入';
   if (!unlocked) {
     const pn = parents.length ? parents.map(p => p.label).join('」或「') : '前置';
     d.title = '这一项还点不了：需要先把「' + pn + '」中的任意一个点到至少 1 级';
@@ -1527,7 +1567,9 @@ function repairDpmOf(n, cdRed) {
     : ((Number(n.ammo) || 0) * (Number(n.atk) || 0)) || 1;
   const guns = Number(n.guns) || 1;
   const k = Number(n.k) || 1;
-  return one * vol * 60 / cyc * guns * k * (1 + calibPctOf(n._calib) / 100);
+  /* 与引擎同口径：先把「每台每分钟」向下取整，再乘台数 */
+  const perGun = Math.floor(one * (1 + calibPctOf(n._calib) / 100) * vol * 60 / cyc * k);
+  return perGun * guns;
 }
 /* 多武器两路现算：与 engine._weapon_out 的 weapons 分支同口径
    周期 = 持续 + 冷却 + 突防；对舰扣族护甲，对空 × 命中率 × 协同效率；
@@ -7177,7 +7219,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.119';
+window.__APP_VER = '2026-11-20.122';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

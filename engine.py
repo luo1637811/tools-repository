@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """纯计算：舰船/模块/舱位校验与指标计算（不碰 HTTP、不碰数据库）。"""
 import json
+import math
 
 from util import num, j
 from db import conn
@@ -625,8 +626,11 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         _rred = (num(_sagg.get("cd"), 0) + num(_sagg.get("freq"), 0)
                  + num(agg.get("cd"), 0) + num(agg.get("freq"), 0))
         _rcyc = max(0.5, _rdur + _rcd * (1 - _rred / 100.0))
-        _repair_total += (_one * _rvol * 60.0 / _rcyc * _rguns * _rk
-                          * (1 + (agg.get("repair", 0) + _rcp) / 100))
+        # 游戏口径：先把「每台每分钟」向下取整，再乘台数
+        # 例：675×4×60/39.2 = 4132.65 → 4132；×3 = 12396（若最后取整会得 12397）
+        _per_gun = math.floor(_one * (1 + (agg.get("repair", 0) + _rcp) / 100.0)
+                              * _rvol * 60.0 / _rcyc * _rk)
+        _repair_total += _per_gun * _rguns
     repair = _repair_total if _repair_seen else num(base.get("repair"), 0) * (1 + agg.get("repair", 0) / 100)
     # 巡航 / 曲率：系统基础值 ×（1 + 加成%）
     cruise_v = num(base.get("cruise")) * (1 + agg.get("speed", 0) / 100)

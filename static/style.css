@@ -1184,3 +1184,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf
 .tgridwrap::-webkit-scrollbar-track { background: rgba(255,255,255,.05); border-radius: 6px; }
 .tgridwrap.dragging { cursor: grabbing; }
 .techbar .bar i.over{background:linear-gradient(90deg,#f87171,#fbbf24)}
+
+/* 加点限制态：可用节点已满（不能点新节点）/ 前置未点（这一点不计入） */
+.tnode.capped { opacity: .42; filter: grayscale(1); }
+.tnode.capped .tstep { display: none; }
+.tnode.invalid { outline: 1px dashed #f87171; outline-offset: -2px; }
+.tnode.invalid .tname::after { content: " ⚠"; color: #f87171; }
+.tghint .capbad { color: #f87171; }
+.node.capped { opacity: .5; }
+.node.capped .stepper { display: none; }
+.node.invalid { box-shadow: 0 0 0 1px rgba(248,113,113,.55) inset; }
+.node.invalid .node-label::after { content: " ⚠"; color: #f87171; }
