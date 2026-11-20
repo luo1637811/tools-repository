@@ -479,7 +479,8 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
             _ef = nd["effect"]
             _cr_amt, _cd_amt = 0.0, 0.0
             for k, v in _ef.items():
-                if k not in _rules():
+                # 效果库（effects 表）里登记了 scope 的键也算「有口径」，新加的效果不用改代码
+                if k not in _rules() and k not in EFF_SCOPE:
                     unapplied.add(k)
                 amt, _arr = _lv_amt(nd, k, v, lv)
                 if not amt:
