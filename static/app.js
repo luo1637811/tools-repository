@@ -717,8 +717,9 @@ const SYS_KIND_META = {
   '动力': { tag: '动力', cls: 'tagk tk-drive',
     label: '动力系统（巡航 / 曲率 / 突防 / 闪避）',
     tip: '动力系统：提供 巡航 / 曲率 / 突防速度 / 通用闪避' },
-  '维修': { tag: '维修', cls: 'tagk tk-repair', label: '维修系统（维修量）',
-    tip: '维修系统：提供 维修量（单次 × 工作量 × 60÷周期 × 台数）' },
+  '维修': { tag: '维修', cls: 'tagk tk-repair', label: '维修系统（单次维修量 / 工作次数 / 冷却）',
+    tip: '维修系统：单次维修量 × 工作次数 × 60÷(持续+冷却) × 设备数 × 系数，再乘（1+调校%）；'
+      + '锁定时间是记录项，不参与计算' },
   '能源': { tag: '能源', cls: 'tagk', label: '能源系统',
     tip: '能源系统：能量输出 / 储能，不提供船体数值' },
   '指挥': { tag: '指挥', cls: 'tagk', label: '指挥系统',
@@ -891,6 +892,7 @@ function renderBaseAttrs() {
     { k: 'eva', t: '通用闪避', w: 92, num: 1, pct: 1 },
     { k: 'speed', t: '巡航 / 曲率', w: 118, num: 1 },
     { k: 'spd', t: '突防速度', w: 86, num: 1 },
+    { k: 'unit', t: '维修单位', w: 84 },
     { k: 'repair', t: '维修量', w: 86, num: 1 },
     { k: 'dmg_atk', t: '对舰', w: 94, num: 1, weapon: 1 },
     { k: 'dmg_air', t: '对空', w: 86, num: 1, weapon: 1 },
@@ -978,6 +980,11 @@ function renderBaseAttrs() {
       /* 武器列：文档值按加点放大，没存档就现算一格 */
       const wv = weaponCellOf(x, c.k);
       if (wv !== undefined) return '<td class="num">' + fmtNum(wv) + '</td>';
+    }
+    /* 维修单位是文字（无人机 / 维修设备），不能走下面按数字加成的通用分支 */
+    if (c.k === 'unit') {
+      const u3 = n.unit;
+      return '<td' + (u3 ? '' : ' class="dim"') + '>' + (u3 ? mhEsc(u3) : '—') + '</td>';
     }
     let v = n[c.k];
     /* 维修量：按「单次 × 工作量 × 60÷周期 × 设备数 × 调校」现算，不直接显示存档值 */
@@ -4225,6 +4232,18 @@ function wizRender() {
       ['eva', '通用闪避', '%'],
       ['repair_bonus_pct', '维修加成', '%']
     ];
+    /* 维修系统的字段原本只写在 KIND_KEYS 里，FUNC_FIELDS 没有对应条目，
+       kindFieldsFor 一过滤就只剩「系统结构值」—— 单次维修量 / 冷却 / 工作次数都填不进去。
+       这里把维修真正会用到的键补齐（口径与 engine._repair_total、repairDpmOf 一致）：
+       单次 × 工作次数 × 60÷(持续+冷却) × 设备数 × 系数，锁定时间只是记录项。 */
+    const REPAIR_FIELDS = [
+      ['repair', '单次维修量', '点'], ['volley', '工作次数', '次'],
+      ['dur', '持续时间', 's'], ['cd', '冷却时间', 's'],
+      ['guns', '维修设备数', '台'], ['k', '维修系数', ''],
+      ['lock', '锁定时间', 's'], ['syshull', '系统结构值', '点']
+    ];
+    /* 维修单位：无人机（单次 500 那类）/ 维修设备（375 那类）。只做记录与展示，不进公式。 */
+    const REPAIR_UNITS = [['', '（未填）'], ['无人机', '维修无人机'], ['维修设备', '维修设备']];
     /* 按系统类型裁剪：只显示这个系统真正会提供的数值项。
        装甲类 → 结构值/抵抗伤害/护盾值/维修加成；动力类 → 巡航/曲率/突防/闪避；
        能源类 → 能量输出/储能；其余（指挥/信息/搭载…）不提供船体数值，只留模块名。 */
@@ -4240,12 +4259,16 @@ function wizRender() {
     const KIND_KEYS = {
       '装甲': ['hull', 'syshull', 'armor', 'shield', 'repair_bonus_pct'],
       '动力': ['cruise', 'warp', 'spd', 'eva', 'syshull'],
-      '维修': ['repair', 'dur', 'cd', 'ammo', 'atk', 'guns', 'lock', 'syshull']
+      '维修': ['unit', 'repair', 'volley', 'dur', 'cd', 'guns', 'k', 'lock', 'syshull']
     };
+    /* 字段表：key / 显示名 / 单位 / 控件类型（不写就是 number）/ 选项。
+       unit 走下拉，其余都是数字框。 */
     const kindFieldsFor = (kind) => {
       const map = {};
       FUNC_FIELDS.forEach(f => { map[f[0]] = f; });
+      REPAIR_FIELDS.forEach(f => { map[f[0]] = f; });
       map.syshull = ['syshull', '系统结构值', '点'];
+      map.unit = ['unit', '维修单位', '', 'select', REPAIR_UNITS];
       return (KIND_KEYS[kind] || ['syshull']).map(k => map[k]).filter(Boolean);
     };
     /* 老系统没填 sys_kind（3 艘早期船）：先按数值 / 名字推断一个，只在内存里写回 sy，
@@ -4302,18 +4325,18 @@ function wizRender() {
         card.appendChild(el('div', 'muted', '该类型不提供船体数值，只填模块名即可。'));
       } else {
         const grid = el('div', 'wiz-grid2');
-        fields.forEach(([k, label, unit]) => {
-          /* 不预置 0：留空显示灰色 0 占位，填了才落数 */
-          wIn(grid, label, sy.raw, k, 'number', null, unit);
+        fields.forEach(([k, label, unit, ctl, opts]) => {
+          /* 不预置 0：留空显示灰色 0 占位，填了才落数；unit 是下拉（维修单位） */
+          wIn(grid, label, sy.raw, k, ctl || 'number', opts || null, unit);
         });
         card.appendChild(grid);
         if (kind === '维修') {
           const qb = el('div', 'wepstd');
-          qb.appendChild(el('span', 'dim', '单次维修量快捷：'));
-          [['500', 500, '维修无人机'], ['375', 375, '维修设备']].forEach(([lb, v, t]) => {
+          qb.appendChild(el('span', 'dim', '一键套用常见档：'));
+          [['500', 500, '无人机', '维修无人机'], ['375', 375, '维修设备', '维修设备']].forEach(([lb, v, u2, t]) => {
             const b = el('button', 'btn ghost tiny', lb); b.type = 'button';
-            b.title = '一键设为 ' + lb + '（' + t + '）';
-            b.onclick = () => { sy.raw.repair = v; wizRender(); };
+            b.title = '单次维修量设为 ' + lb + '，维修单位设为「' + t + '」';
+            b.onclick = () => { sy.raw.repair = v; sy.raw.unit = u2; wizRender(); };
             qb.appendChild(b);
           });
           card.appendChild(qb);
@@ -4321,14 +4344,18 @@ function wizRender() {
           const updR = () => {
             const rw = sy.raw || {};
             const dpm = repairDpmOf(rw);
+            const vol = (Number(rw.volley) > 0 ? Number(rw.volley)
+              : (Number(rw.ammo) || 0) * (Number(rw.atk) || 0)) || 1;
+            const unit = rw.unit ? ('维修单位 ' + rw.unit + '；') : '';
             rh.textContent = dpm
-              ? ('分钟维修量 = 单次 ' + fmtNum(rw.repair) + ' × 工作量 '
-                + fmtNum((Number(rw.ammo) || 0) * (Number(rw.atk) || 0) || rw.volley || 1)
-                + ' × 60÷(' + fmtNum(rw.dur || 0) + '+' + fmtNum(rw.cd || 0) + ')（未含加点缩减）× '
-                + fmtNum(rw.guns || 1) + ' 台 ×（1+调校%） = ' + fmtNum(Math.round(dpm * 10) / 10) + ' / 分')
-              : '填了「单次维修量」就会按公式现算分钟维修量。';
+              ? (unit + '分钟维修量 = 单次 ' + fmtNum(rw.repair) + ' × 工作次数 ' + fmtNum(vol)
+                + ' × 60÷(' + fmtNum(rw.dur || 0) + '+' + fmtNum(rw.cd || 0) + ')（未含加点缩减）'
+                + ' × ' + fmtNum(rw.guns || 1) + ' 台 × 系数 ' + fmtNum(rw.k || 1)
+                + ' ×（1+调校%） = ' + fmtNum(Math.round(dpm * 10) / 10) + ' / 分')
+              : (unit + '填了「单次维修量」就会按公式现算分钟维修量。');
           };
           grid.addEventListener('input', updR);
+          grid.addEventListener('change', updR);
           updR();
           card.appendChild(rh);
         }
@@ -4359,7 +4386,8 @@ function wizRender() {
     });
 
     const tail = el('div', 'muted');
-    tail.innerHTML = '输入框按系统类型自动裁剪：只有「装甲系统」和「动力系统」需要填船体数值，其余系统只填模块名。'
+    tail.innerHTML = '输入框按系统类型自动裁剪：「装甲系统」填结构值 / 抵抗 / 护盾，「动力系统」填巡航 / 曲率 / 突防 / 闪避，'
+      + '「维修系统」填单次维修量 / 维修单位 / 工作次数 / 持续 / 冷却 / 设备数 / 维修系数 / 锁定时间，其余系统只填模块名。'
       + '<b>结构值</b>最终会按「基础值 ×（1 + 加点收益%）」算；'
       + '武器系统用下面的<b>武器表</b>逐把填：单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却，'
       + '点「按公式重算并写回」把对舰、对空两行存档一起刷新（存档只作对照）。'
@@ -4941,6 +4969,23 @@ function wizTree(sysIdx) {
   list.forEach(x => { if (!out.some(o => o.idx === x.i)) out.push({ code: '?', idx: x.i, node: x.n }); });
   return out;
 }
+/* 问卷里的 stats_norm 规整：数字键去 0（0 当清空）、空串/空数组/空对象丢掉；
+   数组/对象（weapons[]、bays、fam_bonus、_calib）必须原样带回去，否则多武器数据会丢；
+   字符串键（unit 维修单位）原样保留 —— 走 Number() 会变 NaN 被吞掉，等于填了没存。 */
+const WIZ_STR_KEYS = { unit: 1 };
+function wizNormOf(raw) {
+  const num = {};
+  Object.keys(raw || {}).forEach(k => {
+    const v0 = raw[k];
+    if (v0 === undefined || v0 === null || v0 === '') return;
+    if (WIZ_STR_KEYS[k]) { const sv = String(v0).trim(); if (sv) num[k] = sv; return; }
+    if (Array.isArray(v0)) { if (v0.length) num[k] = v0; return; }
+    if (typeof v0 === 'object') { if (Object.keys(v0).length) num[k] = v0; return; }
+    const v = Number(v0);
+    if (isFinite(v) && v !== 0) num[k] = v;
+  });
+  return num;
+}
 function wizPayload() {
   const sid = WIZ.ship.id || ('ship_' + Date.now());
   /* 编辑模式沿用原 id；新建模式按序号生成 */
@@ -4949,15 +4994,7 @@ function wizPayload() {
     /* 数字照旧（0 当清空），但数组/对象必须原样带回去：
        weapons[]（文档导入的多武器）、bays、fam_bonus、_calib 一旦被过滤掉，
        在问卷里保存一次系统就会退化成「首武器兼容字段」，多武器数据直接丢失。 */
-    const num = {};
-    Object.keys(s.raw || {}).forEach(k => {
-      const raw = s.raw[k];
-      if (raw === undefined || raw === null || raw === '') return;
-      if (Array.isArray(raw)) { if (raw.length) num[k] = raw; return; }
-      if (typeof raw === 'object') { if (Object.keys(raw).length) num[k] = raw; return; }
-      const v = Number(raw);
-      if (isFinite(v) && v !== 0) num[k] = v;
-    });
+    const num = wizNormOf(s.raw);
     const stats = Object.assign({}, s._stats || {});
     if (s.module) stats['模块'] = s.module; else delete stats['模块'];
     return {id: sids[i], ship: sid, slot: s.slot, name: s.name,
@@ -7304,7 +7341,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-21.124';
+window.__APP_VER = '2026-11-21.125';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
