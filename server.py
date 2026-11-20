@@ -432,7 +432,11 @@ def init_db():
             ("effects", "kind", "TEXT"), ("effects", "target", "TEXT"), ("effects", "scope", "TEXT"),
             ("effects", "ord", "INTEGER DEFAULT 0"), ("effects", "builtin", "INTEGER DEFAULT 0"),
             ("effects", "deprecated", "INTEGER DEFAULT 0"),
-            ("planes", "bay_kind", "TEXT"), ("planes", "deprecated", "INTEGER DEFAULT 0"),
+            ("planes", "bay_kind", "TEXT"),
+        # ---- 效果申请带上字段/类型/作用域 ----
+        ("effect_requests", "efield", "TEXT"),
+        ("effect_requests", "kind", "TEXT"),
+        ("effect_requests", "scope", "TEXT"), ("planes", "deprecated", "INTEGER DEFAULT 0"),
             # ---- schema v4 ----
             ("nodes", "per_lv", "TEXT"),
             # 这几列建库脚本里没有、旧迁移也没补过：新装（空库）会缺，导致系统数值全部读不到
@@ -502,6 +506,12 @@ def init_db():
         for _i, (_fid, _fname, _farm) in enumerate(FAMILIES_SEED):
             c.execute("INSERT OR IGNORE INTO families(id, name, armor, ord, note) VALUES(?,?,?,?,?)",
                       (_fid, _fname, _farm, _i * 10, ""))
+        # 每个族都保证有「族伤害」效果行，这样问卷里新增的族伤害节点能直接进计算
+        for _fid, _fname in c.execute("SELECT id, name FROM families").fetchall():
+            _k = "dmg_" + str(_fid)
+            _scope = "system" if _fid == "drone" else "weapon"
+            c.execute("INSERT OR IGNORE INTO effects(id, name, kind, target, scope, unit, note) "
+                      "VALUES(?,?, 'pct', ?, ?, '%', '')", (_k, str(_fname) + "伤害", _k, _scope))
 
         # 节点效果：只在首次初始化时播种一次（写 settings.effects_seeded 标记）。
         # 之后不再自动补齐、也不再纠正名字——用户在界面上删掉的效果不会在重启后复活。
@@ -1463,7 +1473,8 @@ TABLES = {
     "ships": ("id", ["id", "cmd_type", "name", "cls", "kind", "tech_total", "base", "note", "pgroup",
                       "owner_org", "owner_alliance"]),
     "systems": ("id", ["id", "ship", "slot", "name", "tech_cap", "stats", "bays", "note", "ord", "no_nodes", "stats_norm", "is_weapon"]),
-    "effects": ("id", ["id", "name", "unit", "note"]),
+    "effects": ("id", ["id", "name", "unit", "note", "kind", "target", "scope",
+                        "ord", "builtin", "deprecated"]),
     "nodes": ("id", ["id", "sys", "parent", "label", "max_lv", "cost", "costs", "per_lv", "effect",
               "note", "checked_at", "checked_by"]),
     "modules": ("id", ["id", "ship", "slot", "name", "mkind", "bays", "sys",
@@ -2181,14 +2192,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(400, "名称最多 20 个字")
         unit = (data.get("unit") or "").strip()[:8]
         note = (data.get("note") or "").strip()[:120]
+        efield = (data.get("field") or "").strip()[:40]
+        kind = (data.get("kind") or "pct").strip()
+        scope = (data.get("scope") or "system").strip()
+        if kind not in ("pct", "add", "note"):
+            kind = "pct"
+        if scope not in ("ship", "system", "weapon", "plane", "note"):
+            scope = "system"
         with conn() as c:
             if c.execute("SELECT id FROM effects WHERE name=?", (name,)).fetchone():
                 return self.err(409, "效果库里已经有「%s」，直接选用即可" % name)
             if c.execute("SELECT id FROM effect_requests WHERE name=? AND status='待处理'", (name,)).fetchone():
                 return self.err(409, "「%s」已有待处理申请，请等待审批" % name)
-            c.execute("INSERT INTO effect_requests(user_id,username,name,unit,note,status,created_at)"
-                      " VALUES(?,?,?,?,?,?,?)",
-                      (u["id"], u["username"], name, unit, note, "待处理", now()))
+            c.execute("INSERT INTO effect_requests(user_id,username,name,unit,note,efield,kind,scope,"
+                      "status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (u["id"], u["username"], name, unit, note, efield, kind, scope, "待处理", now()))
             rid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
         log("申请新增效果", u["username"], name, note)
         return self.send_json({"ok": True, "id": rid})
@@ -2205,9 +2223,22 @@ class Handler(BaseHTTPRequestHandler):
             if (r["status"] or "") != "待处理":
                 return self.err(409, "这条申请已经处理过了")
             if act == "approve":
-                eid = "e" + str(int(time.time() * 1000))[-9:]
-                c.execute("INSERT INTO effects(id,name,unit,note) VALUES(?,?,?,?)",
-                          (eid, r["name"], r["unit"] or "", r["note"] or r["name"]))
+                keys = set(x[1] for x in c.execute("PRAGMA table_info(effect_requests)").fetchall())
+                _f = (r["efield"] if "efield" in keys else "") or ""
+                _k = (r["kind"] if "kind" in keys else "") or "pct"
+                _sc = (r["scope"] if "scope" in keys else "") or "system"
+                # 字段已存在就沿用它，避免同一字段两条效果
+                row = c.execute("SELECT id FROM effects WHERE id=?", (_f,)).fetchone() if _f else None
+                if row:
+                    eid = _f
+                elif _f:
+                    eid = _f
+                    c.execute("INSERT INTO effects(id,name,kind,target,scope,unit,note) VALUES(?,?,?,?,?,?,?)",
+                              (eid, r["name"], _k, _f, _sc, r["unit"] or "", r["note"] or r["name"]))
+                else:
+                    eid = "e" + str(int(time.time() * 1000))[-9:]
+                    c.execute("INSERT INTO effects(id,name,unit,note,kind,scope) VALUES(?,?,?,?,?,?)",
+                              (eid, r["name"], r["unit"] or "", r["note"] or r["name"], _k, _sc))
                 st = "已批准"
             elif act == "reject":
                 st = "已驳回"
@@ -2365,6 +2396,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(403, "效果库影响全站计算，需要「效果库·改」权限")
         if table == "effects" and (u.get("role") or "") != SUPER_ROLE:
             return self.err(403, "删除效果需要超级管理员")
+        if table == "effects":
+            used = 0
+            with conn() as c:
+                for (eff,) in c.execute("SELECT effect FROM nodes").fetchall():
+                    try:
+                        keys = json.loads(eff or "{}")
+                    except Exception:
+                        continue
+                    if isinstance(keys, dict) and rid in keys:
+                        used += 1
+            if used:
+                return self.err(409, "还有 %d 个节点在用「%s」：先把这些节点改成别的效果，再删。" % (used, rid))
         if not self.need_conf(rid):
             return
         with conn() as c:

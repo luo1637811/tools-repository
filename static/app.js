@@ -4109,18 +4109,195 @@ function wizRender() {
     if (!WIZ.systems.length) {
       b.appendChild(el('div', 'muted', '先回上一步加系统，加点必须挂在某个系统下。'));
     } else {
-      const mkEffect = async () => {
-        const nm = prompt('新效果叫什么？（中文名，例如「暴击伤害」）');
-        if (!nm) return;
-        const id = 'e' + Date.now().toString(36);
-        try {
-          await api('/api/data/effects', { method: 'PUT', body: { id, name: nm, unit: '', note: nm } });
-          await loadBlueprints(true);
-          WIZ.dNode.effect = id;
-          toast('已加入效果库：' + nm, 'good');
-          wizRender();
-        } catch (e) { toast('保存失败：' + e.message, 'bad'); }
+      /* ---- 效果库：新建 / 修改 / 删除 ---- */
+      const EFF_FIELDS = [
+        /* key, 名称, 单位, 类型(pct/add), 作用域 */
+        ['cargo', '仓储量', '点', 'add', 'ship'],
+        ['lockres', '反锁定', '%', 'pct', 'ship'],
+        ['repair_bonus_pct', '受维修效果', '%', 'pct', 'ship'],
+        ['eva_missile', '导弹闪避', '%', 'pct', 'ship'],
+        ['speed', '巡航速度', '%', 'pct', 'ship'],
+        ['critres', '暴击抵抗', '%', 'pct', 'ship'],
+        ['warp', '曲率速度', '%', 'pct', 'ship'],
+        ['armor', '物理护甲', '点', 'add', 'ship'],
+        ['hull', '结构', '点', 'add', 'ship'],
+        ['shield', '能量护盾', '点', 'add', 'ship'],
+        ['selfheal', '自维修', '%', 'pct', 'ship'],
+        ['eva', '通用闪避', '%', 'pct', 'ship'],
+        ['eva_torp', '鱼雷闪避', '%', 'pct', 'ship'],
+        ['dmg', '伤害', '%', 'pct', 'system'],
+        ['dmg_drone', '无人机伤害', '%', 'pct', 'system'],
+        ['crit', '暴击伤害', '%', 'pct', 'system'],
+        ['crit_rate', '暴击率', '%', 'pct', 'system'],
+        ['syshull', '系统结构值', '%', 'pct', 'system'],
+        ['repair', '维修量', '点', 'add', 'system'],
+        ['cd', '冷却时间', '%', 'pct', 'weapon'],
+        ['acc_large', '大型命中', '%', 'pct', 'weapon'],
+        ['dmg_atk_pct', '对舰伤害', '%', 'pct', 'weapon'],
+        ['dmg_missile', '导弹/鱼雷伤害', '%', 'pct', 'weapon'],
+        ['acc_small', '小型命中', '%', 'pct', 'weapon'],
+        ['intc', '拦截率', '%', 'pct', 'weapon'],
+        ['dur', '持续时间', '%', 'pct', 'weapon'],
+        ['dmg_siege_pct', '攻城伤害', '%', 'pct', 'weapon'],
+        ['dmg_cannon', '火炮伤害', '%', 'pct', 'weapon'],
+        ['dmg_plasma', '等离子伤害', '%', 'pct', 'weapon'],
+        ['dmg_pulse', '脉冲炮伤害', '%', 'pct', 'weapon'],
+        ['dmg_rail', '轨道炮伤害', '%', 'pct', 'weapon'],
+        ['acc', '通用命中', '%', 'pct', 'weapon'],
+        ['lock', '锁定', '%', 'pct', 'weapon'],
+        ['warn', '锁定效率', '%', 'pct', 'weapon'],
+        ['dmg_air_pct', '防空伤害', '%', 'pct', 'weapon'],
+        ['freq', '频率', '%', 'pct', 'weapon'],
+        ['intc_torp', '鱼雷拦截率', '%', 'pct', 'weapon'],
+        ['move', '突防速度', '%', 'pct', 'plane'],
+        ['acc_plane', '舰载机命中', '%', 'pct', 'plane'],
+        ['plane', '载机伤害', '%', 'pct', 'plane'],
+        ['p_freq', '载机冷却时间', '%', 'pct', 'plane'],
+        ['p_acc', '载机命中率', '%', 'pct', 'plane'],
+        ['p_eva_missile', '载机对导弹闪避', '%', 'pct', 'plane'],
+        ['p_move', '载机突防时间', '%', 'pct', 'plane'],
+        ['p_lock', '载机选目标时间', '%', 'pct', 'plane'],
+      ];
+      /* 武器族是数据表 families 驱动的：新加一个族，这里自动多一个「XX伤害」字段 */
+      const effFieldsAll = () => {
+        const out = EFF_FIELDS.slice();
+        ((S.bp && S.bp.families) || []).forEach(f => {
+          const k = 'dmg_' + f.id;
+          if (out.some(r => r[0] === k)) return;
+          out.push([k, (f.name || f.id) + '伤害', '%', 'pct', f.id === 'drone' ? 'system' : 'weapon']);
+        });
+        return out;
       };
+      const effFieldOf = (k) => effFieldsAll().find(r => r[0] === k) || null;
+      const effectDialog = (curId, asRequest) => {
+        const cur = ((S.bp && S.bp.effects) || []).find(e => e.id === curId) || null;
+        const wrap = el('div', 'dlgwrap');
+        const box = el('div', 'dlg effdlg');
+        wrap.appendChild(box);
+        box.appendChild(el('div', 'dlgh',
+          asRequest ? '申请新增效果（提交后等超管批准）'
+                    : (cur ? ('修改效果：' + (cur.name || cur.id)) : '新建效果')));
+        const body = el('div', 'dlgb');
+        box.appendChild(body);
+
+        const st = {
+          name: cur ? (cur.name || '') : '',
+          field: cur ? (cur.target || cur.id) : 'dmg',
+          unit: cur ? (cur.unit || '') : '%',
+          kind: cur ? (cur.kind || 'pct') : 'pct',
+          scope: cur ? (cur.scope || 'system') : 'system',
+          note: cur ? (cur.note || '') : ''
+        };
+        if (cur && !effFieldOf(st.field)) st.field = '__custom__';
+
+        const row = (label, node) => { const r = el('div', 'row'); r.appendChild(el('span', '', label)); r.appendChild(node); body.appendChild(r); return r; };
+        const iName = el('input'); iName.type = 'text'; iName.value = st.name; iName.placeholder = '中文名，例如「火炮伤害」';
+        row('名称', iName);
+
+        const opts = effFieldsAll().map(r => [r[0], r[1] + '（' + r[2] + '，' + r[4] + '作用域）']);
+        opts.push(['__custom__', '自定义键（引擎不认识，只能当说明，不参与计算）']);
+        const selF = el('select');
+        opts.forEach(([v, t]) => { const o = el('option', '', t); o.value = v; selF.appendChild(o); });
+        selF.value = st.field;
+        row('字段（决定加在哪里）', selF);
+
+        const iUnit = el('input'); iUnit.type = 'text'; iUnit.value = st.unit; iUnit.placeholder = '% / 点 / 秒';
+        row('单位（只影响显示）', iUnit);
+
+        const selK = el('select');
+        [['pct', '百分比（%）：数值按百分比加'], ['add', '直接数值（点）：数值直接加']].forEach(([v, t]) => { const o = el('option', '', t); o.value = v; selK.appendChild(o); });
+        selK.value = st.kind;
+        row('类型（决定怎么加）', selK);
+
+        const selS = el('select');
+        [['ship', '整舰：加到舰体属性'], ['system', '系统内：只影响这个系统'], ['weapon', '武器：只影响本系统武器'],
+         ['plane', '舰载机：机库 / 载机口径'], ['note', '说明：不参与计算']].forEach(([v, t]) => { const o = el('option', '', t); o.value = v; selS.appendChild(o); });
+        selS.value = st.scope;
+        row('作用域（决定加到哪一层）', selS);
+
+        const iNote = el('input'); iNote.type = 'text'; iNote.value = st.note; iNote.placeholder = '可选：给人看的说明';
+        row('说明', iNote);
+
+        const tip = el('div', 'muted', '');
+        body.appendChild(tip);
+        const refreshTip = () => {
+          const f = effFieldOf(selF.value);
+          if (!f) {
+            tip.textContent = '⚠ 自定义键：只有键名正好是引擎读的字段（如 dmg_ion、hull、cd）才会进计算；'
+              + '随便起的名字只会当说明。不确定就回上面选一个字段。';
+            return;
+          }
+          tip.textContent = '这个效果会按「' + f[1] + '」计入计算：作用域 ' + selS.value + '，类型 ' + selK.value
+            + '，单位 ' + (iUnit.value || '无') + '（单位只影响显示，不影响算法）。';
+        };
+        selF.onchange = () => {
+          const f = effFieldOf(selF.value);
+          if (f) { iUnit.value = f[2]; selK.value = f[3]; selS.value = f[4]; }
+          refreshTip();
+        };
+        [iUnit, selK, selS].forEach(x => x.addEventListener('input', refreshTip));
+        refreshTip();
+
+        const foot = el('div', 'dlgf');
+        box.appendChild(foot);
+        const bCancel = el('button', 'btn ghost', '取消'); bCancel.type = 'button';
+        bCancel.onclick = () => wrap.remove();
+        foot.appendChild(bCancel);
+        if (cur && !asRequest) {
+          const bDel = el('button', 'btn danger', '删除'); bDel.type = 'button';
+          bDel.onclick = async () => {
+            const used = WIZ.nodes.filter(y => y.effect === cur.id).length;
+            const warn = cur.builtin
+              ? '\n这是内置效果：引擎里仍写着它的计算口径，删掉只是从下拉里隐藏；'
+                + '有节点在用时服务端会拒绝删除。'
+              : '';
+            if (!confirm('删除效果「' + (cur.name || cur.id) + '」？' + (used ? '\n当前有 ' + used + ' 个节点在用它。' : '') + warn)) return;
+            try {
+              await api('/api/data/effects/' + encodeURIComponent(cur.id), { method: 'DELETE', confirm: cur.id });
+              await loadBlueprints(true);
+              if (WIZ.dNode.effect === cur.id) WIZ.dNode.effect = 'dmg';
+              wrap.remove(); toast('已删除效果', 'good'); wizRender();
+            } catch (e) { toast('删除失败：' + e.message, 'bad'); }
+          };
+          foot.appendChild(bDel);
+        }
+        const bSave = el('button', 'btn', '保存'); bSave.type = 'button';
+        bSave.onclick = async () => {
+          const f = effFieldOf(selF.value);
+          const nm = iName.value.trim() || (f ? f[1] : '新效果');
+          const id = cur ? cur.id : (f ? f[0] : 'e' + Date.now().toString(36));
+          const payload = { id, name: nm, unit: iUnit.value.trim(), kind: selK.value, scope: selS.value, note: iNote.value.trim(), target: id };
+          /* 选的字段已经在效果库里：直接复用，不覆盖它的名称 */
+          if (!cur && ((S.bp.effects || []).some(e => e.id === id))) {
+            WIZ.dNode.effect = id;
+            wrap.remove();
+            toast('效果库里已有「' + (effName(id)) + '」，已直接选用', 'good');
+            wizRender();
+            return;
+          }
+          try {
+            if (asRequest) {
+              await api('/api/effreq/create', { method: 'POST',
+                body: { name: nm, unit: payload.unit, field: payload.target, kind: payload.kind,
+                        scope: payload.scope, note: payload.note } });
+              wrap.remove();
+              toast('已提交申请，等超级管理员批准后即可选用', 'good');
+              return;
+            }
+            await api('/api/data/effects', { method: 'PUT', body: payload });
+            await loadBlueprints(true);
+            if (!cur) WIZ.dNode.effect = id;
+            wrap.remove();
+            toast(cur ? '已保存效果' : '已加入效果库：' + nm, 'good');
+            wizRender();
+          } catch (e) { toast((asRequest ? '提交失败：' : '保存失败：') + e.message, 'bad'); }
+        };
+        foot.appendChild(bSave);
+        /* 问卷本身是模态 <dialog>（在 top layer），弹窗必须挂在它里面，否则会被盖住 */
+        (document.getElementById('wizDlg') || document.body).appendChild(wrap);
+        iName.focus();
+      };
+      const mkEffect = async () => { effectDialog(''); };
 
       // —— 节点：横向结构（一层一列，点卡片就地展开编辑）——
       const treeCard = el('div', 'card2');
@@ -4241,45 +4418,11 @@ function wizRender() {
         effSel.value = WIZ.dNode.effect || 'dmg';
         effSel.onchange = async () => {
           if (effSel.value === '__custom__') {
-            const nm = prompt('这个节点加的是什么效果？（中文名，例：暴击伤害）');
-            if (!nm) { effSel.value = WIZ.dNode.effect || 'dmg'; return; }
-            const key = 'e' + Date.now().toString(36);
-            WIZ.dNode.effect = key;
-            api('/api/data/effects', {method: 'PUT', body: {id: key, name: nm, unit: '', note: nm}})
-              .then(() => loadBlueprints(true))
-              .then(() => { toast('已加入效果库：' + nm, 'good'); wizRender(); })
-              .catch(e => toast('保存失败：' + e.message, 'bad'));
+            effectDialog('');
+            effSel.value = WIZ.dNode.effect || 'dmg';
           } else if (effSel.value === '__edit__') {
-            const curE = WIZ.dNode.effect || '';
-            const curName = effName(curE);
-            const builtin = NODE_EFFECT_IDS.indexOf(curE) >= 0;
-            const tip = builtin
-              ? '「' + curName + '」是内置效果：只能改名，不能删除。\n\n输入新名称后回车；直接回车=不改。'
-              : '「' + curName + '」\n\n输入新名称 = 改名\n输入 DEL = 删除这个效果\n直接回车 = 什么都不做';
-            const ans = prompt(tip, curName);
-            if (ans === null) { effSel.value = curE; return; }
-            const v = ans.trim();
-            if (!v || v === curName) { effSel.value = curE; return; }
-            if (!builtin && v.toUpperCase() === 'DEL') {
-              const used = WIZ.nodes.filter(y => y.effect === curE).length;
-              if (!confirm('删除效果「' + curName + '」？' + (used ? '\n有 ' + used + ' 个节点在用它，删掉后会变成失效引用。' : ''))) {
-                effSel.value = curE; return;
-              }
-              try {
-                await api('/api/data/effects/' + encodeURIComponent(curE), { method: 'DELETE', confirm: curE });
-                await loadBlueprints(true);
-                WIZ.dNode.effect = 'dmg';
-                toast('已删除效果', 'good');
-                wizRender();
-              } catch (err) { toast('删除失败：' + err.message, 'bad'); effSel.value = curE; }
-              return;
-            }
-            try {
-              await api('/api/data/effects', { method: 'PUT', body: { id: curE, name: v } });
-              await loadBlueprints(true);
-              toast('已改名：' + v, 'good');
-              wizRender();
-            } catch (err) { toast('改名失败：' + err.message, 'bad'); effSel.value = curE; }
+            effectDialog(WIZ.dNode.effect || '');
+            effSel.value = WIZ.dNode.effect || 'dmg';
           } else if (effSel.value) {
             const wasCrit = !!critPairKey(WIZ.dNode.effect), willCrit = !!critPairKey(effSel.value);
             WIZ.dNode.effect = effSel.value;
@@ -4292,15 +4435,7 @@ function wizRender() {
           f.appendChild(bNew);
         } else {
           const bReq = el('button', 'btn sm ghost', '申请新增效果…'); bReq.type = 'button';
-          bReq.onclick = async () => {
-            const nm = prompt('要新增的效果名称（例：暴击伤害）');
-            if (!nm) return;
-            const un = prompt('单位（可留空，例：% / 点 / 秒）', '') || '';
-            try {
-              await api('/api/effreq/create', { method: 'POST', body: { name: nm.trim(), unit: un.trim() } });
-              toast('已提交申请，超级管理员批准后即可选用', 'good');
-            } catch (err) { toast('提交失败：' + err.message, 'bad'); }
-          };
+          bReq.onclick = () => effectDialog('', true);
           f.appendChild(bReq);
           f.appendChild(el('div', 'muted', '新增效果需超管批准；进度可在「人员管理 → 效果申请」查看。'));
         }
@@ -6905,7 +7040,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.97';
+window.__APP_VER = '2026-11-20.100';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
@@ -6967,7 +7102,9 @@ try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
     d.className = 'histitem';
     d.style.gridTemplateColumns = '1fr 90px 130px';
     const a = document.createElement('div');
-    a.textContent = (r.name || '') + (r.unit ? '（' + r.unit + '）' : '') + ' · ' + (r.username || '');
+    a.textContent = (r.name || '') + (r.unit ? '（' + r.unit + '）' : '')
+        + (r.efield ? ' · 字段 ' + r.efield : '') + (r.scope ? ' · ' + r.scope : '')
+        + ' · ' + (r.username || '');
     const b = document.createElement('div');
     b.className = 'muted';
     b.textContent = r.status || '';

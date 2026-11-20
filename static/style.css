@@ -1165,3 +1165,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf
 /* 问卷里的网格：节点卡按层排成网格 */
 .tgrid-edit { display: grid; gap: 10px 16px; padding: 8px 0 2px; align-items: start; }
 .tgrid-edit .wiz-node { margin: 0; }
+
+/* 效果库弹窗：挂在问卷模态里，尺寸与普通弹窗一致 */
+#wizDlg .dlg.effdlg { width: min(680px, 92vw); max-width: 680px; height: auto; max-height: 86vh; }
+.effdlg .dlgb { padding: 12px 16px 4px; }
+.effdlg .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.effdlg .row > span { flex: 0 0 168px; color: var(--dim); font-size: 12.5px; }
+.effdlg .row > input, .effdlg .row > select { flex: 1 1 auto; min-width: 0; }
+.effdlg .muted { margin: 10px 0 4px; line-height: 1.5; }
+.effdlg .dlgf { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 16px 14px; }
