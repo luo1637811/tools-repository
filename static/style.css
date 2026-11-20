@@ -328,7 +328,7 @@ table.base-tbl{table-layout:auto;min-width:100%}
 .base-tbl td:last-child{white-space:normal;word-break:break-word;max-width:320px;color:var(--dim);font-size:12px;line-height:1.45}
 .base-tbl td:first-child{white-space:nowrap}
 
-.base-tbl td.bcell{white-space:nowrap;color:#8fc2ff;font-size:12px}
+.base-tbl td.bcell{white-space:normal;word-break:break-word;max-width:280px;line-height:1.4;color:#8fc2ff;font-size:12px}
 
 /* 问卷第 3 步：系统基础值两列排布 */
 .wiz-grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;margin:6px 0}
@@ -1183,3 +1183,4 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf
 .tgridwrap::-webkit-scrollbar-thumb { background: rgba(56,189,248,.35); border-radius: 6px; }
 .tgridwrap::-webkit-scrollbar-track { background: rgba(255,255,255,.05); border-radius: 6px; }
 .tgridwrap.dragging { cursor: grabbing; }
+.techbar .bar i.over{background:linear-gradient(90deg,#f87171,#fbbf24)}

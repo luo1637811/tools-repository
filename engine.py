@@ -503,7 +503,10 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                         crit_show[k] = crit_show.get(k, 0) + amt
                     if k == "repair":
                         agg[k] = agg.get(k, 0) + amt      # 维修量目前只有整舰一个口径
-                    if not _is_wpn and not _has_bay and k not in ("repair", "crit_rate", "crit", "syshull"):
+                    _is_repair_sys = bool(num((sy.get("norm") or {}).get("repair"), 0))
+                    if not _is_wpn and not _has_bay and k not in (
+                            "repair", "crit_rate", "crit", "syshull") and not (
+                            _is_repair_sys and k in ("cd", "freq")):
                         _dropped.append(k)
                     disp[k] = disp.get(k, 0) + amt
                 else:
@@ -615,7 +618,12 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         _rk = num(_n.get("k"), 1) or 1
         _rc = _n.get("_calib") if isinstance(_n.get("_calib"), dict) else {}
         _rcp = num(_rc.get("pct"), 0) if _rc.get("on") else 0
-        _repair_total += (_one * _rvol * 60.0 / max(0.5, _rdur + _rcd) * _rguns * _rk
+        # 维修周期：冷却吃「频率 / 冷却缩减」（本系统节点 + 整舰口径）；持续时间不吃策略类加成
+        _sagg = sys_agg.get((_sy.get("slot") or "").strip(), {}) or {}
+        _rred = (num(_sagg.get("cd"), 0) + num(_sagg.get("freq"), 0)
+                 + num(agg.get("cd"), 0) + num(agg.get("freq"), 0))
+        _rcyc = max(0.5, _rdur + _rcd * (1 - _rred / 100.0))
+        _repair_total += (_one * _rvol * 60.0 / _rcyc * _rguns * _rk
                           * (1 + (agg.get("repair", 0) + _rcp) / 100))
     repair = _repair_total if _repair_seen else num(base.get("repair"), 0) * (1 + agg.get("repair", 0) / 100)
     # 巡航 / 曲率：系统基础值 ×（1 + 加成%）

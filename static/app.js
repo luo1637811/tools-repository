@@ -907,7 +907,7 @@ function renderBaseAttrs() {
     let v = n[c.k];
     /* 维修量：按「单次 × 工作量 × 60÷周期 × 设备数 × 调校」现算，不直接显示存档值 */
     if (c.k === 'repair') {
-      const rd = repairDpmOf(n);
+      const rd = repairDpmOf(n, (Number(x.a.cd) || 0) + (Number(x.a.freq) || 0));
       if (rd) v = rd; else if (v !== undefined && v !== null) v = undefined;
     }
     if (c.k === 'spd' && v !== undefined) v = effVal('spd', v, { spd: Number(x.a.move) || 0 });
@@ -927,7 +927,7 @@ function renderBaseAttrs() {
       + '</td></tr>';
 
   if (tiles) {
-    const st = sysTotals(ship);
+    const st = sysTotals(ship, (S.slots[S.cur] || {}).alloc);
     const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
     const armor = pick('armor', base.armor) + (Number(agg.armor) || 0);
     const shield = pick('shield', base.shield) + (Number(agg.shield) || 0);
@@ -1307,7 +1307,7 @@ function renderTree() {
   $('#techUsed').textContent = used;
   const capEl = $('#techCap');
   if (capEl) {
-    capEl.textContent = ship.tech_total || 0;
+    capEl.textContent = (Number(ship.tech_total) || 0) || '未填';
     capEl.style.cursor = 'pointer';
     capEl.title = '点一下可以改「整舰技术值上限」';
     capEl.onclick = async () => {
@@ -1325,7 +1325,16 @@ function renderTree() {
       } catch (e) { toast('保存失败：' + e.message, 'bad'); }
     };
   }
-  $('#techBar').style.width = Math.min(100, used / Math.max(1, ship.tech_total) * 100) + '%';
+  /* 上限没填（=0）时不要把进度条拉满：显示空条并提示去填；超出上限时变红 */
+  const _cap = Number(ship.tech_total) || 0;
+  const _bar = $('#techBar');
+  if (_bar) {
+    _bar.style.width = _cap ? (Math.min(100, used / _cap * 100) + '%') : '0%';
+    _bar.classList.toggle('over', !!_cap && used > _cap);
+    _bar.title = _cap
+      ? (used > _cap ? ('已点 ' + used + '，超出上限 ' + _cap) : '')
+      : '整舰技术值上限还没填（点上面的「未填」可以设置；不影响加点计算）';
+  }
 
   const chips = $('#sysChips'); chips.innerHTML = '';
   ship.systems.forEach(x => {
@@ -1508,16 +1517,17 @@ function calibPctOf(cal) {
 }
 
 /* 维修系统：分钟维修量 = 单次 × 工作量 × 60÷(持续+冷却) × 设备数 × k ×（1 + 调校%） */
-function repairDpmOf(n) {
+function repairDpmOf(n, cdRed) {
   if (!n) return 0;
   const one = Number(n.repair) || 0;
   if (!one) return 0;
   const dur = Number(n.dur) || 0, cd = Number(n.cd) || 0;
+  const cyc = Math.max(0.5, dur + cd * (1 - (Number(cdRed) || 0) / 100));
   const vol = Number(n.volley) > 0 ? Number(n.volley)
     : ((Number(n.ammo) || 0) * (Number(n.atk) || 0)) || 1;
   const guns = Number(n.guns) || 1;
   const k = Number(n.k) || 1;
-  return one * vol * 60 / Math.max(0.5, dur + cd) * guns * k * (1 + calibPctOf(n._calib) / 100);
+  return one * vol * 60 / cyc * guns * k * (1 + calibPctOf(n._calib) / 100);
 }
 /* 多武器两路现算：与 engine._weapon_out 的 weapons 分支同口径
    周期 = 持续 + 冷却 + 突防；对舰扣族护甲，对空 × 命中率 × 协同效率；
@@ -1586,7 +1596,18 @@ function slotAgg(slotKey) {
 }
 
 /* 结构值 / 抵抗伤害 / 护盾 以「系统数值」为准：ships.base 只是旧副本，可能没跟着系统更新 */
-function sysTotals(ship) {
+function sysCdRedOf(sy, alloc) {
+  let r = 0;
+  (sy.nodes || []).forEach(nd => {
+    const lv = Number((alloc || {})[nd.id] || 0);
+    if (!lv) return;
+    let eff = nd.effect;
+    if (typeof eff === 'string') { try { eff = JSON.parse(eff || '{}'); } catch (e) { eff = {}; } }
+    r += nodeLvAmt(nd, 'cd', lv, (eff || {}).cd) + nodeLvAmt(nd, 'freq', lv, (eff || {}).freq);
+  });
+  return r;
+}
+function sysTotals(ship, alloc) {
   /* 舰船自身没有基础属性，下面 8 项全部来自系统数值（含「加力引擎」这类提供闪避的系统） */
   const KEYS = ['hull', 'armor', 'shield', 'eva', 'cruise', 'warp', 'spd', 'repair'];
   const sum = {}, has = {};
@@ -1598,7 +1619,7 @@ function sysTotals(ship) {
       if (n[k] === undefined || n[k] === null || n[k] === '') return;
       let v = Number(n[k]) || 0;
       /* 维修量按公式现算（单次 × 工作量 × 60÷周期 × 设备数 × 调校） */
-      if (k === 'repair') { const rd = repairDpmOf(n); if (!rd) return; v = rd; }
+      if (k === 'repair') { const rd = repairDpmOf(n, sysCdRedOf(sy, alloc)); if (!rd) return; v = rd; }
       sum[k] += v;
       has[k] = 1;
     });
@@ -1714,7 +1735,7 @@ function slotBaseVals(slotKey) {
   const agg = slotAgg(slotKey);
   /* 对舰/对空：逐系统按各自周期现算，各系统 持续/冷却/突防 不同，不能全局乘一个系数 */
   const sum = sysDmgSum(ship, sl.alloc);
-  const st = sysTotals(ship);
+  const st = sysTotals(ship, (S.slots[S.cur] || {}).alloc);
   const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
   return {
     hull: (Number(pick('hull', base.hull)) || 0)
@@ -4177,7 +4198,7 @@ function wizRender() {
             rh.textContent = dpm
               ? ('分钟维修量 = 单次 ' + fmtNum(rw.repair) + ' × 工作量 '
                 + fmtNum((Number(rw.ammo) || 0) * (Number(rw.atk) || 0) || rw.volley || 1)
-                + ' × 60÷(' + fmtNum(rw.dur || 0) + '+' + fmtNum(rw.cd || 0) + ') × '
+                + ' × 60÷(' + fmtNum(rw.dur || 0) + '+' + fmtNum(rw.cd || 0) + ')（未含加点缩减）× '
                 + fmtNum(rw.guns || 1) + ' 台 ×（1+调校%） = ' + fmtNum(Math.round(dpm * 10) / 10) + ' / 分')
               : '填了「单次维修量」就会按公式现算分钟维修量。';
           };
@@ -7156,7 +7177,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.117';
+window.__APP_VER = '2026-11-20.118';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
