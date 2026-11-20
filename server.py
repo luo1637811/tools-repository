@@ -600,6 +600,21 @@ def init_db():
             if _drop:
                 print("[%s] 效果库清理：删掉 %d 条未使用的旧效果行" % (now(), len(_drop)),
                       flush=True)
+        # 一次性改名（2026-11-20）：lock=锁定时间缩减、warn=防空锁定效率，
+        # 并把历史上「标签与效果对不上」的节点标签一并纠正（只动这两类）
+        if not c.execute("SELECT 1 FROM settings WHERE k='eff_lock_rename_v1'").fetchone():
+            for _id, _nm in (("lock", "锁定时间缩减"), ("warn", "防空锁定效率")):
+                c.execute("UPDATE effects SET name=?, unit='%' WHERE id=?", (_nm, _id))
+            _fixed = 0
+            for _id, _nm in (("lock", "锁定时间缩减"), ("warn", "防空锁定效率")):
+                cur2 = c.execute(
+                    "UPDATE nodes SET label=? WHERE effect LIKE ? AND label IN ('频率', '预警', '锁定', '锁定效率')",
+                    (_nm, '%"' + _id + '"%'))
+                _fixed += cur2.rowcount or 0
+            c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('eff_lock_rename_v1','1')")
+            print("[%s] 效果改名：锁定→锁定时间缩减、预警→防空锁定效率；纠正节点标签 %d 个"
+                  % (now(), _fixed), flush=True)
+
         # 老数据回填：cls（更细）优先，其次 kind；只填空值，不覆盖用户改过的
         _CMAP = (("super", ("超主力舰",), ("航母", "超大型")),
                  ("main", ("主力舰",), ("主力舰", "大型")),

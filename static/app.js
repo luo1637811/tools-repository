@@ -2107,7 +2107,7 @@ const EFF_CN = {
   dmg: '伤害', dmg_atk_pct: '对舰伤害', dmg_air_pct: '防空伤害',
   cd: '冷却缩减', freq: '频率', dur: '持续缩短', cast: '持续缩短',
   acc: '通用命中', acc_plane: '舰载机命中', acc_small: '小型命中', acc_large: '大型命中',
-  crit: '暴击伤害', crit_rate: '暴击率', critres: '抗暴', lock: '锁定', lockeff_pct: '锁敌效率',
+  crit: '暴击伤害', crit_rate: '暴击率', critres: '抗暴', lock: '锁定时间缩减', lockeff_pct: '锁敌效率',
   eva: '通用闪避', eva_missile: '导弹闪避', intc: '拦截率', focus: '锁定优先',
   range: '目标范围', selfheal: '自维修', syshull: '系统结构', shield: '护盾', armor: '护甲',
   hull: '结构', repair: '维修', speed: '巡航', warp: '曲率',
@@ -4279,8 +4279,8 @@ function wizRender() {
         ['dmg_pulse', '脉冲炮伤害', '%', 'pct', 'weapon'],
         ['dmg_rail', '轨道炮伤害', '%', 'pct', 'weapon'],
         ['acc', '通用命中', '%', 'pct', 'weapon'],
-        ['lock', '锁定', '%', 'pct', 'weapon'],
-        ['warn', '锁定效率', '%', 'pct', 'weapon'],
+        ['lock', '锁定时间缩减', '%', 'pct', 'weapon'],
+        ['warn', '防空锁定效率', '%', 'pct', 'weapon'],
         ['dmg_air_pct', '防空伤害', '%', 'pct', 'weapon'],
         ['freq', '频率', '%', 'pct', 'weapon'],
         ['intc_torp', '鱼雷拦截率', '%', 'pct', 'weapon'],
@@ -7177,7 +7177,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.118';
+window.__APP_VER = '2026-11-20.119';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

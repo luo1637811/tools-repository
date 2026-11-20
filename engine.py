@@ -504,8 +504,10 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
                     if k == "repair":
                         agg[k] = agg.get(k, 0) + amt      # 维修量目前只有整舰一个口径
                     _is_repair_sys = bool(num((sy.get("norm") or {}).get("repair"), 0))
+                    # lock / warn 是「记录项」（锁定时间、锁定效率），不参与任何出数，
+                    # 挂在非武器系统上也不该报「没有落点」
                     if not _is_wpn and not _has_bay and k not in (
-                            "repair", "crit_rate", "crit", "syshull") and not (
+                            "repair", "crit_rate", "crit", "syshull", "lock", "warn") and not (
                             _is_repair_sys and k in ("cd", "freq")):
                         _dropped.append(k)
                     disp[k] = disp.get(k, 0) + amt
