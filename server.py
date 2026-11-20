@@ -274,6 +274,74 @@ def _import_ships_seed(c):
         return "舰船种子导入失败：%s: %s" % (type(e).__name__, e)
 
 
+# ---- 系统类型回填：只补 systems.sys_kind 这一列 ----
+# 早期 3 艘船（太阳鲸 / 索姆河之影 / 维塔斯B010）共 9 个系统没填类型：装甲、动力、火炮
+# 这些行照样有数值，只是标签空着，基础加成表 / 问卷里只能靠猜。
+# 判定口径与 static/app.js 的 sysKindOf() 完全一致：先看 stats_norm 的键，再退回系统名。
+# 只写「空值」行；已经填过的不动。**不碰 nodes / effects / modules**——节点效果以线上为准，
+# 这里只补一个类型标签，不影响任何计算公式。
+SYS_KIND_BY_STATS = (
+    ("装甲", ("hull", "armor", "shield")),
+    ("维修", ("repair",)),
+    ("武器", ("dmg_atk", "dmg_air", "weapons")),
+    ("动力", ("cruise", "warp", "spd", "eva", "eva_pct")),
+    ("仓储", ("cargo",)),
+    ("搭载", ("bay_plane", "bay_boat", "bay_drone")),
+)
+SYS_KIND_BY_NAME = (
+    ("装甲", "装甲"), ("动力", "动力|引擎|推进"), ("维修", "维修"),
+    ("指挥", "指挥"), ("能源", "能源|供电|储能"), ("仓储", "仓储|货舱"),
+    ("搭载", "搭载|坞舱|机库"), ("武器", "武器|火炮|舰炮|炮|导弹|鱼雷|轰炸"),
+    ("辅助", "辅助|探测|雷达|信息"),
+)
+
+
+def _guess_sys_kind(name, norm):
+    """推断系统类型：数值键优先，其次名字；认不出返回空串（保持空，不硬塞「其他」）。"""
+    n = norm if isinstance(norm, dict) else {}
+    for kind, keys in SYS_KIND_BY_STATS:
+        for k in keys:
+            if n.get(k) is not None:
+                return kind
+    # 武器六字段（单发 × 弹药 × 攻击次数）不一定带 dmg_atk / dmg_air，也一样算武器
+    if n.get("dmg") is not None and n.get("ammo") is not None:
+        return "武器"
+    nm = str(name or "")
+    for kind, pat in SYS_KIND_BY_NAME:
+        if re.search(pat, nm):
+            return kind
+    return ""
+
+
+def _fill_sys_kind(c):
+    """给类型空着的系统补上 sys_kind（幂等：只填空，不覆盖已有值）。返回提示文字。"""
+    try:
+        rows = c.execute("SELECT id, name, stats_norm FROM systems"
+                         " WHERE TRIM(COALESCE(sys_kind,''))=''").fetchall()
+        if not rows:
+            return ""
+        hit = {}
+        for r in rows:
+            try:
+                norm = j(r["stats_norm"])
+            except Exception:          # 单行 stats_norm 坏了不该拖住其它行
+                norm = {}
+            kind = _guess_sys_kind(r["name"], norm if isinstance(norm, dict) else {})
+            if not kind:
+                continue
+            c.execute("UPDATE systems SET sys_kind=? WHERE id=?"
+                      " AND TRIM(COALESCE(sys_kind,''))=''", (kind, r["id"]))
+            hit[kind] = hit.get(kind, 0) + 1
+        n = sum(hit.values())
+        if not n:
+            return ""
+        order = [k for k, _ in SYS_KIND_BY_STATS] + ["指挥", "辅助", "其他"]
+        parts = ["%s %d" % (k, hit[k]) for k in order if hit.get(k)]
+        return "系统类型回填：补上 %d 个系统（%s）" % (n, "、".join(parts))
+    except Exception as e:
+        return "系统类型回填失败：%s: %s" % (type(e).__name__, e)
+
+
 def _dedupe_duplicate_ships(c):
     """同名舰船去重（一次性）：保留「不是 ship_* 生成的、内容最多的」那条。
 
@@ -358,6 +426,7 @@ def init_db():
     fresh = not os.path.exists(DB_PATH)
     _seed_msg = ""
     _dedupe_msg = ""
+    _kind_msg = ""
     with conn() as c:
         c.executescript(SCHEMA)
         c.execute("""CREATE TABLE IF NOT EXISTS signups(
@@ -649,6 +718,8 @@ def init_db():
         # 舰船数据随代码走（deploy/ships_seed.json），按 version 幂等导入
         _seed_msg = _import_ships_seed(c)
         _dedupe_msg = _dedupe_duplicate_ships(c)
+        # 种子导入之后再补类型：种子里的老系统 sys_kind 是空的，导入会把它带回来
+        _kind_msg = _fill_sys_kind(c)
         if c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             ts = now()
             c.executemany(
@@ -660,6 +731,8 @@ def init_db():
         print("[" + now() + "] " + _seed_msg, flush=True)
     if _dedupe_msg:
         print("[" + now() + "] " + _dedupe_msg, flush=True)
+    if _kind_msg:
+        print("[" + now() + "] " + _kind_msg, flush=True)
 
 
 class SSEHub:
@@ -1487,7 +1560,7 @@ TABLES = {
     "attrs": ("id", ["id", "name", "unit", "note", "ord"]),
     "ships": ("id", ["id", "cmd_type", "name", "cls", "kind", "tech_total", "base", "note", "pgroup",
                       "owner_org", "owner_alliance"]),
-    "systems": ("id", ["id", "ship", "slot", "name", "tech_cap", "stats", "bays", "note", "ord", "no_nodes", "stats_norm", "is_weapon"]),
+    "systems": ("id", ["id", "ship", "slot", "name", "tech_cap", "stats", "bays", "note", "ord", "no_nodes", "stats_norm", "is_weapon", "sys_kind"]),
     "effects": ("id", ["id", "name", "unit", "note", "kind", "target", "scope",
                         "ord", "builtin", "deprecated"]),
     "nodes": ("id", ["id", "sys", "parent", "label", "max_lv", "cost", "costs", "per_lv", "effect",

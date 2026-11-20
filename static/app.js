@@ -699,6 +699,81 @@ async function loadSettings() {
   } catch (e) { /* 未登录也能读 */ }
 }
 
+/* ---------- 系统类型：一份定义，基础加成表与问卷共用 ----------
+   类型的唯一来源是 systems.sys_kind（数据管理 → 系统 里那一列）。
+   以前基础加成表只分「武器 / 功能」两档：装甲、动力、维修、搭载…全折进「功能」，
+   看不出这一行到底是什么系统、提供哪些数值。现在按 sys_kind 拆成具体类型，
+   每类只在自己的标签上说清提供什么（例如结构值 / 抵抗伤害只认装甲系统）。
+   老数据（3 艘早期船共 9 个系统）没填 sys_kind：基础加成表按 stats_norm 的键、再按系统名
+   推断一个类型来显示（只显示，不回写数据库）；问卷打开时会把推断结果放进内存，保存才落库。
+   要真正定死，去「数据管理 → 系统」把 sys_kind 补上。 */
+const SYS_KINDS = ['武器', '装甲', '动力', '能源', '指挥', '维修', '搭载', '仓储', '辅助', '其他'];
+const SYS_KIND_META = {
+  '武器': { tag: '武器', cls: 'tagw', label: '武器系统（对舰 / 对空）',
+    tip: '武器系统：提供 对舰 / 对空' },
+  '装甲': { tag: '装甲', cls: 'tagk tk-armor',
+    label: '装甲系统（结构值 / 抵抗 / 护盾 / 受维修）',
+    tip: '装甲系统：提供 结构值 / 抵抗伤害 / 护盾值 / 受维修加成（只有这一类有这四项）' },
+  '动力': { tag: '动力', cls: 'tagk tk-drive',
+    label: '动力系统（巡航 / 曲率 / 突防 / 闪避）',
+    tip: '动力系统：提供 巡航 / 曲率 / 突防速度 / 通用闪避' },
+  '维修': { tag: '维修', cls: 'tagk tk-repair', label: '维修系统（维修量）',
+    tip: '维修系统：提供 维修量（单次 × 工作量 × 60÷周期 × 台数）' },
+  '能源': { tag: '能源', cls: 'tagk', label: '能源系统',
+    tip: '能源系统：能量输出 / 储能，不提供船体数值' },
+  '指挥': { tag: '指挥', cls: 'tagk', label: '指挥系统',
+    tip: '指挥系统：指挥值，不提供船体数值' },
+  '搭载': { tag: '搭载', cls: 'tagk tk-bay', label: '搭载系统',
+    tip: '搭载系统：提供 舱位（战机 / 护航艇 / 无人机）' },
+  '仓储': { tag: '仓储', cls: 'tagk', label: '仓储', tip: '仓储：仓储量' },
+  '辅助': { tag: '辅助', cls: 'tagk', label: '辅助系统',
+    tip: '辅助系统：探测 / 支援类，不提供船体数值' },
+  '其他': { tag: '其他', cls: 'tagk', label: '其他', tip: '其他：还没分类的系统' }
+};
+/* 名字兜底只在 sys_kind 空着时才用；装甲 / 动力 排在武器前面，
+   「装甲系统」「动力系统」这类名字不会被后面的 /炮/ 之类抢走。 */
+const SYS_KIND_BY_NAME = [
+  ['装甲', /装甲/], ['动力', /动力|引擎|推进/], ['维修', /维修/],
+  ['指挥', /指挥/], ['能源', /能源|供电|储能/], ['仓储', /仓储|货舱/],
+  ['搭载', /搭载|坞舱|机库/], ['武器', /武器|火炮|舰炮|炮|导弹|鱼雷|轰炸/],
+  ['辅助', /辅助|探测|雷达|信息/]
+];
+/* 一个系统的类型：sys_kind 优先；空着才看数值、再看名字，最后算「其他」。
+   n 是已经解析好的 stats_norm（基础加成表里现成就有，问卷里是 sy.raw）。 */
+function sysKindOf(sy, n) {
+  sy = sy || {};
+  const k = String(sy.sys_kind || '').trim();
+  if (SYS_KINDS.indexOf(k) >= 0) return k;
+  let d = n;
+  if (!d) {
+    if (sy.norm && typeof sy.norm === 'object') d = sy.norm;
+    else if (sy.raw && typeof sy.raw === 'object') d = sy.raw;
+    else if (sy.stats_norm) { try { d = JSON.parse(sy.stats_norm) || {}; } catch (e) { d = {}; } }
+  }
+  d = d || {};
+  if (d.hull !== undefined || d.armor !== undefined || d.shield !== undefined) return '装甲';
+  if (d.repair !== undefined) return '维修';
+  if (d.dmg_atk !== undefined || d.dmg_air !== undefined || d.weapons
+    || (d.dmg !== undefined && d.ammo !== undefined)) return '武器';
+  if (d.cruise !== undefined || d.warp !== undefined || d.spd !== undefined
+    || d.eva !== undefined || d.eva_pct !== undefined) return '动力';
+  if (d.cargo !== undefined) return '仓储';
+  if (d.bay_plane !== undefined || d.bay_boat !== undefined || d.bay_drone !== undefined) return '搭载';
+  const nm = String(sy.name || '');
+  for (let i = 0; i < SYS_KIND_BY_NAME.length; i++) {
+    if (SYS_KIND_BY_NAME[i][1].test(nm)) return SYS_KIND_BY_NAME[i][0];
+  }
+  return '其他';
+}
+/* 类型标签：表里那个「类型」格，也是全站唯一的一处（问卷下拉复用同一个 META） */
+function sysKindTag(sy, n) {
+  const k = sysKindOf(sy, n);
+  const m = SYS_KIND_META[k] || SYS_KIND_META['其他'];
+  const guess = !String((sy || {}).sys_kind || '').trim();
+  return '<span class="' + m.cls + '" title="' + mhEsc(m.tip
+    + (guess ? '（这一行没填系统类型，按数值 / 名字推断）' : '')) + '">' + m.tag + '</span>';
+}
+
 function renderBaseAttrs() {
   const body = $('#baseAttrBody');
   if (!body) return;
@@ -872,7 +947,7 @@ function renderBaseAttrs() {
     const n = x.n;
     if (c.k === 'slot') return '<td>' + mhEsc(x.sy.slot || '-') + '</td>';
     if (c.k === 'name') return '<td>' + mhEsc(x.sy.name) + '</td>';
-    if (c.k === 'kind') return '<td>' + (x.w ? '<span class="tagw">武器</span>' : '<span class="tagf">功能</span>') + '</td>';
+    if (c.k === 'kind') return '<td>' + sysKindTag(x.sy, x.n) + '</td>';
     if (c.k === 'bay') {
       const bs = dispBays(x);
       if (!bs.length) return '<td class="dim">—</td>';
@@ -2589,7 +2664,7 @@ function renderPlanesInner(host) {
 const ENT = {
   attrs: ['id', 'name', 'unit', 'note', 'ord'],
   ships: ['id', 'name', 'kind', 'cls', 'tech_total', 'note'],
-  systems: ['id', 'ship', 'slot', 'name', 'tech_cap', 'ord', 'no_nodes', 'note'],
+  systems: ['id', 'ship', 'slot', 'name', 'sys_kind', 'tech_cap', 'ord', 'no_nodes', 'note'],
   nodes: ['id', 'sys', 'parent', 'label', 'max_lv', 'cost', 'note'],
   modules: ['id', 'ship', 'slot', 'name', 'mkind', 'cap', 'allow_group', 'note'],
   planes: ['id', 'name', 'kind', 'pgroup', 'note'],
@@ -4157,17 +4232,31 @@ function wizRender() {
       armor: ['hull', 'syshull', 'armor', 'shield', 'repair_bonus_pct'],
       drive: ['cruise', 'warp', 'spd', 'eva']
     };
-    const funcFieldsFor = (sy) => {
-      const nm = String(sy.name || '');
-      const raw = sy.raw || {};
-      const has = ks => ks.some(k => Number(raw[k]) > 0);
-      let keys = [];
-      if (/装甲|护甲/.test(nm) || has(SYS_FIELD_GROUPS.armor)) keys = keys.concat(SYS_FIELD_GROUPS.armor);
-      else if (/维修/.test(nm)) keys = keys.concat(['repair_bonus_pct']);
-      if (/动力|引擎/.test(nm) || has(SYS_FIELD_GROUPS.drive)) keys = keys.concat(SYS_FIELD_GROUPS.drive);
+    /* 系统类型：每类只给自己的字段。
+       类型清单与显示名在文件上方统一定义（SYS_KINDS / SYS_KIND_META），
+       基础加成表的「类型」列和这里的下拉读的是同一份，不会再出现「表里写功能、问卷里写装甲」。
+       字段只看 sys_kind：以前是「名字关键词 + 有没有存过值」猜出来的 —— 只要存过一次
+       系统结构值，能源/指挥/仓储 也会展开成装甲那五格。 */
+    const KIND_KEYS = {
+      '装甲': ['hull', 'syshull', 'armor', 'shield', 'repair_bonus_pct'],
+      '动力': ['cruise', 'warp', 'spd', 'eva', 'syshull'],
+      '维修': ['repair', 'dur', 'cd', 'ammo', 'atk', 'guns', 'lock', 'syshull']
+    };
+    const kindFieldsFor = (kind) => {
       const map = {};
       FUNC_FIELDS.forEach(f => { map[f[0]] = f; });
-      return keys.filter(k => map[k]).map(k => map[k]);
+      map.syshull = ['syshull', '系统结构值', '点'];
+      return (KIND_KEYS[kind] || ['syshull']).map(k => map[k]).filter(Boolean);
+    };
+    /* 老系统没填 sys_kind（3 艘早期船）：先按数值 / 名字推断一个，只在内存里写回 sy，
+       保存问卷时才落库 —— 免得下拉停在「其他」，一保存又把空值写回去。
+       推断不出（真的什么都没有）就保持「其他」，不硬塞。 */
+    const kindOf = (sy) => {
+      if (SYS_KINDS.indexOf(sy.sys_kind) < 0) {
+        const g = sysKindOf(sy, sy.raw);
+        if (g !== '其他') { sy.sys_kind = g; sy.is_weapon = (g === '武器'); }
+      }
+      return SYS_KINDS.indexOf(sy.sys_kind) >= 0 ? sy.sys_kind : '其他';
     };
     const WEP_FIELDS = [
       ['syshull', '系统结构值', '点'],
@@ -4193,28 +4282,23 @@ function wizRender() {
       const title = el('div', 'wiz-head');
       title.appendChild(el('b', '', '系统 ' + (si + 1) + '：' + (sy.name || '（未命名）')));
       const typeSel = el('select');
-      [['0', '功能系统（结构 / 护甲 / 动力…）'], ['1', '武器系统（对舰 / 对空）']].forEach(([v, t]) => {
-        const o = el('option', '', t); o.value = v; typeSel.appendChild(o);
+      SYS_KINDS.forEach(k => {
+        const o = el('option', '', (SYS_KIND_META[k] || {label: k}).label); o.value = k; typeSel.appendChild(o);
       });
-      typeSel.value = sy.is_weapon ? '1' : '0';
-      typeSel.onchange = () => { sy.is_weapon = typeSel.value === '1'; wizRender(); };
+      typeSel.value = kindOf(sy);
+      typeSel.onchange = () => {
+        sy.sys_kind = typeSel.value;
+        sy.is_weapon = typeSel.value === '武器';
+        wizRender();
+      };
       title.appendChild(typeSel);
       card.appendChild(title);
 
       /* 有 weapons[] 的走武器表（下面），这里只留三路存档与暴击；单武器老数据仍给整套六字段 */
+      const kind = kindOf(sy);
       const hasW = (weaponListOf(sy.raw) || []).length > 0;
-      let fields = sy.is_weapon ? (hasW ? WEP_TOTALS : WEP_FIELDS) : funcFieldsFor(sy);
-      /* 每个系统都有隐藏的「系统结构值」，非武器系统一律给这一格 */
-      if (!sy.is_weapon && !fields.some(f => f[0] === 'syshull')) {
-        fields = fields.concat([['syshull', '系统结构值', '点']]);
-      }
-      if (!sy.is_weapon && /维修/.test(String(sy.name || ''))) {
-        /* 维修系统：单次维修量 + 时长，按公式现算分钟维修量 */
-        fields = [['repair', '单次维修量', '点'], ['dur', '持续时间', 's'], ['cd', '冷却时间', 's'],
-          ['ammo', '工作次数(弹药)', ''], ['atk', '每次次数(攻击)', ''], ['guns', '设备数', '台'],
-          ['lock', '锁定时间', 's'], ['syshull', '系统结构值', '点']];
-      }
-      if (!sy.is_weapon && !fields.length) {
+      const fields = kind === '武器' ? (hasW ? WEP_TOTALS : WEP_FIELDS) : kindFieldsFor(kind);
+      if (kind !== '武器' && !fields.length) {
         card.appendChild(el('div', 'muted', '该类型不提供船体数值，只填模块名即可。'));
       } else {
         const grid = el('div', 'wiz-grid2');
@@ -4223,7 +4307,7 @@ function wizRender() {
           wIn(grid, label, sy.raw, k, 'number', null, unit);
         });
         card.appendChild(grid);
-        if (!sy.is_weapon && /维修/.test(String(sy.name || ''))) {
+        if (kind === '维修') {
           const qb = el('div', 'wepstd');
           qb.appendChild(el('span', 'dim', '单次维修量快捷：'));
           [['500', 500, '维修无人机'], ['375', 375, '维修设备']].forEach(([lb, v, t]) => {
@@ -4882,6 +4966,7 @@ function wizPayload() {
       bays: JSON.stringify((s.bays || []).map(b => ({kind: b.kind || '', cap: +b.cap || 0, allow_group: b.allow_group || ''}))),
       stats_norm: Object.keys(num).length ? JSON.stringify(num) : '',
       is_weapon: s.is_weapon ? 1 : 0,
+      sys_kind: s.sys_kind || '',
       note: s._note || '', ord: s._ord || (i + 1), no_nodes: s._no_nodes || 0};
   });
   /* 把第一个武器系统的参数抄进 base，只作存档展示（页面不再用它算 DPM） */
@@ -7219,7 +7304,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.122';
+window.__APP_VER = '2026-11-21.124';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

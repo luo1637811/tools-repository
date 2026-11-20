@@ -320,6 +320,13 @@ header .right{flex:1 1 0;display:flex;align-items:center;justify-content:flex-en
 .base-tbl td.dim{color:var(--dim)}
 .tagw{display:inline-block;padding:1px 7px;border-radius:6px;background:rgba(59,130,246,.16);color:#8fc2ff;font-size:11px}
 .tagf{color:var(--dim);font-size:11px}
+/* 系统类型标签（基础加成表「类型」列）：一类一个色。
+   装甲 / 动力 / 维修 是真正出船体数值的三类，给亮色；其余（能源/指挥/仓储/辅助）保持灰。 */
+.tagk{display:inline-block;padding:1px 7px;border-radius:6px;background:rgba(148,163,184,.14);color:#b6c2d1;font-size:11px}
+.tagk.tk-armor{background:rgba(245,158,11,.16);color:#f3c77d}
+.tagk.tk-drive{background:rgba(56,189,248,.14);color:#8fd3ff}
+.tagk.tk-repair{background:rgba(34,197,94,.15);color:#8ce0a9}
+.tagk.tk-bay{background:rgba(168,85,247,.16);color:#c9a9f7}
 @media (max-width:900px){.basestrip{grid-template-columns:1fr 1fr}}
 
 /* 基础加成表：最后一列「其他」允许换行，避免横向溢出看不到 */
