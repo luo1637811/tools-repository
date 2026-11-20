@@ -1482,7 +1482,9 @@ function weaponSum2(n, cdRed, famAdd) {
     const fb = (1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100)
       * (1 + calibPctOf(n._calib) / 100);
     atk += Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * fb + (Number(w.atk_add) || 0);
-    air += dmg * vol / cyc * 60 * g * k * fb * wepHitOf(w) * wepCoopOf(w);
+    /* 对空单发可以和对舰不同：没填 dmg_air 才沿用对舰单发 */
+    const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
+    air += dmgA * vol / cyc * 60 * g * k * fb * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
 }
@@ -3678,7 +3680,8 @@ function wepCalc(sy) {
     const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0) + (Number(w.pen) || 0));
     const kk = Number(w.k) || 1;
     atk += Math.max(0, dmg - Number(w.armor)) * vol / cyc * 60 * g * kk * cp + (Number(w.atk_add) || 0);
-    air += dmg * vol / cyc * 60 * g * kk * cp * wepHitOf(w) * wepCoopOf(w);
+    const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
+    air += dmgA * vol / cyc * 60 * g * kk * cp * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
 }
@@ -3692,8 +3695,9 @@ function wepOne(w, pct) {
   const arm = (w.armor === undefined || w.armor === null) ? 10 : Number(w.armor);
   const k = Number(w.k) || 1;
   const f = 1 + (Number(pct) || 0) / 100;
+  const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
   return [Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * f + (Number(w.atk_add) || 0),
-    dmg * vol / cyc * 60 * g * k * f * wepHitOf(w) * wepCoopOf(w)];
+    dmgA * vol / cyc * 60 * g * k * f * wepHitOf(w) * wepCoopOf(w)];
 }
 
 function wizWeaponsBox(sy, rerender) {
@@ -3703,6 +3707,7 @@ function wizWeaponsBox(sy, rerender) {
   const cp = () => calibPctOf(sy.raw._calib);
   box.appendChild(el('div', 'wepnote', '武器表（' + (ws.length ? ws.length + ' 把' : '还没加武器')
     + '）：逐把填 单发 / 弹药 / 攻击次数 / 门数 / 持续 / 冷却 / 突防，对空再填 命中率 与 协同效率；'
+    + '「单发（对空）」留空就沿用对舰单发，填了就只作用于对空；'
     + '下面按公式实时算对舰 / 对空。改完点「按公式重算并写回」把两行存档刷新（存档只作对照）。'));
   const total = el('div', 'weptotal');
   const updTotal = () => {
@@ -3732,7 +3737,7 @@ function wizWeaponsBox(sy, rerender) {
     r1.appendChild(del);
 
     const r2 = el('div', 'wrow2');
-    [['单发', 'dmg', '点'], ['弹药', 'ammo', ''], ['攻击次数', 'atk', ''],
+    [['单发', 'dmg', '点'], ['单发（对空）', 'dmg_air', '点'], ['弹药', 'ammo', ''], ['攻击次数', 'atk', ''],
       ['持续', 'dur', 's'], ['冷却', 'cd', 's'], ['突防', 'pen', 's'],
       ['命中率', 'aa_hit', ''], ['协同效率', 'aa_coop', '%'], ['锁定', 'lock', 's']].forEach(([lb, k, un]) => {
       wIn(r2, lb, w, k, 'number', null, un);
@@ -3743,7 +3748,7 @@ function wizWeaponsBox(sy, rerender) {
     const armorNow = (w.armor === undefined || w.armor === null || w.armor === '') ? wepArmor(w.family) : Number(w.armor);
     hint.textContent = '本族·' + (Number(armorNow) > 0 ? ('扣 ' + armorNow + ' 点标准护甲') : '不扣护甲')
       + ' ｜ 对舰 = (单发 − ' + (Number(armorNow) > 0 ? armorNow : 0) + ') × 弹药×攻击 × 60÷周期 × 门数'
-      + ' ｜ 对空 = 单发 × 弹药×攻击 × 60÷周期 × 门数 × 命中率 × 协同%';
+      + ' ｜ 对空 = 单发（对空）× 弹药×攻击 × 60÷周期 × 门数 × 命中率 × 协同%';
     /* 对空标准命中：0.15（舰船）/ 0.768（载机）一键填 */
     const std = el('div', 'wepstd');
     std.appendChild(el('span', 'dim', '对空标准命中：'));
@@ -6900,7 +6905,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.96';
+window.__APP_VER = '2026-11-20.97';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */

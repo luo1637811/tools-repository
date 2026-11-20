@@ -276,7 +276,9 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
                   + cdv * (1 - cdred / 100.0) + pen)
         atk = (max(0.0, dmg - armor) * volley / cyc * 60.0 * guns * kk * mult * m * pct_atk
                + num(p.get("atk_add"), 0))
-        air = (dmg * volley / cyc * 60.0 * guns * kk * mult * m * pct_air
+        # 对空单发可以和对舰不同（dmg_air），没填才沿用对舰单发
+        dmg_a = num(p.get("dmg_air"), 0) or dmg
+        air = (dmg_a * volley / cyc * 60.0 * guns * kk * mult * m * pct_air
                * _hit(p.get("aa_hit")) * _coop(p.get("aa_coop")))
         return {"name": p.get("name") or fam, "family": fam, "dmg": dmg,
                 "volley": volley, "guns": guns, "armor": armor, "k": kk,
