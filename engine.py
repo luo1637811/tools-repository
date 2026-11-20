@@ -271,14 +271,16 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
         fam = str(p.get("family") or "")
         pct = (num(fam_b.get(fam), 0)
                + num(b.get("dmg_" + fam), 0) + num(g.get("dmg_" + fam), 0))
-        mult = 1 + (pct + cal_pct) / 100.0
+        # 系统调校作用于「基础伤害（单发）」，所以先放大单发、再扣族护甲
+        cal_mul = 1 + cal_pct / 100.0
+        mult = 1 + pct / 100.0
         cyc = max(0.5, dur * (1 - durred / 100.0)
                   + cdv * (1 - cdred / 100.0) + pen)
-        atk = (max(0.0, dmg - armor) * volley / cyc * 60.0 * guns * kk * mult * m * pct_atk
+        atk = (max(0.0, dmg * cal_mul - armor) * volley / cyc * 60.0 * guns * kk * mult * m * pct_atk
                + num(p.get("atk_add"), 0))
         # 对空单发可以和对舰不同（dmg_air），没填才沿用对舰单发
         dmg_a = num(p.get("dmg_air"), 0) or dmg
-        air = (dmg_a * volley / cyc * 60.0 * guns * kk * mult * m * pct_air
+        air = (dmg_a * cal_mul * volley / cyc * 60.0 * guns * kk * mult * m * pct_air
                * _hit(p.get("aa_hit")) * _coop(p.get("aa_coop")))
         return {"name": p.get("name") or fam, "family": fam, "dmg": dmg,
                 "volley": volley, "guns": guns, "armor": armor, "k": kk,

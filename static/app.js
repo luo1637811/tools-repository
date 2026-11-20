@@ -1473,12 +1473,12 @@ function weaponSum2(n, cdRed, famAdd) {
     if (!g) return;
     const k = w.k === undefined ? 1 : (Number(w.k) || 1);
     const arm = w.armor === undefined ? 10 : (Number(w.armor) || 0);
-    const fb = (1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100)
-      * (1 + calibPctOf(n._calib) / 100);
-    atk += Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * fb + (Number(w.atk_add) || 0);
+    const cm = 1 + calibPctOf(n._calib) / 100;   /* 系统调校作用于基础伤害（单发） */
+    const fb = 1 + ((Number(fam0[w.family]) || 0) + (Number((famAdd || {})[w.family]) || 0)) / 100;
+    atk += Math.max(0, dmg * cm - arm) * vol / cyc * 60 * g * k * fb + (Number(w.atk_add) || 0);
     /* 对空单发可以和对舰不同：没填 dmg_air 才沿用对舰单发 */
     const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
-    air += dmgA * vol / cyc * 60 * g * k * fb * wepHitOf(w) * wepCoopOf(w);
+    air += dmgA * cm * vol / cyc * 60 * g * k * fb * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
 }
@@ -1646,7 +1646,8 @@ function slotBaseVals(slotKey) {
   const st = sysTotals(ship);
   const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
   return {
-    hull: (Number(pick('hull', base.hull)) || 0) * (1 + (Number(agg.hull) || 0) / 100),
+    hull: (Number(pick('hull', base.hull)) || 0)
+      * (1 + ((Number(agg.hull) || 0) + calibHullPctOf(ship)) / 100),   /* 节点加成 + 装甲系统调校 */
     armor: effVal('armor', pick('armor', base.armor), agg),
     shield: effVal('shield', pick('shield', base.shield), agg),
     eva: effVal('eva', pick('eva', base.eva), agg),
@@ -3671,9 +3672,9 @@ function wepCalc(sy) {
     const vol = Number(w.volley) || 0;
     const cyc = Math.max(0.5, (Number(w.dur) || 0) + (Number(w.cd) || 0) + (Number(w.pen) || 0));
     const kk = Number(w.k) || 1;
-    atk += Math.max(0, dmg - Number(w.armor)) * vol / cyc * 60 * g * kk * cp + (Number(w.atk_add) || 0);
+    atk += Math.max(0, dmg * cp - Number(w.armor)) * vol / cyc * 60 * g * kk + (Number(w.atk_add) || 0);
     const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
-    air += dmgA * vol / cyc * 60 * g * kk * cp * wepHitOf(w) * wepCoopOf(w);
+    air += dmgA * cp * vol / cyc * 60 * g * kk * wepHitOf(w) * wepCoopOf(w);
   });
   return [atk, air];
 }
@@ -3688,8 +3689,8 @@ function wepOne(w, pct) {
   const k = Number(w.k) || 1;
   const f = 1 + (Number(pct) || 0) / 100;
   const dmgA = Number(w.dmg_air) > 0 ? Number(w.dmg_air) : dmg;
-  return [Math.max(0, dmg - arm) * vol / cyc * 60 * g * k * f + (Number(w.atk_add) || 0),
-    dmgA * vol / cyc * 60 * g * k * f * wepHitOf(w) * wepCoopOf(w)];
+  return [Math.max(0, dmg * f - arm) * vol / cyc * 60 * g * k + (Number(w.atk_add) || 0),
+    dmgA * f * vol / cyc * 60 * g * k * wepHitOf(w) * wepCoopOf(w)];
 }
 
 function wizWeaponsBox(sy, rerender) {
@@ -3740,7 +3741,8 @@ function wizWeaponsBox(sy, rerender) {
     const armorNow = (w.armor === undefined || w.armor === null || w.armor === '') ? wepArmor(w.family) : Number(w.armor);
     hint.textContent = '本族·' + (Number(armorNow) > 0 ? ('扣 ' + armorNow + ' 点标准护甲') : '不扣护甲')
       + ' ｜ 对舰 = (单发 − ' + (Number(armorNow) > 0 ? armorNow : 0) + ') × 弹药×攻击 × 60÷周期 × 门数'
-      + ' ｜ 对空 = 单发（对空）× 弹药×攻击 × 60÷周期 × 门数 × 命中率 × 协同%';
+      + ' ｜ 对空 = 单发（对空）× 弹药×攻击 × 60÷周期 × 门数 × 命中率 × 协同%'
+      + ' ｜ 系统调校 ' + (cp() ? ('+' + cp() + '%（作用在单发上：对舰先放大单发再扣护甲）') : '未启用（不影响两路）');
     /* 对空标准命中：0.15（舰船）/ 0.768（载机）一键填 */
     const std = el('div', 'wepstd');
     std.appendChild(el('span', 'dim', '对空标准命中：'));
@@ -7032,7 +7034,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.106';
+window.__APP_VER = '2026-11-20.111';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
