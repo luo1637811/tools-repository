@@ -4418,13 +4418,15 @@ function wizRender() {
           const g = (e.kind === 'note') ? 'note' : (groups[e.scope] ? e.scope : 'other');
           groups[g].push([k, effLabel(k)]);
         });
-        all.filter(e => !seen[e.id] && used[e.id])
+        /* 其余效果整表列出（新建的自定义效果要能立刻选到；服务端已清理过垃圾行） */
+        all.filter(e => !seen[e.id] && !(+e.deprecated || 0))
           .sort((a, b) => String(effLabel(a.id)).localeCompare(String(effLabel(b.id)), 'zh')
             || String(a.id).localeCompare(String(b.id)))
           .forEach(e => {
             seen[e.id] = 1;
             const g = (e.kind === 'note') ? 'note' : (groups[e.scope] ? e.scope : 'other');
-            groups[g].push([e.id, effLabel(e.id) + '（未登记）']);
+            const tail = effFieldOf(e.id) ? '' : '（自定义）';
+            groups[g].push([e.id, effLabel(e.id) + tail]);
           });
         const out = { groups: EFF_SCOPE_ORDER
           .map(([g, label]) => ({ label: label, items: groups[g] }))
@@ -7107,7 +7109,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.115';
+window.__APP_VER = '2026-11-20.116';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
