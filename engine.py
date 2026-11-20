@@ -335,6 +335,21 @@ def _weapon_out(sy, b, own_pairs, all_pairs, g=None):
     }
 
 
+def _calib_hull_pct(ship):
+    """装甲系统调校：勾选后给整舰结构值加成（与前端 calibHullPctOf 同口径）。"""
+    pct = 0.0
+    for sy in (ship.get("systems") or []):
+        n = sy.get("norm") or {}
+        cal = n.get("_calib")
+        if not isinstance(cal, dict) or not cal.get("on"):
+            continue
+        is_armor = ((n.get("hull") is not None) or (sy.get("sys_kind") == "装甲")
+                    or ("装甲" in (sy.get("name") or "")))
+        if is_armor:
+            pct += num(cal.get("pct"), 0)
+    return pct
+
+
 def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     """ship 是 load_bundle 里的对象（含 systems/modules）。"""
     global EFF, EFF_UNIT, EFF_SCOPE
@@ -570,7 +585,8 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     # 3) 无基础值的命中/闪避类：只按加点加成的百分点显示
     acc_univ = num(base.get("acc")) + agg.get("acc", 0)
     # 4) 其余：系统基础值 ×（1 + 加成%）
-    hull = num(base.get("hull")) * (1 + (agg.get("hull", 0) + num(base.get("hull_bonus_pct"))) / 100)
+    hull = num(base.get("hull")) * (1 + (agg.get("hull", 0) + num(base.get("hull_bonus_pct"))
+                                      + _calib_hull_pct(ship)) / 100)
     volley = num(base.get("ammo")) * num(base.get("atk"))
     dmg = num(base.get("dmg")) * (1 + agg.get("dmg", 0) / 100)
     cycle = max(0.5, dur + cd)
@@ -729,7 +745,8 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
     # —— 系统结构值：和「结构值」用同一套算法 ——
     # 基数 × (1 + 整舰结构值加成% + 该系统内「系统结构值」节点/调校%)。
     # 装甲系统的基数就是舰船结构值基数，所以它的系统结构值恒等于舰船结构值。
-    _hull_pct_all = num(agg.get("hull", 0), 0) + num(base.get("hull_bonus_pct"), 0)
+    _hull_pct_all = (num(agg.get("hull", 0), 0) + num(base.get("hull_bonus_pct"), 0)
+                     + _calib_hull_pct(ship))
     sys_rows = []
     for sy in ship["systems"]:
         row = {"id": sy["id"], "name": sy["name"], "slot": sy["slot"],
@@ -738,8 +755,8 @@ def simulate(ship, sel, alloc, bundle, plane_sel, light=False):
         _shb = num(_n2.get("syshull"), 0)
         _shc = num(_n2.get("syshull_calib"), 0)
         if _shb:
-            _shp = (_hull_pct_all
-                    + num(((sys_agg.get((sy.get("slot") or "").strip()) or {})).get("syshull"), 0)
+            # 结构值加成只作用于「结构值」；系统结构值只吃自己的 syshull 类加成
+            _shp = (num(((sys_agg.get((sy.get("slot") or "").strip()) or {})).get("syshull"), 0)
                     + _shc)
             row["syshull"] = round(_shb * (1 + _shp / 100.0), 1)
         elif _shc:

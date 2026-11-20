@@ -1141,3 +1141,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent, #38bdf
 .tgridsum>b::before{content:"▎";color:var(--accent);margin-right:6px}
 .tgridsum>div{font-size:12.5px;line-height:1.7;color:var(--ink);font-variant-numeric:tabular-nums}
 .tgridsum>div.muted{color:var(--dim);margin-top:6px}
+
+/* 左栏「系统调校」块：两列窄输入，避免撑破 410px 的左栏 */
+.tgridwrap .calbox { margin: 8px 0 10px; }
+.tgridwrap .calbox .calh { font-size: 12px; margin-bottom: 4px; }
+.tgridwrap .calbox .calchk { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.tgridwrap .calbox .calrow { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 8px; }
+.tgridwrap .calbox .calrow .row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tgridwrap .calbox .calrow .row > span { flex: 0 1 auto; white-space: nowrap; font-size: 12px; color: var(--dim); }
+.tgridwrap .calbox .calrow .row > input { flex: 1 1 40px; min-width: 0; height: 28px; font-size: 12px; padding: 0 6px; }
+
+/* 问卷武器行：公式提示 + 对空标准命中快捷键 */
+.wepf { font-size: 12px; color: var(--dim); margin-top: 6px; line-height: 1.55; }
+.wepstd { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
+.btn.tiny { height: 24px; padding: 0 9px; font-size: 12px; line-height: 1; }

@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS audit(
   target TEXT, detail TEXT, kind TEXT);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user INTEGER, expire INTEGER);
 CREATE TABLE IF NOT EXISTS attrs(id TEXT PRIMARY KEY, name TEXT, unit TEXT, note TEXT, ord INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS families(
+  id TEXT PRIMARY KEY, name TEXT, armor REAL DEFAULT 0,
+  ord INTEGER DEFAULT 0, note TEXT);
 CREATE TABLE IF NOT EXISTS effects(
   id TEXT PRIMARY KEY, name TEXT, unit TEXT, note TEXT,
   kind TEXT, target TEXT, scope TEXT, ord INTEGER DEFAULT 0,
@@ -82,6 +85,18 @@ CREATE TABLE IF NOT EXISTS post_reads(
   PRIMARY KEY(user_id, post_id));
 
 """
+
+# 武器类型（族）：armor = 计算对舰时扣掉的标准护甲点数（火炮/轨道炮 10，其余 0）
+FAMILIES_SEED = [
+    ("cannon", "通用火炮", 10.0),
+    ("rail", "轨道炮", 10.0),
+    ("pulse", "脉冲炮", 0.0),
+    ("plasma", "等离子炮", 0.0),
+    ("ion", "离子炮", 0.0),
+    ("torpedo", "鱼雷", 0.0),
+    ("missile", "导弹", 0.0),
+    ("drone", "无人机", 0.0),
+]
 
 EFFECTS_SEED = [
     ("dmg", "伤害提高", "%", "造成的伤害百分比"),

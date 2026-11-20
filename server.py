@@ -32,7 +32,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
 from db import BASE, DATA_DIR, DB_PATH, FROZEN, RES_DIR, conn, ensure_wal
-from schema import (SCHEMA, EFFECTS_SEED, EFFECTS_CANON, ATTRS_SEED, SHIPS, SYSTEMS,
+from schema import (SCHEMA, EFFECTS_SEED, EFFECTS_CANON, FAMILIES_SEED, ATTRS_SEED, SHIPS, SYSTEMS,
                     NODES, MODULES, PLANES, USERS, CLASSES, EFFECT_RULES, EFFECT_NAMES)
 from util import j, num
 from engine import GROUP_RANK, _group_ok, _lv_amt, _normalize_ship, simulate
@@ -497,6 +497,11 @@ def init_db():
                        ("mh_days", str(MH_DAYS_DEFAULT))):
             c.execute("INSERT OR IGNORE INTO settings(k,v) VALUES(?,?)", (_k, _v))
         c.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
+
+        # 武器类型（族）：缺哪条补哪条，用户可以自己加新类型
+        for _i, (_fid, _fname, _farm) in enumerate(FAMILIES_SEED):
+            c.execute("INSERT OR IGNORE INTO families(id, name, armor, ord, note) VALUES(?,?,?,?,?)",
+                      (_fid, _fname, _farm, _i * 10, ""))
 
         # 节点效果：只在首次初始化时播种一次（写 settings.effects_seeded 标记）。
         # 之后不再自动补齐、也不再纠正名字——用户在界面上删掉的效果不会在重启后复活。
@@ -1465,6 +1470,7 @@ TABLES = {
                        "bonus", "stats", "note"]),
     "planes": ("id", ["id", "name", "kind", "pgroup", "per_group", "base", "note"]),
     "groups": ("id", ["id", "name", "per_unit", "hangar", "note"]),
+    "families": ("id", ["id", "name", "armor", "ord", "note"]),
 }
 JSON_COLS = {"ships": ["base"], "systems": ["stats", "bays", "stats_norm"], "nodes": ["effect", "costs", "per_lv"],
              "modules": ["bonus", "stats", "bays"], "planes": ["base"], "groups": []}
@@ -3304,9 +3310,10 @@ class Handler(BaseHTTPRequestHandler):
             with conn() as c:
                 eff = [dict(r) for r in c.execute("SELECT * FROM effects ORDER BY id")]
                 attrs = [dict(r) for r in c.execute("SELECT * FROM attrs ORDER BY ord, id")]
+                fams = [dict(r) for r in c.execute("SELECT * FROM families ORDER BY ord, id")]
             return self.send_json({"ok": True, "version": get_version(), "pub": pub_info(),
                                    "ships": ships, "planes": planes, "groups": groups,
-                                   "attrs": attrs, "effects": eff})
+                                   "attrs": attrs, "effects": eff, "families": fams})
         if path == "/api/export":
             _u = self.need_perm(("export",))
             if not _u:
@@ -3316,9 +3323,10 @@ class Handler(BaseHTTPRequestHandler):
             with conn() as c:
                 eff = [dict(r) for r in c.execute("SELECT * FROM effects ORDER BY id")]
                 attrs = [dict(r) for r in c.execute("SELECT * FROM attrs ORDER BY ord, id")]
+                fams = [dict(r) for r in c.execute("SELECT * FROM families ORDER BY ord, id")]
             return self.send_json({"ok": True, "version": get_version(), "pub": pub_info(),
                                    "ships": ships, "planes": planes, "groups": groups,
-                                   "attrs": attrs, "effects": eff})
+                                   "attrs": attrs, "effects": eff, "families": fams})
         if path == "/api/settings":
             with conn() as c:
                 rows = c.execute("SELECT k,v FROM settings").fetchall()

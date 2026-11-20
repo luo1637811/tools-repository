@@ -925,7 +925,7 @@ function renderBaseAttrs() {
     const st = sysTotals(ship);
     const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
     const bHull = pick('hull', base.hull);
-    const bPct = (Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0);
+    const bPct = (Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0) + calibHullPctOf(ship);
     const hullFinal = bHull ? bHull * (1 + bPct / 100) : 0;
     const armor = pick('armor', base.armor) + (Number(agg.armor) || 0);
     const shield = pick('shield', base.shield) + (Number(agg.shield) || 0);
@@ -1059,6 +1059,69 @@ function treeGridCard(nd, sl, sy, code) {
 
 function round2(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 
+function calibBox(sy, sl) {
+  let norm = sy.norm;
+  if (!norm) { try { norm = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { norm = {}; } }
+  const cal = norm._calib;
+  if (!cal || (!cal.name && !cal.text)) return null;
+  if (typeof cal.on !== 'boolean') cal.on = false;
+  if (cal.pct === undefined || cal.pct === null || cal.pct === '') {
+    const m0 = /(?:伤害|结构值)(?:提高|提升|增加)?\s*(\d+(?:\.\d+)?)\s*%/.exec(cal.text || '');
+    cal.pct = m0 ? Number(m0[1]) : 0;
+  }
+  if (cal.adv === undefined || cal.adv === null || cal.adv === '') cal.adv = 0;
+  const box = el('div', 'calbox');
+  const head = el('div', 'calh');
+  head.appendChild(el('b', '', '系统调校'));
+  if (cal.name) head.appendChild(document.createTextNode('（' + cal.name + '）'));
+  box.appendChild(head);
+  const lab = document.createElement('label');
+  lab.className = 'calchk';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!cal.on;
+  cb.onchange = () => { cal.on = cb.checked; saveCalib(sy, norm, cal); };
+  lab.appendChild(cb);
+  lab.appendChild(document.createTextNode(' 启用加成（不勾就不参与计算）'));
+  box.appendChild(lab);
+  const row = el('div', 'calrow');
+  const mkNum = (label, key) => {
+    const wrap2 = el('label', 'row');
+    wrap2.appendChild(el('span', '', label));
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = 'any';
+    inp.min = '0';
+    inp.value = (cal[key] === undefined || cal[key] === null) ? '' : cal[key];
+    inp.onchange = () => {
+      const v = Number(inp.value);
+      cal[key] = isFinite(v) ? v : 0;
+      saveCalib(sy, norm, cal);
+    };
+    wrap2.appendChild(inp);
+    return wrap2;
+  };
+  row.appendChild(mkNum('本系统加成%', 'pct'));
+  row.appendChild(mkNum('进阶加成%', 'adv'));
+  box.appendChild(row);
+  return box;
+}
+
+function saveCalib(sy, norm, cal) {
+  norm._calib = cal;
+  sy.norm = norm;
+  const body = {
+    id: sy.id, ship: sy.ship || (S.slots[S.cur] || {}).ship, slot: sy.slot,
+    name: sy.name, tech_cap: sy.tech_cap, sys_kind: sy.sys_kind,
+    is_weapon: sy.is_weapon, stats: sy.stats, bays: sy.bays,
+    stats_norm: JSON.stringify(norm)
+  };
+  api('/api/data/systems', { method: 'PUT', body: body }).then(() => {
+    toast('系统调校已保存', 'good');
+    renderTree(); renderEditor();
+  }).catch(e => toast('保存失败：' + e.message, 'bad'));
+}
+
 function treeGridEl(sy, sl) {
   const cols = treeCols(sy.nodes);
   const wrap = el('div', 'tgridwrap');
@@ -1078,6 +1141,10 @@ function treeGridEl(sy, sl) {
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('class', 'tgridlines');
   wrap.appendChild(svg);
+
+  /* 系统调校（武器系统：本系统武器伤害%；装甲系统：整舰结构值%） */
+  const calBox = calibBox(sy, sl);
+  if (calBox) wrap.appendChild(calBox);
 
   /* 汇总：本系统加成效果（只读原型，按当前加点直接算） */
   const box = el('div', 'tgridsum');
@@ -1161,21 +1228,9 @@ function renderTree() {
   /* 无加点项的纯被动系统：留空，不显示任何提示 */
   /* 横向分层：一层一列，列内按录入顺序往下排（与「数据管理 → 加点」里的顺序一致） */
   const cols = treeCols(sy.nodes);
-  if (cols.length && S.treeView === 'grid') {
+  if (cols.length) {
     host.appendChild(treeGridEl(sy, sl));
     host.dataset.laneKey = laneKey;
-  } else if (cols.length) {
-    const lane = el('div', 'wiz-lane');
-    cols.forEach((col, ci) => {
-      const box = el('div', 'wiz-col');
-      box.appendChild(el('div', 'wiz-colhead', '第 ' + (ci + 1) + ' 层'));
-      col.forEach(({ code, node }) => box.appendChild(nodeCard(node, sl, sy, code)));
-      lane.appendChild(box);
-    });
-    host.appendChild(lane);
-    host.dataset.laneKey = laneKey;
-    if (keepLeft) lane.scrollLeft = keepLeft;
-    if (keepTop) lane.scrollTop = keepTop;
   }
 
   const used = ship.systems.reduce((a, x) => a + sysUsed(x), 0);
@@ -1363,6 +1418,20 @@ function weaponListOf(n) {
   return Array.isArray(wl) && wl.length ? wl : null;
 }
 /* 系统调校加成：问卷里勾了「启用加成」才算，返回百分数（如 5） */
+/* 装甲系统调校：勾选后给整舰结构值加成（与 engine 的 _calib_hull_pct 同口径） */
+function calibHullPctOf(ship) {
+  let pct = 0;
+  (((ship || {}).systems) || []).forEach(sy => {
+    let n = sy.norm;
+    if (!n) { try { n = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { n = {}; } }
+    const cal = n._calib;
+    if (!cal || !cal.on) return;
+    const isArmor = n.hull !== undefined || sy.sys_kind === '装甲' || /装甲/.test(sy.name || '');
+    if (isArmor) pct += Number(cal.pct) || 0;
+  });
+  return pct;
+}
+
 function calibPctOf(cal) {
   if (!cal || !cal.on) return 0;
   return Number(cal.pct) || 0;  /* 进阶加成(adv)暂不参与计算 */
@@ -1557,7 +1626,7 @@ function slotBaseVals(slotKey) {
   const st = sysTotals(ship);
   const pick = (k, v) => (st.has[k] ? st.sum[k] : (Number(v) || 0));
   return {
-    hull: pick('hull', base.hull) * (1 + ((Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0)) / 100),
+    hull: pick('hull', base.hull) * (1 + ((Number(base.hull_bonus_pct) || 0) + (Number(agg.hull) || 0) + calibHullPctOf(ship)) / 100),
     armor: effVal('armor', pick('armor', base.armor), agg),
     shield: effVal('shield', pick('shield', base.shield), agg),
     eva: effVal('eva', pick('eva', base.eva), agg),
@@ -3565,8 +3634,20 @@ function wizDelNode(si, x) {
    外加族、对舰扣甲、校准系数 k、突防时间、对空命中率与协同效率。问卷里按行编辑，
    改完点「按公式重算并写回」把对舰、对空两行存档刷新（存档只作对照，引擎按公式现算）。 */
 const WEP_FAMILIES = [['cannon', '通用火炮'], ['rail', '轨道炮'], ['pulse', '脉冲炮'],
-  ['plasma', '等离子'], ['torpedo', '鱼雷'], ['missile', '导弹'], ['drone', '无人机'], ['other', '其它']];
-function wepArmor(fam) { return (fam === 'cannon' || fam === 'rail') ? 10 : 0; }
+  ['plasma', '等离子'], ['ion', '离子炮'], ['torpedo', '鱼雷'], ['missile', '导弹'],
+  ['drone', '无人机'], ['other', '其它']];
+/* 武器类型来自库表 families（可增删改）；表还没同步时退回内置清单 */
+function wepFamilyRows() {
+  const rows = (S.bp && Array.isArray(S.bp.families)) ? S.bp.families : [];
+  if (!rows.length) return WEP_FAMILIES.map(([id, name]) => ({ id, name, armor: (id === 'cannon' || id === 'rail') ? 10 : 0 }));
+  return rows.map(r => ({ id: r.id, name: r.name || r.id, armor: Number(r.armor) || 0 }));
+}
+function wepFamilyPairs() { return wepFamilyRows().map(r => [r.id, r.name]); }
+function wepArmor(fam) {
+  const hit = wepFamilyRows().find(r => r.id === fam);
+  if (hit) return hit.armor;
+  return (fam === 'cannon' || fam === 'rail') ? 10 : 0;
+}
 /* 归一：volley 跟弹药×攻击次数同步；族变了但没手填 armor 时按族给默认扣甲 */
 function wepFix(w) {
   const ammo = Number(w.ammo) || 0, atk = Number(w.atk) || 0;
@@ -3625,12 +3706,17 @@ function wizWeaponsBox(sy, rerender) {
       : '';
   };
   ws.forEach((w, i) => {
+    /* 老数据可能没写命中率/协同：按缺省值回填到显示，避免输入框空着让人以为 0 */
+    if (w.aa_hit === undefined || w.aa_hit === null || w.aa_hit === '') w.aa_hit = wepHitOf(w);
+    if (w.aa_coop === undefined || w.aa_coop === null || w.aa_coop === '') w.aa_coop = wepCoopOf(w);
+    if (w.armor === undefined || w.armor === null || w.armor === '') w.armor = wepArmor(w.family);
     const item = el('div', 'wepitem');
     const r1 = el('div', 'wrow1');
     const iName = wIn(r1, '武器名', w, 'name', 'text');
     if (iName && iName.parentNode) iName.parentNode.classList.add('w-name');
-    const iFam = wIn(r1, '族', w, 'family', 'select', WEP_FAMILIES);
+    const iFam = wIn(r1, '族', w, 'family', 'select', wepFamilyPairs());
     if (iFam && iFam.parentNode) iFam.parentNode.classList.add('w-fam');
+    if (iFam) iFam.onchange = () => { w.armor = wepArmor(iFam.value); rerender(); };
     const iGun = wIn(r1, '门数', w, 'guns', 'number', null, '门');
     if (iGun && iGun.parentNode) iGun.parentNode.classList.add('w-guns');
     const del = el('button', 'btn wepdel', '删除'); del.type = 'button';
@@ -3644,6 +3730,22 @@ function wizWeaponsBox(sy, rerender) {
       wIn(r2, lb, w, k, 'number', null, un);
     });
 
+    /* 公式提示：本族扣不扣甲 + 两路公式（界面里就能核对） */
+    const hint = el('div', 'wepf');
+    const armorNow = (w.armor === undefined || w.armor === null || w.armor === '') ? wepArmor(w.family) : Number(w.armor);
+    hint.textContent = '本族·' + (Number(armorNow) > 0 ? ('扣 ' + armorNow + ' 点标准护甲') : '不扣护甲')
+      + ' ｜ 对舰 = (单发 − ' + (Number(armorNow) > 0 ? armorNow : 0) + ') × 弹药×攻击 × 60÷周期 × 门数'
+      + ' ｜ 对空 = 单发 × 弹药×攻击 × 60÷周期 × 门数 × 命中率 × 协同%';
+    /* 对空标准命中：0.15（舰船）/ 0.768（载机）一键填 */
+    const std = el('div', 'wepstd');
+    std.appendChild(el('span', 'dim', '对空标准命中：'));
+    [['0.15', 0.15], ['0.768', 0.768]].forEach(([lb, v]) => {
+      const b = el('button', 'btn ghost tiny', lb); b.type = 'button';
+      b.title = '一键把命中率设为 ' + lb;
+      b.onclick = () => { w.aa_hit = v; rerender(); };
+      std.appendChild(b);
+    });
+
     const sum = el('div', 'wsum');
     const updSum = () => {
       const r = wepOne(w, cp());
@@ -3652,6 +3754,8 @@ function wizWeaponsBox(sy, rerender) {
     };
     item.appendChild(r1);
     item.appendChild(r2);
+    item.appendChild(hint);
+    item.appendChild(std);
     item.appendChild(sum);
     item.addEventListener('input', () => { wepFix(w); updSum(); updTotal(); });
     updSum();
@@ -3667,6 +3771,20 @@ function wizWeaponsBox(sy, rerender) {
     sy.is_weapon = true;
     rerender();
   };
+  const addFam = el('button', 'btn ghost', '＋ 增加武器类型'); addFam.type = 'button';
+  addFam.onclick = async () => {
+    const nm = prompt('新武器类型叫什么？（例如：离子炮 / 电磁炮）');
+    if (!nm) return;
+    const id = 'f' + Date.now().toString(36);
+    let armor = 0;
+    if (confirm('这类武器计算对舰时要扣 10 点标准护甲吗？\n确定 = 扣 10，取消 = 不扣')) armor = 10;
+    try {
+      await api('/api/data/families', { method: 'PUT', body: { id, name: nm, armor, ord: 999 } });
+      await loadBlueprints(true);
+      toast('已加入武器类型：' + nm + (armor ? '（扣 10 护甲）' : '（不扣甲）'), 'good');
+      rerender();
+    } catch (e) { toast('增加失败：' + e.message, 'bad'); }
+  };
   const calc = el('button', 'btn ghost', '按公式重算并写回'); calc.type = 'button';
   calc.onclick = () => {
     if (!ws.length) return toast('先增加一把武器', 'bad');
@@ -3677,7 +3795,7 @@ function wizWeaponsBox(sy, rerender) {
       + fmtNum(sy.raw.dmg_air) + ' / 分', 'good');
     rerender();
   };
-  acts.append(add, calc);
+  acts.append(add, addFam, calc);
   box.appendChild(acts);
   updTotal();
   return box;
@@ -3924,7 +4042,11 @@ function wizRender() {
 
       /* 有 weapons[] 的走武器表（下面），这里只留三路存档与暴击；单武器老数据仍给整套六字段 */
       const hasW = (weaponListOf(sy.raw) || []).length > 0;
-      const fields = sy.is_weapon ? (hasW ? WEP_TOTALS : WEP_FIELDS) : funcFieldsFor(sy);
+      let fields = sy.is_weapon ? (hasW ? WEP_TOTALS : WEP_FIELDS) : funcFieldsFor(sy);
+      /* 每个系统都有隐藏的「系统结构值」，非武器系统一律给这一格 */
+      if (!sy.is_weapon && !fields.some(f => f[0] === 'syshull')) {
+        fields = fields.concat([['syshull', '系统结构值', '点']]);
+      }
       if (!sy.is_weapon && !fields.length) {
         card.appendChild(el('div', 'muted', '该类型不提供船体数值，只填模块名即可。'));
       } else {
@@ -3955,35 +4077,6 @@ function wizRender() {
         }
       }
 
-      /* 系统调校：可选是否加成；进阶加成暂时留空。只对武器系统有意义 */
-      if (sy.is_weapon) {
-        const cal = Object.assign({}, sy.raw._calib || {});
-        if (typeof cal.on !== 'boolean') cal.on = false;
-        if (cal.pct === undefined) {
-          const m0 = /伤害(?:提高|提升|增加)?\s*(\d+(?:\.\d+)?)\s*%/.exec(cal.text || '');
-          cal.pct = m0 ? Number(m0[1]) : 0;
-        }
-        if (cal.adv === undefined) cal.adv = 0;
-        sy.raw._calib = cal;
-        const cbox = el('div', 'calbox');
-        const chead = el('div', 'calh');
-        chead.appendChild(el('b', '', '系统调校'));
-        if (cal.name) chead.appendChild(document.createTextNode('（' + cal.name + '）'));
-        cbox.appendChild(chead);
-        const lab = document.createElement('label');
-        lab.className = 'calchk';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox'; cb.checked = !!cal.on;
-        cb.onchange = () => { cal.on = cb.checked; wizRender(); };
-        lab.appendChild(cb);
-        lab.appendChild(document.createTextNode(' 启用加成（不勾就不参与计算）'));
-        cbox.appendChild(lab);
-        const crow = el('div', 'calrow');
-        wIn(crow, '本系统加成', cal, 'pct', 'number', null, '%');
-        wIn(crow, '进阶加成（可留空）', cal, 'adv', 'number', null, '%');
-        cbox.appendChild(crow);
-        card.appendChild(cbox);
-      }
       // 模块名（可选，只对「一系统一模块」的写法有意义）
       wIn(card, '模块名（可选）', sy, 'module', 'text');
       sysgrid.appendChild(card);
@@ -6239,15 +6332,6 @@ $('#delBuild').onclick = async () => {
 };
 
 $('#undoBtn').onclick = undoStep;
-const _tvBtn = $('#treeViewBtn');
-if (_tvBtn) {
-  _tvBtn.onclick = () => {
-    S.treeView = (S.treeView === 'grid') ? 'list' : 'grid';
-    _tvBtn.textContent = (S.treeView === 'grid') ? '列表视图' : '网格预览';
-    toast(S.treeView === 'grid' ? '网格视图（只读原型）' : '列表视图', '');
-    renderTree();
-  };
-}
 
 ['click', 'change', 'input'].forEach(ev => {
   document.addEventListener(ev, e => {
@@ -6799,7 +6883,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-19.90';
+window.__APP_VER = '2026-11-20.93';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
