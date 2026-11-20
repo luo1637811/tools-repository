@@ -1147,7 +1147,15 @@ function saveCalib(sy, norm, cal) {
 
 function treeGridEl(sy, sl) {
   const cols = treeCols(sy.nodes);
+  const outer = el('div', 'tgouter');
+  const bar = el('div', 'tghint');
+  const bL = el('button', 'btn ghost tiny', '◀'); bL.type = 'button'; bL.title = '向左'; 
+  const bR = el('button', 'btn ghost tiny', '▶'); bR.type = 'button'; bR.title = '向右'; 
+  bar.appendChild(bL); bar.appendChild(bR);
+  bar.appendChild(el('span', 'dim', '共 ' + Math.max(1, cols.length) + ' 层：可拖动 / 滚轮横向查看'));
+  outer.appendChild(bar);
   const wrap = el('div', 'tgridwrap');
+  outer.appendChild(wrap);
   const grid = el('div', 'tgrid');
   grid.style.gridTemplateColumns = 'repeat(' + Math.max(1, cols.length) + ', minmax(112px, 126px))';
   const cardOf = {};
@@ -1160,6 +1168,32 @@ function treeGridEl(sy, sl) {
     grid.appendChild(c);
   }));
   wrap.appendChild(grid);
+  const slide = (dx) => { wrap.scrollLeft += dx; if (wrap._redraw) wrap._redraw(); };
+  bL.onclick = () => slide(-170);
+  bR.onclick = () => slide(170);
+  wrap.addEventListener('wheel', (e) => {
+    if (wrap.scrollWidth <= wrap.clientWidth + 2) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      wrap.scrollLeft += e.deltaY; e.preventDefault();
+      if (wrap._redraw) wrap._redraw();
+    }
+  }, { passive: false });
+  /* 按住空白处拖动（卡片上的点击/按钮不受影响） */
+  let drag = null;
+  wrap.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button, input, select, .calbox')) return;
+    if (wrap.scrollWidth <= wrap.clientWidth + 2) return;
+    drag = { x: e.clientX, left: wrap.scrollLeft };
+    wrap.classList.add('dragging');
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    wrap.scrollLeft = drag.left - (e.clientX - drag.x);
+    if (wrap._redraw) wrap._redraw();
+  });
+  const endDrag = () => { drag = null; wrap.classList.remove('dragging'); };
+  wrap.addEventListener('pointerup', endDrag);
+  wrap.addEventListener('pointerleave', endDrag);
   const NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('class', 'tgridlines');
@@ -1226,9 +1260,10 @@ function treeGridEl(sy, sl) {
     path.setAttribute('d', d || 'M 0 0');
     svg.appendChild(path);
   };
+  wrap._redraw = draw;
   requestAnimationFrame(draw);
   setTimeout(draw, 80);
-  return wrap;
+  return outer;
 }
 
 function renderTree() {
@@ -1243,9 +1278,11 @@ function renderTree() {
      这里在同一「方案 + 舰船 + 系统」下记住并还原 scrollLeft/scrollTop。 */
   const laneKey = S.cur + '|' + (sl.ship || '') + '|' + (S.sys[S.cur] || '');
   const prevLane = host.querySelector('.wiz-lane');
-  const keep = host.dataset.laneKey === laneKey && prevLane;
-  const keepLeft = keep ? prevLane.scrollLeft : 0;
-  const keepTop = keep ? prevLane.scrollTop : 0;
+  const prevGrid = host.querySelector('.tgridwrap');
+  const prevScroller = prevGrid || prevLane;
+  const keep = host.dataset.laneKey === laneKey && prevScroller;
+  const keepLeft = keep ? prevScroller.scrollLeft : 0;
+  const keepTop = keep ? prevScroller.scrollTop : 0;
   host.innerHTML = '';
   if (!sy) { host.appendChild(el('div', 'muted', '这条船还没有系统数据，去「数据管理」加。')); return; }
   /* 无加点项的纯被动系统：留空，不显示任何提示 */
@@ -1254,6 +1291,16 @@ function renderTree() {
   if (cols.length) {
     host.appendChild(treeGridEl(sy, sl));
     host.dataset.laneKey = laneKey;
+    const gw = host.querySelector('.tgridwrap');
+    if (gw) {
+      gw.scrollLeft = keepLeft; gw.scrollTop = keepTop;
+      if (gw._redraw) gw._redraw();
+      /* 重绘后内容宽度可能还在变（连 SVG 一起），下一帧再校准一次，避免点数一变就回弹 */
+      requestAnimationFrame(() => {
+        gw.scrollLeft = keepLeft; gw.scrollTop = keepTop;
+        if (gw._redraw) gw._redraw();
+      });
+    }
   }
 
   const used = ship.systems.reduce((a, x) => a + sysUsed(x), 0);
@@ -7109,7 +7156,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-20.116';
+window.__APP_VER = '2026-11-20.117';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
