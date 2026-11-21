@@ -198,10 +198,12 @@ def _gone_ship_ids(c):
 
 
 def _import_ships_seed(c):
-    """把舰船种子并入本库；同 version 直接跳过。返回提示文字（失败也只返回文字，不抛）。
+    """舰船种子只用于「空库冷启动」：库里的 ships 表为空时才导入，返回提示文字（失败也只返回文字，不抛）。
 
-    网页上改过舰船数据后（data_upsert 会写 settings.ships_seed_off），启动时不再用种子覆盖；
-    想强制拉一次新种子：FT_SEED_FORCE=1 重启一次服务即可（导入完会清掉这个标记）。
+    库里已经有船 → 直接返回空，一个字节都不动。种子里的节点效果、每级数值是导出那一刻的快照，
+    整船 DELETE+INSERT 会把网页上后来改过的效果顶回旧值（这也是「上传文件后加速维修效果
+    被恢复、每级变成 40」的来历）。所以要重灌种子只能显式：FT_SEED_FORCE=1 重启一次
+    （导入完会清掉这个标记）。deploy/ships_seed.json 也已不再随部署清单上线。
     """
     fp = _ship_seed_path()
     if not os.path.isfile(fp):
@@ -210,6 +212,13 @@ def _import_ships_seed(c):
     try:
         with open(fp, "r", encoding="utf-8") as f:
             seed = json.load(f)
+        # 只用种子「冷启动」一个空库；库里已经有船就一律不碰 —— 种子里带着节点效果和
+        # 每级数值，导入会整船 DELETE+INSERT，把网页上改过的效果顶回旧值。
+        # 确实要从种子重灌：FT_SEED_FORCE=1 重启一次（导入完会清掉这个标记）。
+        if not force:
+            n_have = c.execute("SELECT COUNT(*) AS n FROM ships").fetchone()["n"]
+            if n_have:
+                return ""
         _msgs = []
         _em = _sync_effects_seed(c, seed, force)
         if _em:

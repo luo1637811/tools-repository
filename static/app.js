@@ -3793,11 +3793,22 @@ function buildPerLv(prev, key, arr, eff) {
   if (Object.keys(eff || {}).length > 1) return arr.length ? {[key]: arr} : null;
   return arr.length ? arr : null;
 }
+/* —— 节点身份键（问卷内部的前置关系一律存它）——
+   老节点用库里的 id，新建节点用 newN 临时键，保存时按序换成真实 id。
+   不要再用 1 / 1-1 这种展示编号：每个系统的编号都从 1 起，跨系统必然重号，
+   删节点时会误伤别的系统（2026-11-21 修，见 wizDelNode）。 */
+let WIZ_SEQ = 0;
+function wizKey(n) {
+  if (!n) return '';
+  if (n._id) return n._id;
+  if (!n._k) n._k = 'new' + (++WIZ_SEQ);
+  return n._k;
+}
 /* —— 节点编辑的三个入口（横向结构里就地展开）—— */
-function wizStartNewNode(si, parentCode) {
+function wizStartNewNode(si, parentKey) {
   WIZ.editIdx = -1;
-  WIZ.nodeDraft = {sysIdx: si, parent: parentCode || ''};
-  Object.assign(WIZ.dNode, {sysIdx: String(si), label: '', parent: parentCode || '', parent2: '',
+  WIZ.nodeDraft = {sysIdx: si, parent: parentKey || ''};
+  Object.assign(WIZ.dNode, {sysIdx: String(si), label: '', parent: parentKey || '', parent2: '',
     effect: WIZ.dNode.effect || 'dmg', cost: 2, costs: '', max_lv: 5, val: 3, pair: 0, perLv: ''});
   wizRender();
 }
@@ -3829,7 +3840,7 @@ function wizSaveNode(si, x, isDraft) {
   base._effKey = WIZ.dNode.effect;
   base._perLv = buildPerLv(_prev && _prev._perLv, WIZ.dNode.effect,
     parseLvText(WIZ.dNode.perLv), base._eff);
-  if (isDraft) WIZ.nodes.push(base);
+  if (isDraft) { base._k = 'new' + (++WIZ_SEQ); WIZ.nodes.push(base); }
   /* 改已有节点时保留 _id/_note/_eff，否则会被当成新节点、老行还留在库里 */
   else WIZ.nodes[WIZ.editIdx] = Object.assign({}, WIZ.nodes[WIZ.editIdx], base);
   WIZ.editIdx = -1; WIZ.nodeDraft = null; WIZ.dNode.label = '';
@@ -3837,12 +3848,26 @@ function wizSaveNode(si, x, isDraft) {
   WIZ.scrollToSys = (WIZ.systems[si] || {}).id || ('s' + si); /* 只滚这一个系统 */
   wizRender();
 }
+/* 删节点：前置关系按「节点键 + 同一系统」处理。
+   旧写法拿展示编号（1 / 1-1）跨系统比对，别的系统同名编号的节点也会被清掉前置。 */
+function wizDelNodePlan(idx) {
+  const n = WIZ.nodes[idx];
+  if (!n) return { n: null, key: '', kids: [] };
+  const key = wizKey(n);
+  const sameSys = y => String(y.sysIdx) === String(n.sysIdx);
+  const kids = WIZ.nodes.filter(y => sameSys(y) && parList(y.parent).indexOf(key) >= 0);
+  return { n, key, kids };
+}
 function wizDelNode(si, x) {
-  const kids = WIZ.nodes.filter(y => parList(y.parent).indexOf(x.code) >= 0);
-  if (kids.length && !confirm('有 ' + kids.length + ' 个节点把它当前置，删掉后这些引用会一并去掉，继续？')) return;
+  const plan = wizDelNodePlan(x.idx);
+  const n = plan.n;
+  if (!n) return;
+  if (plan.kids.length && !confirm('这个系统里有 ' + plan.kids.length + ' 个节点把它当前置，删掉后这些引用会一并去掉，继续？')) return;
   WIZ.nodes.forEach(y => {
-    const rest = parList(y.parent).filter(c => c !== x.code);
-    if (rest.length !== parList(y.parent).length) y.parent = rest.join(',');
+    if (String(y.sysIdx) !== String(n.sysIdx)) return;
+    const p0 = parList(y.parent);
+    const rest = p0.filter(c => c !== plan.key);
+    if (rest.length !== p0.length) y.parent = rest.join(',');
   });
   WIZ.nodes = WIZ.nodes.filter((y, k) => k !== x.idx);
   WIZ.editIdx = -1; WIZ.nodeDraft = null;
@@ -4680,7 +4705,7 @@ function wizRender() {
             '逐级数值 ' + _pvTxt.replace(/,/g, '/') + '（按级数累加，超出末项外推）'));
           const acts = el('div', 'wiz-acts');
           const kid = el('button', 'btn sm ghost', '＋子节点'); kid.type = 'button';
-          kid.onclick = (ev) => { ev.stopPropagation(); wizStartNewNode(si, x.code); };
+          kid.onclick = (ev) => { ev.stopPropagation(); wizStartNewNode(si, x.key); };
           const del = el('button', 'btn sm danger', '删'); del.type = 'button';
           del.onclick = (ev) => { ev.stopPropagation(); wizDelNode(si, x); };
           acts.append(kid, del);
@@ -4694,7 +4719,7 @@ function wizRender() {
         wIn(f, '逐级消耗（逗号分隔，可空，例 1,2,3）', WIZ.dNode, 'costs', 'text');
         wIn(f, '级数上限', WIZ.dNode, 'max_lv', 'number');
         const treeNow = wizTree(si).filter(y => y.idx !== WIZ.editIdx);
-        const pOpts = [['', '（无，作为根节点）']].concat(treeNow.map(y => [y.code, y.code + '　' + y.node.label]));
+        const pOpts = [['', '（无，作为根节点）']].concat(treeNow.map(y => [y.key, y.code + '　' + y.node.label]));
         const parSel = wIn(f, '前置节点 1', WIZ.dNode, 'parent', 'select', pOpts);
         parSel.onchange = () => { WIZ.dNode.parent = parSel.value; };
         const parSel2 = wIn(f, '前置节点 2（可选，满足其一即可）', WIZ.dNode, 'parent2', 'select', pOpts);
@@ -4788,16 +4813,19 @@ function wizRender() {
         head.appendChild(addRoot);
         box.appendChild(head);
         const rows = wizTree(si);
+        const depthOf = {};
+        rows.forEach(x => { depthOf[x.key] = x.depth; });
         const draftHere = !!(WIZ.nodeDraft && String(WIZ.nodeDraft.sysIdx) === String(si));
         const draftDepth = draftHere
-          ? (WIZ.nodeDraft.parent ? WIZ.nodeDraft.parent.split('-').length : 0) : -1;
+          ? (WIZ.nodeDraft.parent
+            ? (depthOf[WIZ.nodeDraft.parent] === undefined ? -1 : depthOf[WIZ.nodeDraft.parent] + 1)
+            : 0) : -1;
         if (!rows.length && !draftHere) {
           box.appendChild(el('div', 'muted', '这个系统还没有节点，点右上角「＋ 根节点」开始。'));
         }
         const byDepth = {};
         rows.forEach(x => {
-          const d = x.code === '?' ? 0 : x.code.split('-').length - 1;
-          (byDepth[d] = byDepth[d] || []).push(x);
+          (byDepth[x.depth] = byDepth[x.depth] || []).push(x);
         });
         const depths = Object.keys(byDepth).map(Number);
         const maxD = Math.max(-1, ...depths, draftDepth);
@@ -4904,7 +4932,13 @@ function wizRender() {
       const _plt = perLvText(n._perLv, n.effect);
       put('加点 ' + (i + 1), (sy ? sy.name : '?') + ' / ' + n.label + ' · 每级 ' + n.cost
         + (n.costs ? '（逐级 ' + n.costs + '）' : '') + ' · 上限 ' + n.max_lv + ' 级 · '
-        + effName(n.effect) + ' +' + n.val + (n.parent ? ' · 前置「' + n.parent + '」' : '')
+        + effName(n.effect) + ' +' + n.val
+        + (parList(n.parent).length
+          ? ' · 前置「' + parList(n.parent).map(k => {
+            const t = WIZ.nodes.find(y => String(y.sysIdx) === String(n.sysIdx) && wizKey(y) === k);
+            return t ? t.label : k;
+          }).join(' 或 ') + '」'
+          : '')
         + (_plt ? ' · 逐级 ' + _plt.replace(/,/g, '/') : ''));
     });
     WIZ.systems.filter(x => x.slot).forEach((sy, k) => put('模块 ' + (k + 1),
@@ -4941,32 +4975,40 @@ function wizRender() {
 function wizTree(sysIdx) {
   const list = WIZ.nodes.map((n, i) => ({ n, i }))
     .filter(x => String(x.n.sysIdx) === String(sysIdx));
-  /* 前置指向的节点不存在（被删/改了层级）时自动丢掉这条前置，避免出现「孤儿」 */
-  const ids = {};
-  list.forEach(x => { ids[x.n._id || ('#' + x.i)] = 1; });
-  const codesNow = {};
-  const collect = (p, prefix) => list.filter(x => firstPar(x.n.parent) === p)
-    .forEach((x, k) => { const c = prefix ? prefix + '-' + (k + 1) : String(k + 1); codesNow[c] = 1; collect(c, c); });
-  collect('', '');
+  /* parent 里存的是节点键（库 id / 新建临时键）。这里只清「自引用」（自己当自己的前置，
+     引擎那边等于没有门控，清掉不改任何出数，还防成环）；指向本系统已不存在节点的旧前置
+     **原样保留** —— 那意味着这个节点永远点不出来，是库里现状，清掉会变成「无门控、恒生效」，
+     反而改了出数。落位时只认第一个还存在的父键，但不写回 parent。 */
+  const keysNow = {};
+  list.forEach(x => { keysNow[wizKey(x.n)] = 1; });
   list.forEach(x => {
     const ps = parList(x.n.parent);
     if (!ps.length) return;
-    /* parent 里存的是 code；code 不在本系统树里且也不是根（''）→ 视为失效 */
-    const ok = ps.filter(c => codesNow[c] || c === '');
+    const ok = ps.filter(c => c !== wizKey(x.n));
     if (ok.length !== ps.length) x.n.parent = ok.join(',');
   });
+  const placeKey = (n) => {
+    const ps = parList(n.parent).filter(c => keysNow[c] && c !== wizKey(n));
+    return ps.length ? ps[0] : '';
+  };
   const out = [];
-  const kids = (p) => list.filter(x => firstPar(x.n.parent) === p);
-  const walk = (p, prefix) => {
+  const kids = (p) => list.filter(x => placeKey(x.n) === p);
+  const seen = {};
+  const walk = (p, prefix, depth) => {
     kids(p).forEach((x, k) => {
+      const key = wizKey(x.n);
+      if (seen[key] || depth > 20) return;          /* 成环时停下来，别把页面卡死 */
+      seen[key] = 1;
       const code = prefix ? prefix + '-' + (k + 1) : String(k + 1);
-      out.push({ code, idx: x.i, node: x.n });
-      walk(code, code);
+      out.push({ code, idx: x.i, node: x.n, key, depth });
+      walk(key, code, depth + 1);
     });
   };
-  walk('', '');
+  walk('', '', 0);
   // 父节点被删掉的孤儿也列出来，避免“消失”
-  list.forEach(x => { if (!out.some(o => o.idx === x.i)) out.push({ code: '?', idx: x.i, node: x.n }); });
+  list.forEach(x => {
+    if (!out.some(o => o.idx === x.i)) out.push({ code: '?', idx: x.i, node: x.n, key: wizKey(x.n), depth: 0 });
+  });
   return out;
 }
 /* 问卷里的 stats_norm 规整：数字键去 0（0 当清空）、空串/空数组/空对象丢掉；
@@ -5028,8 +5070,9 @@ function wizPayload() {
   const spdSys = WIZ.systems.find(s => Number((s.raw || {}).spd) > 0);
   if (spdSys) WIZ.ship.base.spd = Number(spdSys.raw.spd);
   const nids = WIZ.nodes.map((n, i) => n._id || ('n_' + sid + '_' + i));
-  const byCode = {};
-  WIZ.systems.forEach((s, si) => wizTree(si).forEach(o => { byCode[si + '|' + o.code] = nids[o.idx]; }));
+  /* 前置存的是节点键 → 这里换成真实 id；只认同系统的节点，避免跨系统串前置 */
+  const keyIdx = {};
+  WIZ.nodes.forEach((n, i) => { keyIdx[wizKey(n)] = i; });
   const nodes = WIZ.nodes.map((n, i) => {
     const sy = systems[n.sysIdx] || systems[0];
     const costs = (n.costs || '').split(/[,，\s]+/).map(x => Number(x)).filter(x => x > 0);
@@ -5039,7 +5082,14 @@ function wizPayload() {
     if (n._eff) Object.keys(n._eff).forEach(k => { if (k !== (n._effKey || '')) eff[k] = n._eff[k]; });
     if (n.effect) eff[n.effect] = n.val;
     return {id: nids[i], sys: sy ? sy.id : '',
-      parent: pcodes.map(c => byCode[n.sysIdx + '|' + c] || '').filter(Boolean).join(','),
+      /* 能找到且同系统的键换成真实 id；找不到的键原样保留 —— 那是库里既有的悬空前置，
+         保留它才能让引擎的门控行为和现在完全一致（清掉会让该节点变成无门控）。 */
+      parent: pcodes.map(c => {
+        const at = keyIdx[c];
+        if (at === undefined) return c;
+        const pn = WIZ.nodes[at];
+        return String(pn.sysIdx) === String(n.sysIdx) ? nids[at] : '';
+      }).filter(Boolean).join(','),
       label: n.label, max_lv: n.max_lv, cost: n.cost,
       costs: costs.length ? JSON.stringify(costs) : '',
       effect: eff,
@@ -5122,31 +5172,19 @@ function wizEditOpen(sh) {
     const push = n => {
       const ks = Object.keys(n.effect || {});
       const ek = ks[0] || '';
-      WIZ.nodes.push({_id: n.id, _note: n.note || '', _eff: n.effect || {}, _effKey: ek,
+      WIZ.nodes.push({_id: n.id, _k: n.id, _note: n.note || '', _eff: n.effect || {}, _effKey: ek,
         _perLv: n.per_lv || null,
         sysIdx: si, label: n.label,
         max_lv: +n.max_lv || 1, cost: +n.cost || 0, costs: (n.costs || []).join(','),
-        effect: ek, val: Number((n.effect || {})[ek] || 0), parent: ''});
+        effect: ek, val: Number((n.effect || {})[ek] || 0),
+        /* 前置直接沿用库里的节点 id（= 节点键），不用再换算成 1/1-1 */
+        parent: parList(n.parent).join(',')});
       WIZ.orig.nodes.push(n.id);
     };
-    const codeById = {};
-    const walk = (pid, prefix) => (sy.nodes || []).filter(n => firstPar(n.parent) === pid).forEach((n, k) => {
-      const code = prefix ? prefix + '-' + (k + 1) : String(k + 1);
-      const before = WIZ.nodes.length;
-      push(n);
-      WIZ.nodes[before].parent = prefix;
-      codeById[n.id] = code;
-      walk(n.id, code);
-    });
-    walk('', '');
-    /* 双前置：把另外那些前置 id 也换成 code */
-    (sy.nodes || []).forEach(n => {
-      const ids = parList(n.parent);
-      if (ids.length < 2) return;
-      const at = WIZ.nodes.findIndex(y => y._id === n.id);
-      if (at < 0) return;
-      WIZ.nodes[at].parent = ids.map(id => codeById[id] || '').filter(Boolean).join(',');
-    });
+    /* 按树的先序插一遍，保证同层顺序稳定；没挂到树上的（孤儿）最后补 */
+    const walk = (pid) => (sy.nodes || []).filter(n => firstPar(n.parent) === pid)
+      .forEach(n => { push(n); walk(n.id); });
+    walk('');
     (sy.nodes || []).forEach(n => { if (!WIZ.nodes.some(x => x._id === n.id)) push(n); });
   });
   $('#wizDlg').showModal();
@@ -7341,7 +7379,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-21.125';
+window.__APP_VER = '2026-11-21.126';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
