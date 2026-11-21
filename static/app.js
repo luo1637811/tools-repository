@@ -49,13 +49,40 @@ function isAccountFilled(v, u) {
 }
 
 /* 母舰上所有「带舱位」的搭载位：模块（mkind）+ 系统（新数据把 bays 直接写在系统上）
-   两者都用 id 标识，勾选 / 载荷都用同一个列表 */
+   同一个槽位既生成了模块行、又写在系统上时只算一个——否则勾选列表会冒出两个同名项
+   （引擎 engine.py:416-425 也是「模块先用槽位、系统不重复占」的口径，这里跟它对齐）。 */
 function carrierModsOf(ship) {
-  const out = (((ship && ship.modules) || []).filter(m => m.mkind)).map(m => m.id);
-  ((ship && ship.systems) || []).forEach(sy => {
-    if (sysHasBayJs(sy) && !out.includes(sy.id)) out.push(sy.id);
+  const sh = ship || {};
+  const mods = (sh.modules || []).filter(m => m.mkind || (m.bays || []).length);
+  const sysWithBay = (sh.systems || []).filter(sy => sysHasBayJs(sy));
+  const sysIds = new Set(sysWithBay.map(sy => sy.id));
+  const slotKey = h => String((h && h.slot) || '').trim();
+
+  const take = [];           // 已占用的槽位
+  const keepMod = [], keepSys = [];
+  const slotTaken = slot => take.includes(slot);
+  /* ① 关联到本船系统行的模块先占位（它和系统描述同一个搭载位，模块版信息更全） */
+  mods.filter(m => m.sys && sysIds.has(m.sys)).forEach(m => {
+    const s = slotKey(m);
+    if (s && slotTaken(s)) return;
+    if (s) take.push(s);
+    keepMod.push(m.id);
   });
-  return out;
+  /* ② 其余模块（老数据 sys 为空）：同槽位只留第一个，避免残留的重复行 */
+  mods.filter(m => !(m.sys && sysIds.has(m.sys))).forEach(m => {
+    const s = slotKey(m);
+    if (s && slotTaken(s)) return;
+    if (s) take.push(s);
+    keepMod.push(m.id);
+  });
+  /* ③ 系统自带舱位：槽位已被模块代表的跳过（引擎同样不会重复计入） */
+  sysWithBay.forEach(sy => {
+    const s = slotKey(sy);
+    if (s && slotTaken(s)) return;
+    if (s) take.push(s);
+    keepSys.push(sy.id);
+  });
+  return keepMod.concat(keepSys);
 }
 /* 按 id 找搭载位：先模块后系统（新数据没有模块，舱位挂在系统上） */
 function holderOf(ship, id) {
@@ -2394,7 +2421,7 @@ function renderPlanesInner(host) {
     const sh0 = shipOf(sl0.ship);
     if (!sh0 || !canMod(sh0)) return;
     if (seedCarrierMods(sl0, sh0)) {
-      syncLaunchSlots((sh0.modules || []).filter(m => m.mkind), k0);
+      syncLaunchSlots(carrierModsOf(sh0).map(id => holderOf(sh0, id)).filter(Boolean), k0);
       setTimeout(() => recalc(k0), 0);
     }
   });
@@ -7410,7 +7437,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-21.128';
+window.__APP_VER = '2026-11-21.129';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
