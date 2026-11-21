@@ -133,6 +133,17 @@ function wizBaysOf(sy, mod) {
   const mb = (mod && mod.bays) || [];
   return Array.isArray(mb) ? mb.map(pick) : [];
 }
+/* 系统 → 它对应的模块行（唯一口径，别再各处各写一套）。
+   先按 sys 精确匹配；老数据的 modules.sys 是 NULL（server.py:489 才补的列），
+   退到「同船 + 同槽位」（槽位每条船唯一）；最后才比名字（模块名不一定等于系统名）。 */
+function modOfSys(sh, sy) {
+  if (!sh || !sy) return null;
+  const list = (sh.modules || []).filter(m => !m.ship || String(m.ship) === String(sh.id || ''));
+  return list.find(m => m.sys && m.sys === sy.id)
+    || list.find(m => m.slot && sy.slot && m.slot === sy.slot)
+    || list.find(m => m.name && m.name === sy.name)
+    || null;
+}
 function bayGroupText(kind, allow) {
   if (String(kind || '') !== '战机') return '不分编组';
   const g = String(allow || '').split(/[,，/]/).map(x => x.trim()).filter(Boolean)[0] || '';
@@ -3150,10 +3161,15 @@ async function importOneShip(b) {
     }
   }
   let mi = 0;
+  /* 导入的模块行常常没有 sys（导出它的老库里就是 NULL）：按槽位补上新系统的 id，
+     这样导入后下次打开问卷能靠 sys 精确匹配（口径同 modOfSys）。 */
+  const sysBySlot = {};
+  for (const sy of (b.systems || [])) sysBySlot[sy.slot || 'X'] = sid + '_' + (sy.slot || 'X');
   for (const m of (b.modules || [])) {
     mi += 1;
     await api('/api/data/modules', {method: 'POST', body: Object.assign({}, m,
-      {id: sid + '_mod' + mi, ship: sid, sys: m.sys ? (sysMap[m.sys] || m.sys) : null})});
+      {id: sid + '_mod' + mi, ship: sid,
+        sys: m.sys ? (sysMap[m.sys] || m.sys) : (sysBySlot[m.slot || 'X'] || null)})});
     nmd += 1;
   }
   return {sid: sid, nm: nm, ns: ns, nn: nn, nmd: nmd};
@@ -5101,9 +5117,12 @@ function wizPayload() {
        舱位存库后会凭空消失，舰载机组合里也就勾不到。 */
     .filter(x => x.sy.slot || (x.sy.bays || []).length)
     .map(({sy, i}, k) => {
+      const old = sy._mod || {};
+      /* 舱位口径：读取时已经把「系统自身 bays 为空、模块行有 bays」的情况合并进
+         sy.bays（见 wizEditOpen / wizBaysOf），所以这里只认 sy.bays ——
+         用户主动清空舱位时也就能真的清空，不再被旧值顶回来。 */
       const bays = (sy.bays || []).map(b => ({kind: b.kind, cap: +b.cap || 0, allow_group: b.allow_group || ''}));
       const cap = bays.reduce((a, b) => a + b.cap, 0);
-      const old = sy._mod || {};
       return {
         id: old.id || ('mod_' + sid + '_' + k), ship: sid,
         slot: sy.slot, sys: systems[i] ? systems[i].id : '',
@@ -5151,7 +5170,9 @@ function wizEditOpen(sh) {
     dMod: {slot: '', name: '', dmg: 10, sysIdx: '', bays: [], bayKind: '战机', bayCap: '', bayAllow: ''},
     orig: {systems: [], nodes: [], modules: []}};
   (sh.systems || []).forEach((sy, si) => {
-    const mod = (sh.modules || []).find(m => m.slot === sy.slot && (m.sys === sy.id || m.name === sy.name));
+    /* 模块行用统一口径找（见 modOfSys）：sys 精确 → 同船同槽位 → 名字。找不到就会把
+       舱位读空、保存时连模块行一起丢掉，所以不能只靠 sys 或名字。 */
+    const mod = modOfSys(sh, sy);
     let raw = {};
     try { raw = JSON.parse(sy.stats_norm || '{}') || {}; } catch (e) { raw = {}; }
     /* 旧数据把弹药数、攻击次数分开存：合并口径读回来时乘成一项，避免编辑后丢失 */
@@ -5233,7 +5254,17 @@ async function wizSave() {
       const keepM = new Set(p.modules.map(x => x.id));
       const keepS = new Set(p.systems.map(x => x.id));
       for (const id of WIZ.orig.nodes) if (!keepN.has(id)) await api('/api/data/nodes/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
-      if (withMod) for (const id of WIZ.orig.modules) if (!keepM.has(id)) await api('/api/data/modules/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
+      if (withMod) {
+        /* 收窄：只有「原来挂着这条模块行的系统已经不存在」才删。
+           系统还在、只是这次没生成模块行（槽位/舱位被清空）时保留该行，
+           免得连带把它的备注、加成、舱位一起丢掉（以前就是这么丢的）。 */
+        const claimed = new Set();
+        for (const sy of WIZ.systems) if (sy._mod && sy._mod.id) claimed.add(sy._mod.id);
+        for (const id of WIZ.orig.modules) {
+          if (keepM.has(id) || claimed.has(id)) continue;
+          await api('/api/data/modules/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
+        }
+      }
       for (const id of WIZ.orig.systems) if (!keepS.has(id)) await api('/api/data/systems/' + encodeURIComponent(id), {method: 'DELETE', confirm: id});
     }
     toast((WIZ.edit ? '已保存：' : '已新建：') + '1 条舰船 / ' + p.systems.length + ' 个系统 / '
@@ -7379,7 +7410,7 @@ $('#loginBtn').addEventListener('click', () => { setTimeout(refreshBuilds, 600);
 })();
 
 /* 构建标记：排查「服务器是不是旧文件」用 */
-window.__APP_VER = '2026-11-21.126';
+window.__APP_VER = '2026-11-21.128';
 try { console.info('[fleet-tool] app.js ' + window.__APP_VER); } catch (e) {}
 
 /* ---------- 超管恢复码（仅 superadmin 可见） ---------- */
